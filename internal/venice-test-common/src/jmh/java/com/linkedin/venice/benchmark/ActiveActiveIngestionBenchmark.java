@@ -86,6 +86,16 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 public class ActiveActiveIngestionBenchmark {
   private static final String CLUSTER_NAME = "venice-cluster0";
   private static final int NUM_RECORDS_PER_INVOCATION = 1000;
+  // Bounded key pool size for PARTIAL_UPDATE so updates actually hit existing records
+  // and exercise the server-side read-modify-write + field-level DCR path.
+  private static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 10_000;
+  // Bounded key pool size for PUT so both producers concurrently hit the same keys
+  // and exercise the value-level DCR path (timestamp-based conflict resolution).
+  private static final int PUT_KEY_POOL_SIZE = 10_000;
+  // Each PARTIAL_UPDATE pool key is pre-populated with a tags map of this size.
+  // AddToMap updates during the benchmark only overwrite values for map keys in
+  // [0, TAGS_MAP_SIZE), so the map size stays constant instead of growing.
+  private static final int TAGS_MAP_SIZE = 10;
   private static final String KEY_SCHEMA_STR = "\"string\"";
 
   // Schema with regular fields + map field for collection merge benchmarking
@@ -122,6 +132,14 @@ public class ActiveActiveIngestionBenchmark {
   private Schema valueSchema;
   private Schema writeComputeSchema;
   private final AtomicLong keyCounter = new AtomicLong(0);
+  // Updated by each invocation; read at iteration teardown to verify ingestion caught up.
+  // Volatile because the benchmark worker thread and the teardown thread may differ.
+  private volatile String lastProducedKey;
+  // Wall-clock end-to-end measurement: time from iteration start until the last produced key
+  // is visible via the read client. JMH's own throughput excludes the teardown drain, so we
+  // compute and print the E2E number ourselves.
+  private final AtomicLong iterationRecordCount = new AtomicLong(0);
+  private volatile long iterationStartNanos;
 
   @Setup(Level.Trial)
   public void setUp() throws Exception {
@@ -168,7 +186,8 @@ public class ActiveActiveIngestionBenchmark {
         .setChunkingEnabled(false)
         .setHybridRewindSeconds(25L)
         .setHybridOffsetLagThreshold(1L)
-        .setWriteComputationEnabled(true);
+        .setWriteComputationEnabled(true)
+        .setPartitionCount(1);
     assertCommand(parentControllerClient.updateStore(storeName, storeParams));
 
     // Empty push to create version 1
@@ -213,8 +232,44 @@ public class ActiveActiveIngestionBenchmark {
       }
     });
 
+    // For PARTIAL_UPDATE, pre-populate each bounded-pool key with a TAGS_MAP_SIZE-entry
+    // tags map. Subsequent AddToMap operations only overwrite values for map keys
+    // within [0, TAGS_MAP_SIZE), so the map size stays constant rather than growing.
+    if (workloadType == WorkloadType.PARTIAL_UPDATE) {
+      prePopulatePartialUpdatePool();
+    }
+
     // JMH benchmark relies on System.exit to finish one round of benchmark run, otherwise it will hang there.
     TestUtils.restoreSystemExit();
+  }
+
+  private void prePopulatePartialUpdatePool() {
+    System.err.println(
+        "[ActiveActiveIngestionBenchmark] Pre-populating " + PARTIAL_UPDATE_KEY_POOL_SIZE
+            + " pool keys with " + TAGS_MAP_SIZE + "-entry tags map...");
+    for (int poolIdx = 0; poolIdx < PARTIAL_UPDATE_KEY_POOL_SIZE; poolIdx++) {
+      String key = "pu-pool-" + poolIdx;
+      GenericRecord rec = new GenericData.Record(valueSchema);
+      rec.put("name", "init-" + poolIdx);
+      rec.put("age", 0);
+      rec.put("score", 0.0);
+      Map<String, String> initTags = new HashMap<>();
+      for (int m = 0; m < TAGS_MAP_SIZE; m++) {
+        initTags.put("k-" + m, "init-v-" + m);
+      }
+      rec.put("tags", initTags);
+      sendStreamingRecordWithoutFlush(producerDC0, storeName, key, rec);
+    }
+    producerDC0.flush(storeName);
+    // Wait for the last pool key to be visible so the benchmark starts from a fully
+    // populated state.
+    String lastPoolKey = "pu-pool-" + (PARTIAL_UPDATE_KEY_POOL_SIZE - 1);
+    waitForNonDeterministicAssertion(5, TimeUnit.MINUTES, true, () -> {
+      if (readClient.get(lastPoolKey).get() == null) {
+        throw new AssertionError("Pre-population not yet drained");
+      }
+    });
+    System.err.println("[ActiveActiveIngestionBenchmark] Pre-population complete.");
   }
 
   @TearDown(Level.Trial)
@@ -230,71 +285,146 @@ public class ActiveActiveIngestionBenchmark {
    * Benchmark: full record PUTs from alternating regions.
    * Exercises value-level timestamp conflict resolution.
    */
+  /**
+   * Resets per-iteration counters and captures the iteration start timestamp. Runs before
+   * each warmup/measurement iteration, outside the measured window.
+   */
+  @Setup(Level.Iteration)
+  public void startIterationClock() {
+    iterationRecordCount.set(0);
+    lastProducedKey = null;
+    iterationStartNanos = System.nanoTime();
+  }
+
   @Benchmark
   @OperationsPerInvocation(NUM_RECORDS_PER_INVOCATION)
   public void benchmarkAAIngestion() {
+    String lastKey;
     switch (workloadType) {
       case PUT:
-        runPutWorkload();
+        lastKey = runPutWorkload();
         break;
       case PARTIAL_UPDATE:
-        runPartialUpdateWorkload();
+        lastKey = runPartialUpdateWorkload();
         break;
       case MIXED:
-        runMixedWorkload();
+        lastKey = runMixedWorkload();
         break;
+      default:
+        throw new IllegalStateException("Unknown workload: " + workloadType);
     }
+    if (lastKey != null) {
+      lastProducedKey = lastKey;
+    }
+    iterationRecordCount.addAndGet(NUM_RECORDS_PER_INVOCATION);
   }
 
-  private void runPutWorkload() {
-    long baseKey = keyCounter.getAndAdd(NUM_RECORDS_PER_INVOCATION);
+  /**
+   * Runs once per iteration, outside the measured window. Waits for the last produced key to
+   * become visible (draining the AA pipeline), then prints the true end-to-end throughput:
+   * total records produced during the iteration divided by (first-produce → last-visible).
+   */
+  @TearDown(Level.Iteration)
+  public void finishIterationAndReportE2E() {
+    String keyToVerify = lastProducedKey;
+    long records = iterationRecordCount.get();
+    if (keyToVerify == null || records == 0) {
+      return;
+    }
+    waitForNonDeterministicAssertion(10, TimeUnit.MINUTES, true, () -> {
+      if (readClient.get(keyToVerify).get() == null) {
+        throw new AssertionError("Final key not yet ingested: " + keyToVerify);
+      }
+    });
+    long elapsedNanos = System.nanoTime() - iterationStartNanos;
+    double opsPerSec = records * 1e9 / elapsedNanos;
+    System.err.println(
+        String.format(
+            "[E2E] workload=%s records=%d elapsed_ms=%d e2e_throughput_ops_per_sec=%.2f",
+            workloadType,
+            records,
+            elapsedNanos / 1_000_000L,
+            opsPerSec));
+  }
+
+  private String runPutWorkload() {
+    // Bounded key pool + alternating producers means both DC0 and DC1 write to the same
+    // keys concurrently. DCR has to resolve real timestamp-based conflicts for every record.
     for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
-      String key = "put-" + (baseKey + i);
+      long seq = keyCounter.getAndIncrement();
+      String key = "put-pool-" + (seq % PUT_KEY_POOL_SIZE);
       GenericRecord record = new GenericData.Record(valueSchema);
-      record.put("name", "user-" + i);
-      record.put("age", i % 100);
-      record.put("score", i * 1.1);
+      record.put("name", "user-" + seq);
+      record.put("age", (int) (seq % 100));
+      record.put("score", seq * 1.1);
       Map<String, String> tags = new HashMap<>();
       tags.put("region", i % 2 == 0 ? "dc-0" : "dc-1");
       record.put("tags", tags);
-
-      // Alternate between producers to simulate cross-region writes
       VeniceSystemProducer producer = (i % 2 == 0) ? producerDC0 : producerDC1;
       sendStreamingRecordWithoutFlush(producer, storeName, key, record);
     }
-    // Flush both producers
+
+    // Sentinel: unique fresh key via DC1 so visibility on DC0 router proves
+    // cross-region replication has drained.
+    long sentinelSeq = keyCounter.getAndIncrement();
+    String sentinelKey = "put-sentinel-" + sentinelSeq;
+    GenericRecord sentinelRecord = new GenericData.Record(valueSchema);
+    sentinelRecord.put("name", "sentinel-" + sentinelSeq);
+    sentinelRecord.put("age", 0);
+    sentinelRecord.put("score", 0.0);
+    sentinelRecord.put("tags", Collections.emptyMap());
+    sendStreamingRecordWithoutFlush(producerDC1, storeName, sentinelKey, sentinelRecord);
+
     producerDC0.flush(storeName);
     producerDC1.flush(storeName);
+    return sentinelKey;
   }
 
-  private void runPartialUpdateWorkload() {
-    long baseKey = keyCounter.getAndAdd(NUM_RECORDS_PER_INVOCATION);
+  private String runPartialUpdateWorkload() {
+    // Bounded key pool + globally-unique sequence ensures:
+    //  - same key is updated many times across invocations (real read-modify-write path)
+    //  - every update carries a unique value (never a duplicate)
     for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
-      String key = "pu-" + (baseKey + i);
+      long seq = keyCounter.getAndIncrement();
+      String key = "pu-pool-" + (seq % PARTIAL_UPDATE_KEY_POOL_SIZE);
       UpdateBuilder ub = new UpdateBuilderImpl(writeComputeSchema);
-
-      if (i % 3 == 0) {
-        // Update scalar field
-        ub.setNewFieldValue("name", "updated-" + i);
-      } else if (i % 3 == 1) {
-        // Update scalar field
-        ub.setNewFieldValue("age", i % 100);
+      int fieldChoice = (int) (seq % 3);
+      if (fieldChoice == 0) {
+        ub.setNewFieldValue("name", "upd-" + seq);
+      } else if (fieldChoice == 1) {
+        ub.setNewFieldValue("age", (int) (seq % 100_000));
       } else {
-        // AddToMap — exercises collection merge
+        // AddToMap with a map key from the pre-populated 0..TAGS_MAP_SIZE range.
+        // Since the key already exists, this updates the value and the map size
+        // stays constant at TAGS_MAP_SIZE instead of growing.
         Map<String, String> mapUpdate = new HashMap<>();
-        mapUpdate.put("key-" + i, "val-" + i);
+        String mapKey = "k-" + (seq % TAGS_MAP_SIZE);
+        mapUpdate.put(mapKey, "v-" + seq);
         ub.setEntriesToAddToMapField("tags", mapUpdate);
       }
-
       VeniceSystemProducer producer = (i % 2 == 0) ? producerDC0 : producerDC1;
       sendStreamingRecordWithoutFlush(producer, storeName, key, ub.build());
     }
+
+    // Sentinel with a unique key (not in the bounded pool). The readable-check on
+    // bounded-pool keys would succeed instantly because they've been populated earlier;
+    // the sentinel is a fresh key whose first-ever visibility proves the RT has drained.
+    // Sent via DC1 so that visibility on DC0 also confirms cross-region replication caught up.
+    long sentinelSeq = keyCounter.getAndIncrement();
+    String sentinelKey = "pu-sentinel-" + sentinelSeq;
+    UpdateBuilder sentinelUb = new UpdateBuilderImpl(writeComputeSchema);
+    sentinelUb.setNewFieldValue("name", "sentinel-" + sentinelSeq);
+    sendStreamingRecordWithoutFlush(producerDC1, storeName, sentinelKey, sentinelUb.build());
+
     producerDC0.flush(storeName);
     producerDC1.flush(storeName);
+    return sentinelKey;
   }
 
-  private void runMixedWorkload() {
+  private String runMixedWorkload() {
     long baseKey = keyCounter.getAndAdd(NUM_RECORDS_PER_INVOCATION);
+    // Track only non-delete writes so the post-invocation poll targets a key that should be visible.
+    String lastWrittenKey = null;
     for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
       String key = "mixed-" + (baseKey + i);
       VeniceSystemProducer producer = (i % 2 == 0) ? producerDC0 : producerDC1;
@@ -310,12 +440,14 @@ public class ActiveActiveIngestionBenchmark {
         tags.put("tag-" + i, "val-" + i);
         record.put("tags", tags);
         sendStreamingRecordWithoutFlush(producer, storeName, key, record);
+        lastWrittenKey = key;
       } else if (op < 7) {
         // 30% partial updates (field-level)
         UpdateBuilder ub = new UpdateBuilderImpl(writeComputeSchema);
         ub.setNewFieldValue("name", "partial-" + i);
         ub.setNewFieldValue("score", i * 2.2);
         sendStreamingRecordWithoutFlush(producer, storeName, key, ub.build());
+        lastWrittenKey = key;
       } else if (op < 9) {
         // 20% collection merges (AddToMap)
         UpdateBuilder ub = new UpdateBuilderImpl(writeComputeSchema);
@@ -324,6 +456,7 @@ public class ActiveActiveIngestionBenchmark {
         delta.put("k2-" + i, "v2-" + i);
         ub.setEntriesToAddToMapField("tags", delta);
         sendStreamingRecordWithoutFlush(producer, storeName, key, ub.build());
+        lastWrittenKey = key;
       } else {
         // 10% deletes
         sendStreamingRecordWithoutFlush(producer, storeName, key, null, null);
@@ -331,6 +464,7 @@ public class ActiveActiveIngestionBenchmark {
     }
     producerDC0.flush(storeName);
     producerDC1.flush(storeName);
+    return lastWrittenKey;
   }
 
   public static void main(String[] args) throws RunnerException {
