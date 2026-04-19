@@ -1027,7 +1027,7 @@ public class SortBasedCollectionFieldOpHandler extends CollectionFieldOperationH
       GenericRecord currValueRecord,
       Schema.Field currValueRecordField,
       CollectionRmdTimestamp<String> collectionFieldRmd) {
-    Map<String, Object> newMap = new IndexedHashMap<>(activeElementAndTsList.size());
+    Map<String, Object> newMap = new IndexedHashMap<>();
     PrimitiveLongList newActiveTimestamps =
         new PrimitiveLongArrayList(activeElementAndTsList.size() - newPutOnlyPartLength);
     int idx = 0;
