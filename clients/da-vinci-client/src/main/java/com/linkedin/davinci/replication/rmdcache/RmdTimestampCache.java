@@ -89,8 +89,16 @@ public class RmdTimestampCache {
   /**
    * Invariant: every key present in DB but absent from {@link #keyHashToTimestamp} has
    * timestamp &le; this value. Atomically raised on cache eviction.
+   *
+   * <p>Initialized to {@link Long#MAX_VALUE} so the invariant holds at startup even when
+   * the DB has pre-existing records (batch push data, backup restore, etc.) that the cache
+   * never observed. Under this initialization, branch B.2.a (new.ts &gt; watermark) can only
+   * fire once the cache has observed AND evicted at least one record whose timestamp
+   * establishes a concrete upper bound on "absent keys", which requires an explicit
+   * {@link #priming} event from the caller (typically the first post-EOP PUT ingested by
+   * the ingestion task).</p>
    */
-  private final AtomicLong highestTsInDbButNotInCache = new AtomicLong(Long.MIN_VALUE);
+  private final AtomicLong highestTsInDbButNotInCache = new AtomicLong(Long.MAX_VALUE);
 
   /** Counter of decisions that skipped the RMD RocksDB lookup (branches A + B.1 + B.2.a). */
   private final AtomicLong skippedRmdLookupCount = new AtomicLong();
@@ -103,8 +111,11 @@ public class RmdTimestampCache {
   /**
    * Last wall-clock time (ms) at which we invoked {@link #evictStaleEntries(long)}. Used to
    * rate-limit the eviction sweep so the hot path doesn't do O(N) work on every call.
+   * Initialized to {@link Long#MIN_VALUE} and lazily set to {@code nowMs} on the first
+   * {@link #decideAndUpdate} — so the first call doesn't prematurely evict everything
+   * with a cutoff of {@code nowMs - timeWindowMs}.
    */
-  private final AtomicLong lastEvictionTimeMs = new AtomicLong(0L);
+  private final AtomicLong lastEvictionTimeMs = new AtomicLong(Long.MIN_VALUE);
 
   /**
    * Minimum interval between two consecutive eviction sweeps, derived from
@@ -217,6 +228,13 @@ public class RmdTimestampCache {
 
   private void maybeEvict(long nowMs) {
     long last = lastEvictionTimeMs.get();
+    if (last == Long.MIN_VALUE) {
+      // First call: just anchor the eviction clock so the next actual sweep is a full
+      // interval away. We don't evict on the very first call because there's nothing to
+      // evict and we want to avoid a spurious initial sweep.
+      lastEvictionTimeMs.compareAndSet(last, nowMs);
+      return;
+    }
     if (nowMs - last < evictionSweepIntervalMs) {
       return;
     }

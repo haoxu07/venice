@@ -97,21 +97,27 @@ public class RmdTimestampCacheTest {
    * Branch B.2.a: bloom says "maybe in DB" for a key NOT in cache, but the new ts is strictly
    * greater than the high-watermark, so new wins without an RMD lookup.
    *
-   * <p>To reach this branch we need to force-poison the bloom filter for a key that is not
-   * in the cache. The simplest way is to insert-then-evict: the bloom filter keeps the
-   * "maybe in DB" bit even after the cache entry is gone.</p>
+   * <p>The cache's watermark is initialized to {@link Long#MAX_VALUE} so that B.2.a is safe
+   * in the presence of pre-existing DB records that the cache never observed. For this test
+   * we simulate the "cache has learned the upper bound" steady state by lowering the
+   * watermark via {@link RmdTimestampCache#setHighestTsInDbButNotInCacheForTest(long)}.</p>
    */
   @Test
   public void branchB2a_aboveHighWatermark_newWinsWithoutLookup() {
     RmdTimestampCache cache = newCache();
     long keyHash = 42L;
 
-    // 1. Insert then force evict -> bloom bit persists, cache entry gone,
-    //    high-watermark gets raised to the evicted timestamp.
+    // Force-poison the bloom filter for keyHash=42 (so bloom says "maybe") without leaving
+    // a live cache entry for it. We do this by inserting a different key that happens to
+    // hash into the same bloom bits — easiest via direct bloom manipulation.
+    // Simpler: insert then evict to retain the bloom bit. After that, explicitly set the
+    // watermark to a concrete low value so B.2.a can fire.
     cache.decideAndUpdate(keyHash, 1000L, NOW_MS);
-    cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS); // force all entries to expire
+    cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS); // drop the cache entry but keep bloom
     assertEquals(cache.size(), 0);
-    assertEquals(cache.getHighestTsInDbButNotInCache(), 1000L);
+
+    // Simulate the "cache has learned an upper bound on absent-DB-keys' timestamps" state.
+    cache.setHighestTsInDbButNotInCacheForTest(1000L);
 
     // 2. Now decide for same key with a NEW ts strictly greater than the watermark.
     //    Bloom says "maybe", key not in cache, ts > watermark -> B.2.a.
@@ -136,10 +142,13 @@ public class RmdTimestampCacheTest {
       long kh = 10000L + i;
       cache.decideAndUpdate(kh, 5000L + i, NOW_MS);
     }
-    // Force-evict all: raises the watermark and leaves bloom bits set.
+    // Force-evict all: the bloom bits persist so keys will probe as "maybe in DB".
     cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS);
     assertEquals(cache.size(), 0);
-    assertTrue(cache.getHighestTsInDbButNotInCache() >= 5000L);
+
+    // Watermark initializes to Long.MAX_VALUE for correctness under pre-existing DB data.
+    // For this test we want B.2.b to fire, so we need incomingTs <= watermark. Since
+    // watermark = MAX_VALUE, any finite incomingTs is <= watermark automatically.
 
     // Now every subsequent query for one of those keys with ts <= watermark must
     // return FALLBACK_TO_RMD_LOOKUP. This is the batch from criterion 5(a).
@@ -147,9 +156,7 @@ public class RmdTimestampCacheTest {
     int fallbackCount = 0;
     for (int i = 0; i < seedCount; i++) {
       long kh = 10000L + i;
-      // Pick a timestamp strictly LESS than the known watermark so we cannot short-circuit.
-      long wm = cache.getHighestTsInDbButNotInCache();
-      long incomingTs = wm - 1L;
+      long incomingTs = 4000L + i;
       RmdTimestampCache.Decision d = cache.decideAndUpdate(kh, incomingTs, nowForQueries);
       assertEquals(
           d,
@@ -164,43 +171,51 @@ public class RmdTimestampCacheTest {
   }
 
   /**
-   * Eviction invariant: after evicting entries whose ts < (now - T), the watermark must be
-   * raised to max(existing, evicted.ts). Every key in the cache has ts &ge; (now - T), and
-   * every evicted key has ts &lt; watermark.
+   * Eviction invariant: after evicting entries whose ts &lt; (now - T), the watermark is
+   * raised via {@code accumulateAndGet(evicted.ts, Math::max)}. Because the initial value
+   * of the watermark is {@link Long#MAX_VALUE} (safety default for pre-existing DB data),
+   * raises to smaller evicted values are no-ops — the invariant "any record in DB absent
+   * from cache has ts &le; watermark" is preserved. We verify that evictions do reduce the
+   * cache size and do NOT lower the watermark below its current value.
    */
   @Test
-  public void evictionRaisesHighWatermark() {
+  public void evictionPreservesInvariantAndReducesSize() {
     RmdTimestampCache cache = newCache();
-    // Insert with spread timestamps: some will be evicted at a chosen now.
     for (int i = 0; i < 50; i++) {
       cache.decideAndUpdate(100L + i, 1_000L + i * 10L, NOW_MS);
     }
-    // Raise now so that timestamps below (now - T) evict. Pick now such that entries with
-    // ts <= 1_200 are evicted (ts 1_000 through 1_200 inclusive: 21 entries).
     long now = 1_200L + TIME_WINDOW_MS + 1L;
     long preWm = cache.getHighestTsInDbButNotInCache();
     cache.evictStaleEntries(now);
     long postWm = cache.getHighestTsInDbButNotInCache();
 
-    // Watermark must be >= preWm and >= 1_200 (largest evicted ts).
+    // Watermark never decreases (accumulateAndGet with max).
     assertTrue(postWm >= preWm);
-    assertTrue(postWm >= 1_200L, "Expected watermark to be raised to an evicted ts; got " + postWm);
-
-    // Every survivor's ts must satisfy ts >= (now - T) i.e. ts >= 1_201.
-    long cutoff = now - TIME_WINDOW_MS;
-    long minSurvivor = Long.MAX_VALUE;
-    for (long ts = 1_000L; ts < 1_000L + 50 * 10L; ts += 10L) {
-      long kh = 100L + (ts - 1_000L) / 10L;
-      // Re-query: if the key is still in cache, its ts >= cutoff.
-      RmdTimestampCache.Decision d = cache.decideAndUpdate(kh, ts - 1, now);
-      // We're feeding the original ts minus 1, so if the key was NOT evicted, cache hit
-      // with cached.ts > new.ts => CACHE_HIT_NEW_LOSES.
-      // If the key WAS evicted, ts-1 <= watermark -> FALLBACK_TO_RMD_LOOKUP.
-      // This is an indirect verification — we're not asserting on minSurvivor but the
-      // assertion below is enough.
-    }
-    // Assert the size is smaller.
+    // Size must shrink.
     assertTrue(cache.size() < 50);
+  }
+
+  /**
+   * With the watermark initialized to {@link Long#MAX_VALUE}, branch B.2.a is unreachable
+   * in the absence of an explicit caller-driven override
+   * ({@link RmdTimestampCache#setHighestTsInDbButNotInCacheForTest(long)}) — a crucial
+   * safety property to ensure the cache never incorrectly wins DCR for a key whose real
+   * timestamp in DB is unknown.
+   */
+  @Test
+  public void b2a_unreachable_whenWatermarkStaysAtMaxValue() {
+    RmdTimestampCache cache = newCache();
+    long keyHash = 777L;
+    cache.decideAndUpdate(keyHash, 1_000L, NOW_MS);
+    cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS);
+    assertEquals(cache.size(), 0);
+    // Watermark still MAX_VALUE (can only rise, never above MAX_VALUE).
+    assertEquals(cache.getHighestTsInDbButNotInCache(), Long.MAX_VALUE);
+
+    // Any finite incoming ts is < MAX_VALUE, so B.2.a cannot fire. We fall back.
+    RmdTimestampCache.Decision d =
+        cache.decideAndUpdate(keyHash, Long.MAX_VALUE - 1L, NOW_MS + 2 * TIME_WINDOW_MS);
+    assertEquals(d, RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP);
   }
 
   /**
