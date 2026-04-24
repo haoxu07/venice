@@ -3,6 +3,7 @@ package com.linkedin.venice.benchmark;
 import static com.linkedin.venice.ConfigKeys.DEFAULT_MAX_NUMBER_OF_PARTITIONS;
 import static com.linkedin.venice.ConfigKeys.NATIVE_REPLICATION_SOURCE_FABRIC;
 import static com.linkedin.venice.ConfigKeys.PARENT_KAFKA_CLUSTER_FABRIC_LIST;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED;
 import static com.linkedin.venice.integration.utils.VeniceClusterWrapperConstants.DEFAULT_PARENT_DATA_CENTER_REGION_NAME;
 import static com.linkedin.venice.utils.IntegrationTestPushUtils.sendStreamingRecord;
 import static com.linkedin.venice.utils.IntegrationTestPushUtils.sendStreamingRecordWithoutFlush;
@@ -95,7 +96,7 @@ public class ActiveActiveIngestionBenchmark {
   // Each PARTIAL_UPDATE pool key is pre-populated with a tags map of this size.
   // AddToMap updates during the benchmark only overwrite values for map keys in
   // [0, TAGS_MAP_SIZE), so the map size stays constant instead of growing.
-  private static final int TAGS_MAP_SIZE = 10;
+  private static final int TAGS_MAP_SIZE = 100;
   private static final String KEY_SCHEMA_STR = "\"string\"";
 
   // Schema with regular fields + map field for collection merge benchmarking
@@ -128,6 +129,7 @@ public class ActiveActiveIngestionBenchmark {
   private VeniceSystemProducer producerDC0;
   private VeniceSystemProducer producerDC1;
   private AvroGenericStoreClient<String, GenericRecord> readClient;
+  private AvroGenericStoreClient<String, GenericRecord> readClientDC1;
   private String storeName;
   private Schema valueSchema;
   private Schema writeComputeSchema;
@@ -147,12 +149,18 @@ public class ActiveActiveIngestionBenchmark {
 
     // Build multi-region cluster: 2 regions, 1 cluster each, 1 server per region
     Properties parentControllerProps = new Properties();
-    parentControllerProps.put(DEFAULT_MAX_NUMBER_OF_PARTITIONS, "3");
+    parentControllerProps.put(DEFAULT_MAX_NUMBER_OF_PARTITIONS, "10");
     parentControllerProps.put(NATIVE_REPLICATION_SOURCE_FABRIC, "dc-0");
     parentControllerProps.put(PARENT_KAFKA_CLUSTER_FABRIC_LIST, DEFAULT_PARENT_DATA_CENTER_REGION_NAME);
 
     Properties childControllerProps = new Properties();
-    childControllerProps.put(DEFAULT_MAX_NUMBER_OF_PARTITIONS, "3");
+    childControllerProps.put(DEFAULT_MAX_NUMBER_OF_PARTITIONS, "10");
+
+    // Enable AA/WC parallel processing on the server: incoming merge work for a single
+    // partition's poll batch fans out across a thread pool, using per-key locks so
+    // same-key updates still serialize. Targets exactly our workload (AA + write-compute).
+    Properties serverProps = new Properties();
+    serverProps.setProperty(SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED, "true");
 
     VeniceMultiRegionClusterCreateOptions options =
         new VeniceMultiRegionClusterCreateOptions.Builder().numberOfRegions(2)
@@ -164,6 +172,7 @@ public class ActiveActiveIngestionBenchmark {
             .replicationFactor(1)
             .parentControllerProperties(parentControllerProps)
             .childControllerProperties(childControllerProps)
+            .serverProperties(serverProps)
             .build();
 
     multiRegionCluster = ServiceFactory.getVeniceTwoLayerMultiRegionMultiClusterWrapper(options);
@@ -187,7 +196,7 @@ public class ActiveActiveIngestionBenchmark {
         .setHybridRewindSeconds(25L)
         .setHybridOffsetLagThreshold(1L)
         .setWriteComputationEnabled(true)
-        .setPartitionCount(1);
+        .setPartitionCount(2);
     assertCommand(parentControllerClient.updateStore(storeName, storeParams));
 
     // Empty push to create version 1
@@ -214,10 +223,15 @@ public class ActiveActiveIngestionBenchmark {
     producerDC0 = IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 0, storeName);
     producerDC1 = IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 1, storeName);
 
-    // Create a read client to verify data landed (used in warmup verification)
+    // Create read clients for both DCs. DC0 client is used by the per-iteration drain check;
+    // DC1 client is used at trial teardown to verify cross-region drain in the other direction
+    // before running the VT consistency check.
     String dc0RouterUrl = childDatacenters.get(0).getClusters().get(CLUSTER_NAME).getRandomRouterURL();
     readClient = ClientFactory
         .getAndStartGenericAvroClient(ClientConfig.defaultGenericClientConfig(storeName).setVeniceURL(dc0RouterUrl));
+    String dc1RouterUrl = childDatacenters.get(1).getClusters().get(CLUSTER_NAME).getRandomRouterURL();
+    readClientDC1 = ClientFactory
+        .getAndStartGenericAvroClient(ClientConfig.defaultGenericClientConfig(storeName).setVeniceURL(dc1RouterUrl));
 
     // Verify the pipeline is working with a canary record
     GenericRecord canary = new GenericData.Record(valueSchema);
@@ -245,8 +259,8 @@ public class ActiveActiveIngestionBenchmark {
 
   private void prePopulatePartialUpdatePool() {
     System.err.println(
-        "[ActiveActiveIngestionBenchmark] Pre-populating " + PARTIAL_UPDATE_KEY_POOL_SIZE
-            + " pool keys with " + TAGS_MAP_SIZE + "-entry tags map...");
+        "[ActiveActiveIngestionBenchmark] Pre-populating " + PARTIAL_UPDATE_KEY_POOL_SIZE + " pool keys with "
+            + TAGS_MAP_SIZE + "-entry tags map...");
     for (int poolIdx = 0; poolIdx < PARTIAL_UPDATE_KEY_POOL_SIZE; poolIdx++) {
       String key = "pu-pool-" + poolIdx;
       GenericRecord rec = new GenericData.Record(valueSchema);
@@ -261,12 +275,14 @@ public class ActiveActiveIngestionBenchmark {
       sendStreamingRecordWithoutFlush(producerDC0, storeName, key, rec);
     }
     producerDC0.flush(storeName);
-    // Wait for the last pool key to be visible so the benchmark starts from a fully
-    // populated state.
-    String lastPoolKey = "pu-pool-" + (PARTIAL_UPDATE_KEY_POOL_SIZE - 1);
+    // Wait for a spread of pool keys to be visible so the benchmark starts from a fully
+    // populated state across all partitions (pool keys hash to different partitions).
+    int[] checkIndices = { 0, 1234, 2345, 3456, 4567, 5678, 6789, 7890, PARTIAL_UPDATE_KEY_POOL_SIZE - 1 };
     waitForNonDeterministicAssertion(5, TimeUnit.MINUTES, true, () -> {
-      if (readClient.get(lastPoolKey).get() == null) {
-        throw new AssertionError("Pre-population not yet drained");
+      for (int idx: checkIndices) {
+        if (readClient.get("pu-pool-" + idx).get() == null) {
+          throw new AssertionError("Pre-population not yet drained: pu-pool-" + idx);
+        }
       }
     });
     System.err.println("[ActiveActiveIngestionBenchmark] Pre-population complete.");
@@ -274,11 +290,123 @@ public class ActiveActiveIngestionBenchmark {
 
   @TearDown(Level.Trial)
   public void cleanUp() {
+    // For PARTIAL_UPDATE, run a Spark-based VT consistency check across both DCs before
+    // shutting down the cluster. Reports counts of VALUE_MISMATCH and MISSING rows to stderr.
+    if (workloadType == WorkloadType.PARTIAL_UPDATE) {
+      try {
+        runVTConsistencyCheck();
+      } catch (Throwable t) {
+        System.err.println("[VT-CHECK] Failed: " + t);
+        t.printStackTrace(System.err);
+      }
+    }
     Utils.closeQuietlyWithErrorLogged(readClient);
+    Utils.closeQuietlyWithErrorLogged(readClientDC1);
     Utils.closeQuietlyWithErrorLogged(producerDC0);
     Utils.closeQuietlyWithErrorLogged(producerDC1);
     Utils.closeQuietlyWithErrorLogged(parentControllerClient);
     Utils.closeQuietlyWithErrorLogged(multiRegionCluster);
+  }
+
+  /**
+   * Run the {@link com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob} over the
+   * benchmark's two DCs' VTs. Before invoking the job, send a final round of sentinels via both
+   * producers and wait for them to be visible on both DC0 and DC1 routers — this ensures both
+   * DCs have drained both RTs and produced complete VTs.
+   *
+   * <p>The job runs Spark in local[*] mode in this JVM. Output is written to a temp directory
+   * and read back to count VALUE_MISMATCH / MISSING rows, which are printed to stderr.
+   */
+  private void runVTConsistencyCheck() throws Exception {
+    // Step 1: send N sentinels via each producer and wait for ALL of them on BOTH routers.
+    final int finalSentinelCount = 20;
+    java.util.List<String> dc0SentinelKeys = new java.util.ArrayList<>(finalSentinelCount);
+    java.util.List<String> dc1SentinelKeys = new java.util.ArrayList<>(finalSentinelCount);
+    for (int s = 0; s < finalSentinelCount; s++) {
+      long seq = keyCounter.getAndIncrement();
+      String dc0Key = "pu-final-dc0-" + seq;
+      String dc1Key = "pu-final-dc1-" + seq;
+      UpdateBuilder ubA = new UpdateBuilderImpl(writeComputeSchema);
+      ubA.setNewFieldValue("name", "final-dc0-" + seq);
+      sendStreamingRecordWithoutFlush(producerDC0, storeName, dc0Key, ubA.build());
+      dc0SentinelKeys.add(dc0Key);
+      UpdateBuilder ubB = new UpdateBuilderImpl(writeComputeSchema);
+      ubB.setNewFieldValue("name", "final-dc1-" + seq);
+      sendStreamingRecordWithoutFlush(producerDC1, storeName, dc1Key, ubB.build());
+      dc1SentinelKeys.add(dc1Key);
+    }
+    producerDC0.flush(storeName);
+    producerDC1.flush(storeName);
+
+    System.err.println("[VT-CHECK] Waiting for both-DC drain via dual-router sentinel verification...");
+    waitForNonDeterministicAssertion(10, TimeUnit.MINUTES, true, () -> {
+      for (String k: dc0SentinelKeys) {
+        if (readClient.get(k).get() == null) {
+          throw new AssertionError("DC0-produced sentinel not visible on DC0 router: " + k);
+        }
+        if (readClientDC1.get(k).get() == null) {
+          throw new AssertionError("DC0-produced sentinel not visible on DC1 router: " + k);
+        }
+      }
+      for (String k: dc1SentinelKeys) {
+        if (readClient.get(k).get() == null) {
+          throw new AssertionError("DC1-produced sentinel not visible on DC0 router: " + k);
+        }
+        if (readClientDC1.get(k).get() == null) {
+          throw new AssertionError("DC1-produced sentinel not visible on DC1 router: " + k);
+        }
+      }
+    });
+    System.err.println("[VT-CHECK] Drain confirmed on both DCs. Running consistency check...");
+
+    // Step 2: invoke the Spark job.
+    String versionTopic = com.linkedin.venice.meta.Version.composeKafkaTopic(storeName, 1);
+    String dc0Broker = childDatacenters.get(0).getPubSubBrokerWrapper().getAddress();
+    String dc1Broker = childDatacenters.get(1).getPubSubBrokerWrapper().getAddress();
+    java.io.File tempRoot = java.nio.file.Files.createTempDirectory("vt-consistency-bench").toFile();
+    java.io.File outputDir = new java.io.File(tempRoot, "output");
+    try {
+      Properties jobProps = new Properties();
+      jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.DC0_BROKER_URL, dc0Broker);
+      jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.DC1_BROKER_URL, dc1Broker);
+      jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.VERSION_TOPIC, versionTopic);
+      jobProps.setProperty(
+          com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.OUTPUT_PATH,
+          outputDir.getAbsolutePath());
+      jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.NUMBER_OF_REGIONS, "2");
+      com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.run(jobProps);
+
+      // Step 3: read the output and report.
+      org.apache.spark.sql.SparkSession spark = org.apache.spark.sql.SparkSession.builder()
+          .master("local[*]")
+          .appName("AAIngestionBenchmarkVTConsistencyReader")
+          .getOrCreate();
+      try {
+        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> result =
+            spark.read().parquet(outputDir.getAbsolutePath());
+        long mismatches = result.filter("type = 'VALUE_MISMATCH'").count();
+        long missing = result.filter("type = 'MISSING'").count();
+        long errors = result.filter("type = 'ERROR'").count();
+        System.err.println(
+            String.format(
+                "[VT-CHECK] versionTopic=%s mismatches=%d missing=%d errors=%d",
+                versionTopic,
+                mismatches,
+                missing,
+                errors));
+        if (mismatches > 0) {
+          System.err.println("[VT-CHECK] First 5 mismatch rows (forensic context):");
+          result.filter("type = 'VALUE_MISMATCH'")
+              .limit(5)
+              .collectAsList()
+              .forEach(r -> System.err.println("[VT-CHECK]   " + r));
+        }
+      } finally {
+        spark.stop();
+      }
+    } finally {
+      org.apache.commons.io.FileUtils.deleteDirectory(tempRoot);
+    }
   }
 
   /**
@@ -326,14 +454,20 @@ public class ActiveActiveIngestionBenchmark {
    */
   @TearDown(Level.Iteration)
   public void finishIterationAndReportE2E() {
-    String keyToVerify = lastProducedKey;
+    String keysToVerify = lastProducedKey;
     long records = iterationRecordCount.get();
-    if (keyToVerify == null || records == 0) {
+    if (keysToVerify == null || records == 0) {
       return;
     }
+    // The workload may return a comma-separated list of sentinel keys (one per partition
+    // coverage). Wait for ALL of them to be visible so the E2E timestamp reflects the
+    // slowest partition's drain.
+    String[] keys = keysToVerify.split(",");
     waitForNonDeterministicAssertion(10, TimeUnit.MINUTES, true, () -> {
-      if (readClient.get(keyToVerify).get() == null) {
-        throw new AssertionError("Final key not yet ingested: " + keyToVerify);
+      for (String key: keys) {
+        if (readClient.get(key).get() == null) {
+          throw new AssertionError("Sentinel not yet ingested: " + key);
+        }
       }
     });
     long elapsedNanos = System.nanoTime() - iterationStartNanos;
@@ -382,8 +516,8 @@ public class ActiveActiveIngestionBenchmark {
 
   private String runPartialUpdateWorkload() {
     // Bounded key pool + globally-unique sequence ensures:
-    //  - same key is updated many times across invocations (real read-modify-write path)
-    //  - every update carries a unique value (never a duplicate)
+    // - same key is updated many times across invocations (real read-modify-write path)
+    // - every update carries a unique value (never a duplicate)
     for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
       long seq = keyCounter.getAndIncrement();
       String key = "pu-pool-" + (seq % PARTIAL_UPDATE_KEY_POOL_SIZE);
@@ -406,19 +540,27 @@ public class ActiveActiveIngestionBenchmark {
       sendStreamingRecordWithoutFlush(producer, storeName, key, ub.build());
     }
 
-    // Sentinel with a unique key (not in the bounded pool). The readable-check on
-    // bounded-pool keys would succeed instantly because they've been populated earlier;
-    // the sentinel is a fresh key whose first-ever visibility proves the RT has drained.
-    // Sent via DC1 so that visibility on DC0 also confirms cross-region replication caught up.
-    long sentinelSeq = keyCounter.getAndIncrement();
-    String sentinelKey = "pu-sentinel-" + sentinelSeq;
-    UpdateBuilder sentinelUb = new UpdateBuilderImpl(writeComputeSchema);
-    sentinelUb.setNewFieldValue("name", "sentinel-" + sentinelSeq);
-    sendStreamingRecordWithoutFlush(producerDC1, storeName, sentinelKey, sentinelUb.build());
+    // Sentinels: N fresh unique keys distributed across partitions (by hash). Visibility
+    // of ALL N on DC0 proves that every partition a sentinel landed on has drained. With
+    // 10 partitions and ~20 sentinels, we cover every partition with very high probability.
+    // Sent via DC1 so visibility on DC0 also confirms cross-region replication caught up.
+    final int sentinelCount = 20;
+    StringBuilder sentinelKeys = new StringBuilder();
+    for (int s = 0; s < sentinelCount; s++) {
+      long sentinelSeq = keyCounter.getAndIncrement();
+      String sentinelKey = "pu-sentinel-" + sentinelSeq;
+      UpdateBuilder sentinelUb = new UpdateBuilderImpl(writeComputeSchema);
+      sentinelUb.setNewFieldValue("name", "sentinel-" + sentinelSeq);
+      sendStreamingRecordWithoutFlush(producerDC1, storeName, sentinelKey, sentinelUb.build());
+      if (s > 0) {
+        sentinelKeys.append(',');
+      }
+      sentinelKeys.append(sentinelKey);
+    }
 
     producerDC0.flush(storeName);
     producerDC1.flush(storeName);
-    return sentinelKey;
+    return sentinelKeys.toString();
   }
 
   private String runMixedWorkload() {

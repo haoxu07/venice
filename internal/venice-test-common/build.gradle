@@ -28,6 +28,40 @@ jmh {
 
 jmhJar {
   zip64 = true
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  // Merge META-INF/services/* files from all dependency jars so Spark's SPI loader
+  // (and any other ServiceLoader-based discovery) sees ALL providers, not just the last
+  // one written. Without this, e.g. Spark's Parquet data source is dropped in favor of
+  // the Avro one and DataFrameWriter.parquet() fails at runtime.
+  doFirst {
+    def serviceLines = [:]
+    configurations.jmhRuntimeClasspath.each { jarFile ->
+      if (jarFile.isFile() && jarFile.name.endsWith('.jar')) {
+        try {
+          new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+            zip.entries().each { entry ->
+              if (entry.name.startsWith('META-INF/services/') && !entry.isDirectory()) {
+                def content = zip.getInputStream(entry).text
+                serviceLines.computeIfAbsent(entry.name, { new LinkedHashSet<String>() })
+                serviceLines[entry.name].addAll(
+                  content.readLines().findAll { !it.trim().isEmpty() && !it.trim().startsWith('#') }
+                )
+              }
+            }
+          }
+        } catch (Exception e) { /* skip non-zip files */ }
+      }
+    }
+    def mergedDir = file("$buildDir/jmh-merged-services")
+    mergedDir.deleteDir()
+    mergedDir.mkdirs()
+    serviceLines.each { name, lines ->
+      def out = new File(mergedDir, name)
+      out.parentFile.mkdirs()
+      out.text = lines.join('\n') + '\n'
+    }
+    from(mergedDir)
+  }
 }
 
 configurations {
@@ -135,6 +169,9 @@ dependencies {
 
   jmhAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:' + jmh.jmhVersion.get()
   jmhImplementation project(path: ':internal:venice-test-common', configuration: 'integrationTestUtils')
+  // For VTConsistencyCheckerJob — used by ActiveActiveIngestionBenchmark to verify cross-region
+  // VT consistency at end of trial.
+  jmhImplementation project(':clients:venice-push-job')
 }
 
 def integrationTestConfigs = {
