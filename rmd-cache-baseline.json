@@ -1,0 +1,55 @@
+{
+  "baseline_git_sha": "c2477d40792d426ad2813c9f6caaf46e7676ea75",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "run_date_utc": "2026-04-24",
+  "jvm": {
+    "path": "/export/apps/jdk/JDK-17_0_5-msft",
+    "version": "17.0.5+8-LTS",
+    "fork_heap": "-Xms32G -Xmx32G",
+    "runner_heap": "-Xms2G -Xmx4G"
+  },
+  "jmh": {
+    "version": "1.35",
+    "fork": 1,
+    "warmup_iterations": 2,
+    "warmup_time_s": 20,
+    "measurement_iterations": 2,
+    "measurement_time_s": 20,
+    "mode": "Throughput",
+    "ops_per_invocation": 1000,
+    "profilers": ["gc"]
+  },
+  "workload": {
+    "type": "PUT",
+    "num_records_per_invocation": 1000,
+    "put_key_pool_size": 10000,
+    "partition_count": 2,
+    "regions": 2,
+    "server_aa_wc_workload_parallel_processing_enabled": true
+  },
+  "e2e_throughput_ops_per_sec": {
+    "warmup": [89288.08, 90216.23],
+    "measurement": [84360.60, 100612.15],
+    "measurement_median": 92486.375,
+    "measurement_mean": 92486.375,
+    "unit": "ops/s",
+    "notes": "E2E = records produced / (iteration start -> all sentinel keys visible via DC0 router). Single canonical run per criterion 1."
+  },
+  "jmh_internal_throughput_ops_per_sec": {
+    "score": 127141.404,
+    "unit": "ops/s",
+    "notes": "JMH's own throughput, excludes iteration teardown drain."
+  },
+  "gc": {
+    "alloc_rate_mb_per_sec": 3044.128,
+    "alloc_rate_norm_bytes_per_op": 39360.375,
+    "g1_eden_churn_mb_per_sec": 4713.110,
+    "g1_eden_churn_norm_bytes_per_op": 64728.251,
+    "g1_survivor_churn_mb_per_sec": 0.162,
+    "gc_count": 16.000,
+    "gc_time_ms": 103.000
+  },
+  "total_run_time_s": 221,
+  "log_file": "/tmp/aa-bench-put-baseline-canonical.log",
+  "canonical_command": "/export/apps/jdk/JDK-17_0_5-msft/bin/java --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Xms2G -Xmx4G -jar internal/venice-test-common/build/libs/venice-test-common-jmh.jar ActiveActiveIngestionBenchmark -p workloadType=PUT -wi 2 -w 20s -i 2 -r 20s -f 1 -jvmArgs \"-Xms32G -Xmx32G\" -prof gc"
+}

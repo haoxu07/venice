@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -266,7 +267,6 @@ public class RmdTimestampCacheTest {
     CountDownLatch done = new CountDownLatch(threadCount);
 
     for (int t = 0; t < threadCount; t++) {
-      final int threadIdx = t;
       exec.submit(() -> {
         try {
           start.await();
@@ -274,7 +274,7 @@ public class RmdTimestampCacheTest {
           Thread.currentThread().interrupt();
           return;
         }
-        Random rng = new Random(System.nanoTime() + threadIdx);
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
         for (int i = 0; i < perThread; i++) {
           long ts = Math.abs(rng.nextLong() % 1_000_000L);
           cache.decideAndUpdate(keyHash, ts, NOW_MS);

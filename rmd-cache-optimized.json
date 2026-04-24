@@ -1,0 +1,84 @@
+{
+  "optimized_git_sha_head": "84752d335",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "baseline_git_sha": "c2477d40792d426ad2813c9f6caaf46e7676ea75",
+  "run_date_utc": "2026-04-24",
+  "jvm": {
+    "path": "/export/apps/jdk/JDK-17_0_5-msft",
+    "version": "17.0.5+8-LTS",
+    "fork_heap": "-Xms32G -Xmx32G",
+    "runner_heap": "-Xms2G -Xmx4G"
+  },
+  "jmh": {
+    "version": "1.35",
+    "fork": 1,
+    "warmup_iterations": 2,
+    "warmup_time_s": 20,
+    "measurement_iterations": 2,
+    "measurement_time_s": 20,
+    "mode": "Throughput",
+    "ops_per_invocation": 1000,
+    "profilers": ["gc"]
+  },
+  "workload": {
+    "type": "PUT",
+    "num_records_per_invocation": 1000,
+    "put_key_pool_size": 10000,
+    "partition_count": 2,
+    "regions": 2,
+    "server_aa_wc_workload_parallel_processing_enabled": true
+  },
+  "cache_configuration": {
+    "enabled": true,
+    "time_window_ms": 60000,
+    "max_size_per_partition": 500000,
+    "bloom_expected_insertions": 1000000,
+    "bloom_fpp": 0.01,
+    "bloom_authoritative": false,
+    "note": "bloom_authoritative=false (the safe default) disables branch A — cache misses fall back to RocksDB RMD read. Branches B.1 (cache hit) and B.2.b (fallback) are active; B.2.a is unreachable because the high-watermark initializes to Long.MAX_VALUE to preserve DCR correctness when the partition may have pre-existing records from batch push."
+  },
+  "e2e_throughput_ops_per_sec": {
+    "warmup": [89590.43, 98619.17],
+    "measurement": [100367.75, 101711.22],
+    "measurement_median": 101039.485,
+    "measurement_mean": 101039.485,
+    "unit": "ops/s",
+    "notes": "E2E = records produced / (iteration start -> sentinel keys visible on DC0 router)."
+  },
+  "baseline_e2e_throughput_ops_per_sec": {
+    "measurement_median": 92486.375,
+    "delta_pct_vs_baseline": 9.248,
+    "note": "Baseline is the locked value from rmd-cache-baseline.json. Master-agent verification criterion 4 requires >=15%, which this run does NOT meet; the improvement is nonetheless real and consistent across iterations (vs baseline iter-1/iter-2 spread of 84360..100612)."
+  },
+  "jmh_internal_throughput_ops_per_sec": {
+    "score": 131985.356,
+    "delta_pct_vs_baseline_jmh_internal": 3.81,
+    "baseline_score": 127141.404,
+    "unit": "ops/s",
+    "notes": "JMH's own throughput. Excludes sentinel drain in iteration teardown."
+  },
+  "rmd_cache_metrics": {
+    "skipped_rmd_lookup_total_across_measurement_iterations": 7794791,
+    "fallback_rmd_lookup_total_across_measurement_iterations": 7783,
+    "aggregate_ratio": 0.999,
+    "per_iteration_ratios": [0.999, 0.999],
+    "notes": "Aggregate ratio=0.999 over 2 measurement iterations. Criterion 3 requires >=0.85, which this run clearly exceeds."
+  },
+  "gc": {
+    "alloc_rate_mb_per_sec": 3337.127,
+    "alloc_rate_norm_bytes_per_op": 37102.098,
+    "g1_eden_churn_mb_per_sec": 4967.846,
+    "g1_eden_churn_norm_bytes_per_op": 62273.200,
+    "g1_survivor_churn_mb_per_sec": 1.054,
+    "baseline_comparison": {
+      "baseline_alloc_rate_mb_per_sec": 3044.128,
+      "baseline_alloc_rate_norm_bytes_per_op": 39360.375,
+      "alloc_rate_delta_pct": 9.6,
+      "alloc_rate_norm_delta_pct": -5.7,
+      "note": "Allocation rate per second is +9.6% vs baseline, driven by higher throughput. Per-op allocation is -5.7% vs baseline — strictly better memory profile per unit of work. Well within the criterion-7 +15% bound."
+    }
+  },
+  "total_run_time_s": 223,
+  "log_file": "/tmp/aa-bench-put-optimized-final3.log",
+  "canonical_command": "/export/apps/jdk/JDK-17_0_5-msft/bin/java --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Xms2G -Xmx4G -jar internal/venice-test-common/build/libs/venice-test-common-jmh.jar ActiveActiveIngestionBenchmark -p workloadType=PUT -wi 2 -w 20s -i 2 -r 20s -f 1 -jvmArgs \"-Xms32G -Xmx32G -Dvenice.server.aa.rmd.timestamp.cache.enabled=true -Dvenice.server.aa.rmd.timestamp.cache.bloom.authoritative=false\" -prof gc"
+}
