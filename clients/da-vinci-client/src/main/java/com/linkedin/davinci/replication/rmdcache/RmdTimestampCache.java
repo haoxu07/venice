@@ -175,7 +175,19 @@ public class RmdTimestampCache {
     maybeEvict(nowMs);
 
     // --- Branch A: bloom filter says DEFINITELY NOT IN DB ---
-    if (!bloomFilter.mightContain(keyHash)) {
+    // Only safe when the bloom filter is AUTHORITATIVE for DB contents — i.e. it has
+    // observed every write ever made to this partition's DB. In Venice the partition
+    // may contain records from batch push / backup restore / data recovery that the
+    // cache never observed; for those keys the bloom would incorrectly say "not in DB"
+    // while in fact a record WITH A LATER TIMESTAMP is in DB, causing branch A to
+    // erroneously win DCR and corrupt data.
+    //
+    // We therefore only fire branch A after the caller has explicitly marked the
+    // bloom filter as authoritative via {@link #setBloomFilterAuthoritative(boolean)}.
+    // By default the flag is false — equivalent to always skipping branch A.
+    // Note this means a true "new key" still pays one RocksDB RMD read on first
+    // sighting; future writes to the same key hit branch B.1.
+    if (bloomFilterAuthoritative && !bloomFilter.mightContain(keyHash)) {
       keyHashToTimestamp.putIfGreaterOrAbsent(mappedKey, newTimestamp);
       bloomFilter.put(keyHash);
       skippedRmdLookupCount.incrementAndGet();
@@ -210,6 +222,30 @@ public class RmdTimestampCache {
     // --- Branch B.2.b: fall back to RMD lookup ---
     fallbackRmdLookupCount.incrementAndGet();
     return Decision.FALLBACK_TO_RMD_LOOKUP;
+  }
+
+  /**
+   * Whether the bloom filter has been fully warmed with all keys present in the partition's
+   * DB. When false (the default), branch A is effectively disabled to preserve DCR
+   * correctness in the presence of pre-existing DB records that the cache never observed
+   * (batch push, backup restore, data recovery). When true, branch A fires whenever the
+   * bloom reports "definitely not in DB".
+   */
+  private volatile boolean bloomFilterAuthoritative = false;
+
+  /**
+   * Opt-in switch to enable branch A. Callers must only flip this to {@code true} after
+   * populating the bloom filter with every key present in the partition's DB (either via
+   * a full-partition scan at startup or by asserting that the partition is freshly
+   * created and empty).
+   */
+  public void setBloomFilterAuthoritative(boolean authoritative) {
+    this.bloomFilterAuthoritative = authoritative;
+  }
+
+  /** For tests and diagnostics. */
+  public boolean isBloomFilterAuthoritative() {
+    return bloomFilterAuthoritative;
   }
 
   /**

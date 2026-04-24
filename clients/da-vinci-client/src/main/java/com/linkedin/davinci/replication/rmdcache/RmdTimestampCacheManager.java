@@ -28,6 +28,7 @@ public class RmdTimestampCacheManager {
   private final double bloomFpp;
   private final long timeWindowMs;
   private final int maxCacheSize;
+  private final boolean bloomAuthoritative;
 
   private final ConcurrentHashMap<Integer, RmdTimestampCache> perPartitionCache = new ConcurrentHashMap<>();
 
@@ -35,11 +36,13 @@ public class RmdTimestampCacheManager {
       long timeWindowMs,
       int maxCacheSize,
       long bloomExpectedInsertions,
-      double bloomFpp) {
+      double bloomFpp,
+      boolean bloomAuthoritative) {
     this.timeWindowMs = timeWindowMs;
     this.maxCacheSize = maxCacheSize;
     this.bloomExpectedInsertions = bloomExpectedInsertions;
     this.bloomFpp = bloomFpp;
+    this.bloomAuthoritative = bloomAuthoritative;
   }
 
   /**
@@ -48,11 +51,15 @@ public class RmdTimestampCacheManager {
   public RmdTimestampCache getOrCreate(int partitionId) {
     return perPartitionCache.computeIfAbsent(
         partitionId,
-        id -> new RmdTimestampCache(
-            id,
-            timeWindowMs,
-            maxCacheSize,
-            new PartitionBloomFilter(bloomExpectedInsertions, bloomFpp)));
+        id -> {
+          RmdTimestampCache cache = new RmdTimestampCache(
+              id,
+              timeWindowMs,
+              maxCacheSize,
+              new PartitionBloomFilter(bloomExpectedInsertions, bloomFpp));
+          cache.setBloomFilterAuthoritative(bloomAuthoritative);
+          return cache;
+        });
   }
 
   public Collection<RmdTimestampCache> getAllPartitionCaches() {

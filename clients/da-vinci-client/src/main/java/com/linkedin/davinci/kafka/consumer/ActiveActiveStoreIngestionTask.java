@@ -184,15 +184,17 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
           serverConfig.getAaRmdTimestampCacheTimeWindowMs(),
           serverConfig.getAaRmdTimestampCacheMaxSizePerPartition(),
           serverConfig.getAaRmdTimestampCacheBloomExpectedInsertions(),
-          serverConfig.getAaRmdTimestampCacheBloomFpp());
+          serverConfig.getAaRmdTimestampCacheBloomFpp(),
+          serverConfig.isAaRmdTimestampCacheBloomAuthoritative());
       this.rmdTimestampCacheManager.registerWithGlobalReporter();
       LOGGER.info(
-          "RMD lookup timestamp cache ENABLED for store version: {} (T={} ms, maxSize={}, bloomExpected={}, bloomFpp={})",
+          "RMD lookup timestamp cache ENABLED for store version: {} (T={} ms, maxSize={}, bloomExpected={}, bloomFpp={}, bloomAuthoritative={})",
           getKafkaVersionTopic(),
           serverConfig.getAaRmdTimestampCacheTimeWindowMs(),
           serverConfig.getAaRmdTimestampCacheMaxSizePerPartition(),
           serverConfig.getAaRmdTimestampCacheBloomExpectedInsertions(),
-          serverConfig.getAaRmdTimestampCacheBloomFpp());
+          serverConfig.getAaRmdTimestampCacheBloomFpp(),
+          serverConfig.isAaRmdTimestampCacheBloomAuthoritative());
     } else {
       this.rmdTimestampCacheManager = null;
     }
