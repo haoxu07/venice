@@ -705,10 +705,12 @@ public class HostLevelIngestionStats extends AbstractVeniceStats {
 
   public void recordIngestionReplicationMetadataCacheHitCount(long currentTimeMs) {
     leaderIngestionReplicationMetadataCacheHitCount.record(1, currentTimeMs);
+    TransientRecordCacheDiagnosticReporter.recordHit();
   }
 
   public void recordIngestionReplicationMetadataLookupCount(long currentTimeMs) {
     leaderIngestionReplicationMetadataLookupCount.record(1, currentTimeMs);
+    TransientRecordCacheDiagnosticReporter.recordLookup();
   }
 
   public void recordUpdateIgnoredDCR() {
