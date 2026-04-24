@@ -66,6 +66,7 @@ import static com.linkedin.venice.ConfigKeys.PUBSUB_PRODUCER_TIMESTAMP_FALLBACK_
 import static com.linkedin.venice.ConfigKeys.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_CONSUMER_POOL_SIZE;
 import static com.linkedin.venice.ConfigKeys.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_THREAD_POOL_SIZE;
 import static com.linkedin.venice.ConfigKeys.ROUTER_PRINCIPAL_NAME;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED;
@@ -679,6 +680,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final int aaRmdTimestampCacheMaxSizePerPartition;
   private final long aaRmdTimestampCacheBloomExpectedInsertions;
   private final double aaRmdTimestampCacheBloomFpp;
+  private final boolean aaRmdTimestampCacheBloomAuthoritative;
   private final boolean crossTpParallelProcessingEnabled;
   private final int crossTpParallelProcessingThreadPoolSize;
   private final boolean crossTpParallelProcessingCurrentVersionAAWCLeaderOnly;
@@ -1181,6 +1183,10 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     aaRmdTimestampCacheBloomExpectedInsertions =
         serverProperties.getLong(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS, 1_000_000L);
     aaRmdTimestampCacheBloomFpp = serverProperties.getDouble(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP, 0.01d);
+    boolean defaultBloomAuthoritative = Boolean.parseBoolean(
+        System.getProperty("venice.server.aa.rmd.timestamp.cache.bloom.authoritative", "false"));
+    aaRmdTimestampCacheBloomAuthoritative =
+        serverProperties.getBoolean(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE, defaultBloomAuthoritative);
     crossTpParallelProcessingEnabled = serverProperties.getBoolean(SERVER_CROSS_TP_PARALLEL_PROCESSING_ENABLED, false);
     crossTpParallelProcessingThreadPoolSize =
         serverProperties.getInt(SERVER_CROSS_TP_PARALLEL_PROCESSING_THREAD_POOL_SIZE, 4);
@@ -2122,6 +2128,10 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public double getAaRmdTimestampCacheBloomFpp() {
     return aaRmdTimestampCacheBloomFpp;
+  }
+
+  public boolean isAaRmdTimestampCacheBloomAuthoritative() {
+    return aaRmdTimestampCacheBloomAuthoritative;
   }
 
   public boolean isCrossTpParallelProcessingEnabled() {

@@ -39,10 +39,15 @@ public class RmdTimestampCacheTest {
         new PartitionBloomFilter(BLOOM_EXPECTED, BLOOM_FPP));
   }
 
-  /** Branch A: bloom filter says "definitely not in DB" -> new record wins without RMD read. */
+  /**
+   * Branch A: bloom filter says "definitely not in DB" -&gt; new record wins without RMD read.
+   * Requires the cache to be explicitly told the bloom filter is authoritative (i.e. the
+   * partition was cold-created or every DB key has been pre-populated into the bloom).
+   */
   @Test
   public void branchA_bloomSaysDefinitelyNotInDb_newWinsWithoutLookup() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     long keyHash = 12345L;
     long ts = 1000L;
 
@@ -56,13 +61,33 @@ public class RmdTimestampCacheTest {
     assertEquals(cache.getFallbackRmdLookupCount(), 0L);
   }
 
+  /**
+   * Safety: when bloomFilterAuthoritative=false (default), a brand-new key must NOT hit
+   * branch A — even if the bloom trivially says "definitely not in DB" because it's empty.
+   * The cache must fall back to RMD lookup to avoid incorrectly winning DCR for a key that
+   * could exist in DB from a pre-existing batch push.
+   */
+  @Test
+  public void branchA_disabled_whenBloomNotAuthoritative() {
+    RmdTimestampCache cache = newCache();
+    assertFalse(cache.isBloomFilterAuthoritative());
+    long keyHash = 12345L;
+
+    RmdTimestampCache.Decision d = cache.decideAndUpdate(keyHash, 1000L, NOW_MS);
+
+    assertEquals(d, RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP);
+    assertEquals(cache.getFallbackRmdLookupCount(), 1L);
+    assertEquals(cache.getSkippedRmdLookupCount(), 0L);
+  }
+
   /** Branch B.1 win: second record for same key wins because its timestamp is higher. */
   @Test
   public void branchB1_win_cacheHitAndNewWins() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true); // allow branch A for the initial seed
     long keyHash = 42L;
 
-    // First write: branch A.
+    // First write: branch A (seed the cache).
     cache.decideAndUpdate(keyHash, 1000L, NOW_MS);
     // Second write with higher ts: branch B.1-win.
     RmdTimestampCache.Decision d = cache.decideAndUpdate(keyHash, 2000L, NOW_MS);
@@ -77,6 +102,7 @@ public class RmdTimestampCacheTest {
   @Test
   public void branchB1_lose_cacheHitAndNewLoses() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     long keyHash = 42L;
 
     cache.decideAndUpdate(keyHash, 5000L, NOW_MS);
@@ -105,13 +131,12 @@ public class RmdTimestampCacheTest {
   @Test
   public void branchB2a_aboveHighWatermark_newWinsWithoutLookup() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true); // allow branch A for the seed insert
     long keyHash = 42L;
 
     // Force-poison the bloom filter for keyHash=42 (so bloom says "maybe") without leaving
-    // a live cache entry for it. We do this by inserting a different key that happens to
-    // hash into the same bloom bits — easiest via direct bloom manipulation.
-    // Simpler: insert then evict to retain the bloom bit. After that, explicitly set the
-    // watermark to a concrete low value so B.2.a can fire.
+    // a live cache entry for it. We do this via insert-then-evict: the bloom bit persists
+    // after the cache entry is cleared.
     cache.decideAndUpdate(keyHash, 1000L, NOW_MS);
     cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS); // drop the cache entry but keep bloom
     assertEquals(cache.size(), 0);
@@ -135,6 +160,7 @@ public class RmdTimestampCacheTest {
   @Test
   public void branchB2b_belowOrEqualHighWatermark_fallsBackToRmdLookup() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
 
     // Seed bloom + raise watermark by inserting and evicting many keys.
     final int seedCount = 100;
@@ -181,6 +207,7 @@ public class RmdTimestampCacheTest {
   @Test
   public void evictionPreservesInvariantAndReducesSize() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     for (int i = 0; i < 50; i++) {
       cache.decideAndUpdate(100L + i, 1_000L + i * 10L, NOW_MS);
     }
@@ -205,6 +232,7 @@ public class RmdTimestampCacheTest {
   @Test
   public void b2a_unreachable_whenWatermarkStaysAtMaxValue() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     long keyHash = 777L;
     cache.decideAndUpdate(keyHash, 1_000L, NOW_MS);
     cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS);
@@ -226,6 +254,7 @@ public class RmdTimestampCacheTest {
   @Test(invocationCount = 5)
   public void concurrentWritersOnSameKey_produceMaxTimestamp() throws InterruptedException {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true); // allow branch A for initial seeding
     long keyHash = 99L;
 
     final int threadCount = 16;
@@ -279,6 +308,7 @@ public class RmdTimestampCacheTest {
   @Test
   public void parityWithSerialReference() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     java.util.HashMap<Long, Long> serialRef = new java.util.HashMap<>();
     // Seed bloom for a known set of keys — mirrors the B.2.a/b setup for a realistic scenario.
     Random rng = new Random(0xBADCAFEL);
@@ -336,22 +366,24 @@ public class RmdTimestampCacheTest {
   @Test
   public void allDecisionsMustFallBack_whenKeysAreBelowWatermark() {
     RmdTimestampCache cache = newCache();
+    cache.setBloomFilterAuthoritative(true);
     final int keyCount = 50;
 
-    // Seed + evict: raises watermark to ~(1000 + keyCount-1) and leaves bloom bits.
+    // Seed + evict: leaves bloom bits set (keys probe as "maybe") and entries removed.
     for (int i = 0; i < keyCount; i++) {
       cache.decideAndUpdate(1_000L + i, 1_000L + i, NOW_MS);
     }
     cache.evictStaleEntries(NOW_MS + 2 * TIME_WINDOW_MS);
     assertEquals(cache.size(), 0);
-    long wm = cache.getHighestTsInDbButNotInCache();
-    assertTrue(wm >= 1_000L, "watermark should be >= 1000, got " + wm);
+    // Watermark remains at Long.MAX_VALUE because accumulateAndGet with max never lowers.
+    assertEquals(cache.getHighestTsInDbButNotInCache(), Long.MAX_VALUE);
 
     long nowForQueries = NOW_MS + 2 * TIME_WINDOW_MS;
     long before = cache.getFallbackRmdLookupCount();
     for (int i = 0; i < keyCount; i++) {
       long kh = 1_000L + i;
-      RmdTimestampCache.Decision d = cache.decideAndUpdate(kh, wm - 10L, nowForQueries);
+      // Any finite ts <= MAX_VALUE so B.2.b fires unconditionally.
+      RmdTimestampCache.Decision d = cache.decideAndUpdate(kh, 3_000L + i, nowForQueries);
       assertEquals(d, RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP);
     }
     assertEquals(cache.getFallbackRmdLookupCount() - before, keyCount);

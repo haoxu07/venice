@@ -3014,6 +3014,15 @@ public class ConfigKeys {
       "server.aa.rmd.timestamp.cache.bloom.fpp";
 
   /**
+   * Trust the RMD timestamp cache's bloom filter to authoritatively report "definitely not
+   * in DB" and therefore enable branch A of the four-branch decision logic. Only safe when
+   * the partition starts cold (no pre-existing batch-push / backup / data-recovery data) or
+   * the caller seeds the bloom filter with every key present in DB. Default: false.
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE =
+      "server.aa.rmd.timestamp.cache.bloom.authoritative";
+
+  /**
    * This config is used to control the RocksDB lookup concurrency when handling AA/WC workload with parallel processing enabled.
    * Check {@link #SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED} for more details.
    */
