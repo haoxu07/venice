@@ -15,6 +15,9 @@ import com.linkedin.davinci.replication.merge.MergeConflictResolverFactory;
 import com.linkedin.davinci.replication.merge.MergeConflictResult;
 import com.linkedin.davinci.replication.merge.RmdSerDe;
 import com.linkedin.davinci.replication.merge.StringAnnotatedStoreSchemaCache;
+import com.linkedin.davinci.replication.rmdcache.KeyHasher;
+import com.linkedin.davinci.replication.rmdcache.RmdTimestampCache;
+import com.linkedin.davinci.replication.rmdcache.RmdTimestampCacheManager;
 import com.linkedin.davinci.stats.AggVersionedIngestionStats;
 import com.linkedin.davinci.storage.StorageService;
 import com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer;
@@ -99,6 +102,13 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
 
   private final Supplier<IngestionTaskReusableObjects> reusableObjectsSupplier;
 
+  /**
+   * Per-store-version {@link RmdTimestampCacheManager} for the PUT-path RMD lookup cache
+   * optimization. Null when the feature is disabled via
+   * {@link com.linkedin.venice.ConfigKeys#SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED}.
+   */
+  private final RmdTimestampCacheManager rmdTimestampCacheManager;
+
   public ActiveActiveStoreIngestionTask(
       StorageService storageService,
       StoreIngestionTaskFactory.Builder builder,
@@ -167,6 +177,34 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
           aggVersionedIngestionStats,
           getHostLevelIngestionStats());
     });
+
+    // RMD lookup timestamp cache for AA-leader PUT path. Enabled via config; default off.
+    if (serverConfig.isAaRmdTimestampCacheEnabled()) {
+      this.rmdTimestampCacheManager = new RmdTimestampCacheManager(
+          serverConfig.getAaRmdTimestampCacheTimeWindowMs(),
+          serverConfig.getAaRmdTimestampCacheMaxSizePerPartition(),
+          serverConfig.getAaRmdTimestampCacheBloomExpectedInsertions(),
+          serverConfig.getAaRmdTimestampCacheBloomFpp());
+      this.rmdTimestampCacheManager.registerWithGlobalReporter();
+      LOGGER.info(
+          "RMD lookup timestamp cache ENABLED for store version: {} (T={} ms, maxSize={}, bloomExpected={}, bloomFpp={})",
+          getKafkaVersionTopic(),
+          serverConfig.getAaRmdTimestampCacheTimeWindowMs(),
+          serverConfig.getAaRmdTimestampCacheMaxSizePerPartition(),
+          serverConfig.getAaRmdTimestampCacheBloomExpectedInsertions(),
+          serverConfig.getAaRmdTimestampCacheBloomFpp());
+    } else {
+      this.rmdTimestampCacheManager = null;
+    }
+  }
+
+  /**
+   * Test / tooling hook: returns the RMD timestamp cache manager when the feature is
+   * enabled, null otherwise. Intended for integration tests and JMH instrumentation to
+   * read the skip/fallback counters without touching production code paths.
+   */
+  public RmdTimestampCacheManager getRmdTimestampCacheManager() {
+    return rmdTimestampCacheManager;
   }
 
   @Override
@@ -492,13 +530,55 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       oldValueProvider.get();
     }
 
-    final RmdWithValueSchemaId rmdWithValueSchemaID = getReplicationMetadataAndSchemaId(
-        partitionConsumptionState,
-        keyBytes,
-        partition,
-        beforeProcessingBatchRecordsTimestampMs);
-
     final long writeTimestamp = getWriteTimestampFromKME(kafkaValue);
+
+    /**
+     * RMD lookup timestamp cache fast-path for PUT (per the RMD Cache proposal). When enabled,
+     * this intercepts the DCR decision for PUTs BEFORE the RocksDB RMD read and may short-circuit
+     * to a winning / losing / fallback result. Non-PUT message types fall through to the original
+     * path unchanged.
+     */
+    RmdTimestampCache.Decision cacheDecision = null;
+    long keyHashForCache = 0L;
+    if (rmdTimestampCacheManager != null && msgType == MessageType.PUT) {
+      keyHashForCache = KeyHasher.hash(keyBytes);
+      RmdTimestampCache cache = rmdTimestampCacheManager.getOrCreate(partition);
+      cacheDecision = cache.decideAndUpdate(keyHashForCache, writeTimestamp, beforeProcessingBatchRecordsTimestampMs);
+
+      if (cacheDecision == RmdTimestampCache.Decision.CACHE_HIT_NEW_LOSES) {
+        // Branch B.1-lose: known-stale incoming PUT. Skip RMD lookup, skip merge. Build a
+        // minimal result that says "ignored" so the caller treats this as a dropped record.
+        aggVersionedIngestionStats.recordTotalDCR(storeName, versionNumber);
+        hostLevelIngestionStats.recordUpdateIgnoredDCR();
+        aggVersionedIngestionStats.recordUpdateIgnoredDCR(storeName, versionNumber);
+        Lazy<ByteBuffer> oldValueBB = unwrapByteBufferFromOldValueProvider(oldValueProvider);
+        return new PubSubMessageProcessedResult(
+            new MergeConflictResultWrapper(
+                MergeConflictResult.getIgnoredResult(),
+                oldValueProvider,
+                oldValueBB,
+                null,
+                valueManifestContainer,
+                null,
+                null,
+                (schemaId) -> storeDeserializerCache.getDeserializer(schemaId, schemaId)));
+      }
+    }
+
+    // Skip the RocksDB RMD read when the cache already decided "new wins" without a lookup.
+    // Passing null to mergeConflictResolver.put triggers the putWithoutRmd path which creates a
+    // fresh RMD with the incoming timestamp and an empty replication checkpoint vector — this
+    // matches what updateReplicationCheckpointVector would do on a "new wins" decision anyway.
+    final RmdWithValueSchemaId rmdWithValueSchemaID;
+    if (cacheDecision != null && cacheDecision.skippedRmdLookup() && cacheDecision.newRecordWins()) {
+      rmdWithValueSchemaID = null;
+    } else {
+      rmdWithValueSchemaID = getReplicationMetadataAndSchemaId(
+          partitionConsumptionState,
+          keyBytes,
+          partition,
+          beforeProcessingBatchRecordsTimestampMs);
+    }
 
     final MergeConflictResult mergeConflictResult;
 
@@ -567,6 +647,13 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
               null,
               (schemaId) -> storeDeserializerCache.getDeserializer(schemaId, schemaId)));
     } else {
+      // After a B.2.b fallback, if the incoming PUT won DCR we need to update the RMD cache
+      // so future PUTs for this key hit the B.1 fast path instead of paying for RocksDB
+      // again. This also tightens the "key is in cache" guarantee used by the eviction-
+      // time watermark bookkeeping.
+      if (cacheDecision == RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP && msgType == MessageType.PUT) {
+        rmdTimestampCacheManager.getOrCreate(partition).rememberAfterFallback(keyHashForCache, writeTimestamp);
+      }
       // If rmdWithValueSchemaID is not null this implies Venice has processed this key before
       // it will be produced to VT with as a duplicate key message. emit this info for log compaction
       if (rmdWithValueSchemaID != null) {

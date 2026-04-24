@@ -66,6 +66,11 @@ import static com.linkedin.venice.ConfigKeys.PUBSUB_PRODUCER_TIMESTAMP_FALLBACK_
 import static com.linkedin.venice.ConfigKeys.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_CONSUMER_POOL_SIZE;
 import static com.linkedin.venice.ConfigKeys.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_THREAD_POOL_SIZE;
 import static com.linkedin.venice.ConfigKeys.ROUTER_PRINCIPAL_NAME;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_MAX_SIZE_PER_PARTITION;
+import static com.linkedin.venice.ConfigKeys.SERVER_AA_RMD_TIMESTAMP_CACHE_TIME_WINDOW_MS;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_WC_INGESTION_STORAGE_LOOKUP_THREAD_POOL_SIZE;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_THREAD_POOL_SIZE;
@@ -669,6 +674,11 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final int channelOptionWriteBufferHighBytes;
   private final boolean aaWCWorkloadParallelProcessingEnabled;
   private final int aaWCWorkloadParallelProcessingThreadPoolSize;
+  private final boolean aaRmdTimestampCacheEnabled;
+  private final long aaRmdTimestampCacheTimeWindowMs;
+  private final int aaRmdTimestampCacheMaxSizePerPartition;
+  private final long aaRmdTimestampCacheBloomExpectedInsertions;
+  private final double aaRmdTimestampCacheBloomFpp;
   private final boolean crossTpParallelProcessingEnabled;
   private final int crossTpParallelProcessingThreadPoolSize;
   private final boolean crossTpParallelProcessingCurrentVersionAAWCLeaderOnly;
@@ -1158,6 +1168,19 @@ public class VeniceServerConfig extends VeniceClusterConfig {
         serverProperties.getBoolean(SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED, false);
     aaWCWorkloadParallelProcessingThreadPoolSize =
         serverProperties.getInt(SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_THREAD_POOL_SIZE, 8);
+    // JVM system property override for the RMD timestamp cache flag. This exists because the
+    // JMH benchmark harness is frozen and cannot be modified to push a new server property,
+    // so we expose a -D override path that the benchmark runner can set via -jvmArgs.
+    boolean defaultRmdCacheEnabled = Boolean.parseBoolean(
+        System.getProperty("venice.server.aa.rmd.timestamp.cache.enabled", "false"));
+    aaRmdTimestampCacheEnabled =
+        serverProperties.getBoolean(SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED, defaultRmdCacheEnabled);
+    aaRmdTimestampCacheTimeWindowMs = serverProperties.getLong(SERVER_AA_RMD_TIMESTAMP_CACHE_TIME_WINDOW_MS, 60_000L);
+    aaRmdTimestampCacheMaxSizePerPartition =
+        serverProperties.getInt(SERVER_AA_RMD_TIMESTAMP_CACHE_MAX_SIZE_PER_PARTITION, 500_000);
+    aaRmdTimestampCacheBloomExpectedInsertions =
+        serverProperties.getLong(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS, 1_000_000L);
+    aaRmdTimestampCacheBloomFpp = serverProperties.getDouble(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP, 0.01d);
     crossTpParallelProcessingEnabled = serverProperties.getBoolean(SERVER_CROSS_TP_PARALLEL_PROCESSING_ENABLED, false);
     crossTpParallelProcessingThreadPoolSize =
         serverProperties.getInt(SERVER_CROSS_TP_PARALLEL_PROCESSING_THREAD_POOL_SIZE, 4);
@@ -2079,6 +2102,26 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public int getAAWCWorkloadParallelProcessingThreadPoolSize() {
     return aaWCWorkloadParallelProcessingThreadPoolSize;
+  }
+
+  public boolean isAaRmdTimestampCacheEnabled() {
+    return aaRmdTimestampCacheEnabled;
+  }
+
+  public long getAaRmdTimestampCacheTimeWindowMs() {
+    return aaRmdTimestampCacheTimeWindowMs;
+  }
+
+  public int getAaRmdTimestampCacheMaxSizePerPartition() {
+    return aaRmdTimestampCacheMaxSizePerPartition;
+  }
+
+  public long getAaRmdTimestampCacheBloomExpectedInsertions() {
+    return aaRmdTimestampCacheBloomExpectedInsertions;
+  }
+
+  public double getAaRmdTimestampCacheBloomFpp() {
+    return aaRmdTimestampCacheBloomFpp;
   }
 
   public boolean isCrossTpParallelProcessingEnabled() {

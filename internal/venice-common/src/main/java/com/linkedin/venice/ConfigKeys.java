@@ -2977,6 +2977,43 @@ public class ConfigKeys {
   public static final String SERVER_GLOBAL_RT_DIV_ENABLED = "server.global.rt.div.enabled";
 
   /**
+   * Enables the AA-leader per-partition RMD lookup timestamp cache optimization. When enabled,
+   * PUT records consumed from an RT topic on the AA leader are first checked against an
+   * in-memory (keyHash, logicalTimestamp) cache and a bloom filter, avoiding most RocksDB RMD
+   * reads. See {@code RmdTimestampCache}.
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED = "server.aa.rmd.timestamp.cache.enabled";
+
+  /**
+   * Time window T (milliseconds) for the RMD timestamp cache. Cache entries older than
+   * {@code now - T} are evicted; on eviction the
+   * {@code highestTimestampPersistedInDbButNotInCache} watermark is raised. Default 60 seconds.
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_TIME_WINDOW_MS =
+      "server.aa.rmd.timestamp.cache.time.window.ms";
+
+  /**
+   * Hard per-partition entry cap for the RMD timestamp cache. When exceeded, the oldest-timestamp
+   * entry is evicted and the watermark is raised. Default 500k entries.
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_MAX_SIZE_PER_PARTITION =
+      "server.aa.rmd.timestamp.cache.max.size.per.partition";
+
+  /**
+   * Expected number of distinct keys per partition for the bloom filter in the RMD timestamp
+   * cache. Controls the filter's sizing and memory footprint. Default 1M.
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS =
+      "server.aa.rmd.timestamp.cache.bloom.expected.insertions";
+
+  /**
+   * Target false-positive probability for the RMD timestamp cache bloom filter. Default 0.01
+   * (1%).
+   */
+  public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP =
+      "server.aa.rmd.timestamp.cache.bloom.fpp";
+
+  /**
    * This config is used to control the RocksDB lookup concurrency when handling AA/WC workload with parallel processing enabled.
    * Check {@link #SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED} for more details.
    */
