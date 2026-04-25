@@ -80,7 +80,22 @@ public final class AaLeaderBottleneckReporter {
     // processings. If LEADER_IDLE is non-zero in steady state, the leader thread
     // has slack and the throughput-limiting bottleneck is downstream (producer ack,
     // drainer, or RT consumer feed). Off-leader-wall by definition.
-    LEADER_IDLE("leader_idle", true);
+    LEADER_IDLE("leader_idle", true),
+    // ---- Phase 2 stages (poll decomposition + dispatcher submit count) ----
+    // Wall time of consumer.poll(timeout). Per-call is the total ns spent
+    // inside the poll across all topic partitions. Off-leader-wall by definition.
+    RT_POLL_BLOCK_NS("rt_poll_block_ns", true),
+    // Sum of records returned per poll across the tick. Encoded count-only:
+    // each record counted once, nanos always 0. Read as `calls` in the report.
+    RT_POLL_RECORDS_RETURNED("rt_poll_records_returned", true),
+    // Polls that returned 0 records. Count-only.
+    RT_POLL_EMPTY_COUNT("rt_poll_empty_count", true),
+    // Polls that returned >= 0.9 * SERVER_KAFKA_MAX_POLL_RECORDS (default 100,
+    // so threshold = 90). Count-only.
+    RT_POLL_FULL_COUNT("rt_poll_full_count", true),
+    // Tasks submitted to the AA/WC parallel processing pool by the consumer.
+    // Per-tick rate = aa_pool_submit_count.calls / 20s. Count-only.
+    AA_POOL_SUBMIT_COUNT("aa_pool_submit_count", true);
 
     private final String label;
     /**
@@ -165,6 +180,32 @@ public final class AaLeaderBottleneckReporter {
     while (nanos > prev && !maxRef.compareAndSet(prev, nanos)) {
       prev = maxRef.get();
     }
+  }
+
+  /**
+   * Record a count-only event for {@code stage}. Use for stages where the
+   * "nanos" dimension is not meaningful (e.g. record-counts returned per
+   * poll, or pool-submit counts). Equivalent to {@link #record(Stage, long)}
+   * with {@code nanos = 0}.
+   *
+   * <p>Caller SHOULD guard with {@link #ENABLED} on the fast path.</p>
+   */
+  public static void recordCount(Stage stage) {
+    if (!ENABLED) {
+      return;
+    }
+    STAGE_COUNT[stage.ordinal()].increment();
+  }
+
+  /**
+   * Add {@code n} to the count of {@code stage} (no nanos). Useful for
+   * batched count emissions like "records returned per poll = N".
+   */
+  public static void recordCount(Stage stage, long n) {
+    if (!ENABLED || n <= 0L) {
+      return;
+    }
+    STAGE_COUNT[stage.ordinal()].add(n);
   }
 
   /**

@@ -177,7 +177,13 @@ public class IngestionBatchProcessor {
     keyGroupMap.forEach((ignored, recordsWithTheSameKey) -> {
       // [BOTTLENECK-INSTRUMENTATION] aa_wc_pool_handoff: submit timestamp captured
       // here, subtracted from "first ns of exec" inside the lambda.
+      // aa_pool_submit_count: count-only stage incremented at every submit so
+      // the per-tick rate (calls/20s) measures dispatcher throughput against
+      // pool capacity (Phase 2 hypothesis B signal).
       final long bnSubmitNs = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
+      if (AaLeaderBottleneckReporter.ENABLED) {
+        AaLeaderBottleneckReporter.recordCount(AaLeaderBottleneckReporter.Stage.AA_POOL_SUBMIT_COUNT);
+      }
       futureList.add(CompletableFuture.runAsync(() -> {
         if (AaLeaderBottleneckReporter.ENABLED) {
           AaLeaderBottleneckReporter.record(

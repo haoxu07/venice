@@ -44,6 +44,7 @@ import com.linkedin.venice.serialization.avro.AvroProtocolDefinition;
 import com.linkedin.venice.serialization.avro.SchemaPresenceChecker;
 import com.linkedin.venice.serializer.FastSerializerDeserializerFactory;
 import com.linkedin.venice.serializer.RecordSerializer;
+import com.linkedin.venice.stats.AaProducerBottleneckReporter;
 import com.linkedin.venice.utils.Pair;
 import com.linkedin.venice.utils.PartitionUtils;
 import com.linkedin.venice.utils.Time;
@@ -647,6 +648,22 @@ public class VeniceSystemProducer implements SystemProducer, Closeable {
    * @return a {@link CompletableFuture} that completes when the write is acknowledged
    */
   protected CompletableFuture<Void> send(Object keyObject, Object valueObject) {
+    // [PRODUCER-INSTRUMENTATION] rt_producer_send_call: time spent in the
+    // synchronous portion of the SystemProducer send pipeline (key/value
+    // serialization, schema id resolution, and the call into VeniceWriter
+    // which fans out to KafkaProducer.send). Excludes the async ack future
+    // returned to the caller.
+    final long bnSendStartNs = AaProducerBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
+    try {
+      return sendInternal(keyObject, valueObject);
+    } finally {
+      if (AaProducerBottleneckReporter.ENABLED) {
+        AaProducerBottleneckReporter.recordSendCall(System.nanoTime() - bnSendStartNs);
+      }
+    }
+  }
+
+  private CompletableFuture<Void> sendInternal(Object keyObject, Object valueObject) {
     Schema keyObjectSchema = getSchemaFromObject(keyObject);
     String canonicalSchemaStr = canonicalSchemaStrCache.get(keyObjectSchema);
 

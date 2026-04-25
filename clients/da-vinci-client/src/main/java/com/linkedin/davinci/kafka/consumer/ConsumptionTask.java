@@ -127,15 +127,43 @@ class ConsumptionTask implements Runnable {
           long beforePollingTimestamp = System.currentTimeMillis();
           processAndClearUnsubscriptions(topicPartitionsToUnsub);
 
-          // [BOTTLENECK-INSTRUMENTATION] rt_poll_wait: wall time of a single Kafka
-          // consumer poll. Per-record average is computed as total_ns / delta_records
-          // at report time.
+          // [BOTTLENECK-INSTRUMENTATION] rt_poll_wait + Phase 2 poll decomposition.
+          // rt_poll_wait/rt_poll_block_ns: wall time of a single Kafka consumer
+          // poll. rt_poll_records_returned: total records returned across all
+          // topic-partitions in the poll result. rt_poll_empty_count: polls
+          // that returned zero records. rt_poll_full_count: polls that returned
+          // >= 0.9 * max.poll.records (default 100, so threshold 90). The
+          // four stages disambiguate "Kafka had nothing to give" (empty) vs
+          // "Kafka was capped by max.poll.records" (full).
           final long bnPollStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
           Map<PubSubTopicPartition, List<DefaultPubSubMessage>> polledMessages = pollFunction.get();
           if (AaLeaderBottleneckReporter.ENABLED) {
+            long bnPollNanos = System.nanoTime() - bnPollStart;
             AaLeaderBottleneckReporter.record(
                 AaLeaderBottleneckReporter.Stage.RT_POLL_WAIT,
-                System.nanoTime() - bnPollStart);
+                bnPollNanos);
+            AaLeaderBottleneckReporter.record(
+                AaLeaderBottleneckReporter.Stage.RT_POLL_BLOCK_NS,
+                bnPollNanos);
+            int bnTotalRecords = 0;
+            for (List<DefaultPubSubMessage> bnMsgs: polledMessages.values()) {
+              bnTotalRecords += bnMsgs.size();
+            }
+            if (bnTotalRecords > 0) {
+              AaLeaderBottleneckReporter.recordCount(
+                  AaLeaderBottleneckReporter.Stage.RT_POLL_RECORDS_RETURNED,
+                  bnTotalRecords);
+            } else {
+              AaLeaderBottleneckReporter.recordCount(
+                  AaLeaderBottleneckReporter.Stage.RT_POLL_EMPTY_COUNT);
+            }
+            // 0.9 * default max.poll.records (100) = 90. Threshold is
+            // intentionally hard-coded for the canonical-config benchmark
+            // (Phase 2 study scope only).
+            if (bnTotalRecords >= 90) {
+              AaLeaderBottleneckReporter.recordCount(
+                  AaLeaderBottleneckReporter.Stage.RT_POLL_FULL_COUNT);
+            }
           }
           lastSuccessfulPollTimestamp = System.currentTimeMillis();
           aggStats.recordTotalPollRequestLatency(lastSuccessfulPollTimestamp - beforePollingTimestamp);
