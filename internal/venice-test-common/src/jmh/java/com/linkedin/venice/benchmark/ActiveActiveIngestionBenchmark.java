@@ -4,6 +4,7 @@ import static com.linkedin.venice.ConfigKeys.DEFAULT_MAX_NUMBER_OF_PARTITIONS;
 import static com.linkedin.venice.ConfigKeys.NATIVE_REPLICATION_SOURCE_FABRIC;
 import static com.linkedin.venice.ConfigKeys.PARENT_KAFKA_CLUSTER_FABRIC_LIST;
 import static com.linkedin.venice.ConfigKeys.SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED;
+import static com.linkedin.venice.ConfigKeys.SERVER_KAFKA_MAX_POLL_RECORDS;
 import static com.linkedin.venice.integration.utils.VeniceClusterWrapperConstants.DEFAULT_PARENT_DATA_CENTER_REGION_NAME;
 import static com.linkedin.venice.utils.IntegrationTestPushUtils.sendStreamingRecord;
 import static com.linkedin.venice.utils.IntegrationTestPushUtils.sendStreamingRecordWithoutFlush;
@@ -27,13 +28,19 @@ import com.linkedin.venice.utils.TestUtils;
 import com.linkedin.venice.utils.Utils;
 import com.linkedin.venice.writer.update.UpdateBuilder;
 import com.linkedin.venice.writer.update.UpdateBuilderImpl;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -86,7 +93,27 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 @Measurement(iterations = 3, time = 60)
 public class ActiveActiveIngestionBenchmark {
   private static final String CLUSTER_NAME = "venice-cluster0";
+  // JMH @OperationsPerInvocation must be a compile-time constant. Keep this at 1000 so the
+  // baseline configuration is bit-for-bit identical to Phase 0/1/2. The Phase 3 dynamic
+  // override is RECORDS_PER_INVOCATION, read at @Setup time from the system property
+  // "phase3.records.per.invocation" (default = 1000). The [E2E] line is computed off the
+  // actual records sent (iterationRecordCount), so the dynamic override is what drives the
+  // E2E throughput number — JMH's Score column would scale linearly the other way and is
+  // ignored for Phase 3 measurement.
   private static final int NUM_RECORDS_PER_INVOCATION = 1000;
+  // Phase 3 dynamic override of NUM_RECORDS_PER_INVOCATION. Set via sysprop
+  // "phase3.records.per.invocation". Defaults to NUM_RECORDS_PER_INVOCATION = 1000.
+  private static final int RECORDS_PER_INVOCATION =
+      Integer.getInteger("phase3.records.per.invocation", NUM_RECORDS_PER_INVOCATION);
+  // Phase 3 producer parallelism: each region gets N producers. Records per invocation
+  // are stripe-balanced across producers within each region; sends are issued from N
+  // concurrent worker threads per region per invocation, joined before flush. Set via
+  // sysprop "phase3.producers.per.region". Default 1 (matches Phase 0/1/2).
+  private static final int PRODUCERS_PER_REGION = Math.max(1, Integer.getInteger("phase3.producers.per.region", 1));
+  // Phase 3 server-side max.poll.records override. If set (>0), wired into
+  // SERVER_KAFKA_MAX_POLL_RECORDS in the server-properties block of setUp(). Default 0
+  // (do not override — server uses its built-in default of 100).
+  private static final int SERVER_MAX_POLL_RECORDS_OVERRIDE = Integer.getInteger("phase3.server.max.poll.records", 0);
   // Bounded key pool size for PARTIAL_UPDATE so updates actually hit existing records
   // and exercise the server-side read-modify-write + field-level DCR path.
   private static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 10_000;
@@ -126,8 +153,18 @@ public class ActiveActiveIngestionBenchmark {
   private VeniceTwoLayerMultiRegionMultiClusterWrapper multiRegionCluster;
   private ControllerClient parentControllerClient;
   private List<VeniceMultiClusterWrapper> childDatacenters;
+  // Phase 3: each region holds N producers (N = PRODUCERS_PER_REGION). The first producer
+  // in each list is the "primary" used for canary, sentinel, and pre-population paths so
+  // those single-record visibility checks remain unambiguous.
+  private List<VeniceSystemProducer> producersDC0;
+  private List<VeniceSystemProducer> producersDC1;
+  // Convenience aliases for the primary producer per region (producersDCx.get(0)).
   private VeniceSystemProducer producerDC0;
   private VeniceSystemProducer producerDC1;
+  // Worker pool for parallel send: 2 * PRODUCERS_PER_REGION threads (N per region). Each
+  // benchmark invocation submits N tasks per region to this pool, then awaits them via a
+  // CountDownLatch before flushing all producers. Same pool is reused across invocations.
+  private ExecutorService sendWorkerPool;
   private AvroGenericStoreClient<String, GenericRecord> readClient;
   private AvroGenericStoreClient<String, GenericRecord> readClientDC1;
   private String storeName;
@@ -161,6 +198,17 @@ public class ActiveActiveIngestionBenchmark {
     // same-key updates still serialize. Targets exactly our workload (AA + write-compute).
     Properties serverProps = new Properties();
     serverProps.setProperty(SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED, "true");
+    // Phase 3 (C-knob): if SERVER_MAX_POLL_RECORDS_OVERRIDE is set, raise the server's
+    // Kafka consumer max.poll.records cap above its built-in default of 100. Compresses the
+    // bimodal "full poll" half identified in Phase 2.
+    if (SERVER_MAX_POLL_RECORDS_OVERRIDE > 0) {
+      serverProps.setProperty(SERVER_KAFKA_MAX_POLL_RECORDS, Integer.toString(SERVER_MAX_POLL_RECORDS_OVERRIDE));
+      System.err.println(
+          "[ActiveActiveIngestionBenchmark] Phase3: server.kafka.max.poll.records=" + SERVER_MAX_POLL_RECORDS_OVERRIDE);
+    }
+    System.err.println(
+        "[ActiveActiveIngestionBenchmark] Phase3: records_per_invocation=" + RECORDS_PER_INVOCATION
+            + " producers_per_region=" + PRODUCERS_PER_REGION);
 
     VeniceMultiRegionClusterCreateOptions options =
         new VeniceMultiRegionClusterCreateOptions.Builder().numberOfRegions(2)
@@ -219,9 +267,25 @@ public class ActiveActiveIngestionBenchmark {
     dc0Client.close();
     dc1Client.close();
 
-    // Start Samza system producers for both regions
-    producerDC0 = IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 0, storeName);
-    producerDC1 = IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 1, storeName);
+    // Start Samza system producers for both regions. Phase 3: N producers per region.
+    producersDC0 = new ArrayList<>(PRODUCERS_PER_REGION);
+    producersDC1 = new ArrayList<>(PRODUCERS_PER_REGION);
+    for (int n = 0; n < PRODUCERS_PER_REGION; n++) {
+      producersDC0.add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 0, storeName));
+      producersDC1.add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 1, storeName));
+    }
+    producerDC0 = producersDC0.get(0);
+    producerDC1 = producersDC1.get(0);
+    // Build the parallel-send worker pool sized for both regions.
+    if (PRODUCERS_PER_REGION > 1) {
+      AtomicInteger workerSeq = new AtomicInteger();
+      ThreadFactory tf = r -> {
+        Thread t = new Thread(r, "phase3-aa-bench-sender-" + workerSeq.getAndIncrement());
+        t.setDaemon(true);
+        return t;
+      };
+      sendWorkerPool = Executors.newFixedThreadPool(2 * PRODUCERS_PER_REGION, tf);
+    }
 
     // Create read clients for both DCs. DC0 client is used by the per-iteration drain check;
     // DC1 client is used at trial teardown to verify cross-region drain in the other direction
@@ -302,8 +366,19 @@ public class ActiveActiveIngestionBenchmark {
     }
     Utils.closeQuietlyWithErrorLogged(readClient);
     Utils.closeQuietlyWithErrorLogged(readClientDC1);
-    Utils.closeQuietlyWithErrorLogged(producerDC0);
-    Utils.closeQuietlyWithErrorLogged(producerDC1);
+    if (producersDC0 != null) {
+      for (VeniceSystemProducer p: producersDC0) {
+        Utils.closeQuietlyWithErrorLogged(p);
+      }
+    }
+    if (producersDC1 != null) {
+      for (VeniceSystemProducer p: producersDC1) {
+        Utils.closeQuietlyWithErrorLogged(p);
+      }
+    }
+    if (sendWorkerPool != null) {
+      sendWorkerPool.shutdownNow();
+    }
     Utils.closeQuietlyWithErrorLogged(parentControllerClient);
     Utils.closeQuietlyWithErrorLogged(multiRegionCluster);
   }
@@ -444,7 +519,7 @@ public class ActiveActiveIngestionBenchmark {
     if (lastKey != null) {
       lastProducedKey = lastKey;
     }
-    iterationRecordCount.addAndGet(NUM_RECORDS_PER_INVOCATION);
+    iterationRecordCount.addAndGet(RECORDS_PER_INVOCATION);
   }
 
   /**
@@ -484,22 +559,70 @@ public class ActiveActiveIngestionBenchmark {
   private String runPutWorkload() {
     // Bounded key pool + alternating producers means both DC0 and DC1 write to the same
     // keys concurrently. DCR has to resolve real timestamp-based conflicts for every record.
-    for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
-      long seq = keyCounter.getAndIncrement();
-      String key = "put-pool-" + (seq % PUT_KEY_POOL_SIZE);
-      GenericRecord record = new GenericData.Record(valueSchema);
-      record.put("name", "user-" + seq);
-      record.put("age", (int) (seq % 100));
-      record.put("score", seq * 1.1);
-      Map<String, String> tags = new HashMap<>();
-      tags.put("region", i % 2 == 0 ? "dc-0" : "dc-1");
-      record.put("tags", tags);
-      VeniceSystemProducer producer = (i % 2 == 0) ? producerDC0 : producerDC1;
-      sendStreamingRecordWithoutFlush(producer, storeName, key, record);
+    //
+    // AA-symmetry invariant: every i-th record alternates region (i%2 == 0 -> DC0, else
+    // DC1) so DC0 and DC1 each receive exactly RECORDS_PER_INVOCATION/2 records (record
+    // index parity drives region, NOT producer-instance index). Within each region, when
+    // PRODUCERS_PER_REGION > 1, the records destined for that region are stripe-balanced
+    // across the region's N producers via a producer-stripe counter (incremented on every
+    // record going to that region), and the N producers' send work is dispatched to N
+    // worker threads that run concurrently. All threads finish before the flush phase.
+    //
+    // Sentinel still goes through producersDC1.get(0) (the primary DC1 producer), so
+    // visibility on the DC0 router still proves cross-region replication has drained.
+    final int totalRecords = RECORDS_PER_INVOCATION;
+    final long invocationBaseSeq = keyCounter.getAndAdd(totalRecords);
+
+    if (PRODUCERS_PER_REGION == 1) {
+      // Single-producer-per-region path: identical to Phase 0/1/2 baseline behaviour
+      // (preserving exact ordering and serial send semantics for the baseline measurement).
+      for (int i = 0; i < totalRecords; i++) {
+        long seq = invocationBaseSeq + i;
+        sendOnePutRecord(producerForRegion(i % 2, 0), seq, i);
+      }
+    } else {
+      // Multi-producer-per-region path: stripe records destined for each region across
+      // its N producers, dispatch each (region, producer) work-slice to its own thread.
+      // Each task processes a disjoint subset of [0, totalRecords) such that the union
+      // equals the full range — same records, same keys, same DC assignment as the
+      // single-producer path; only the producer instance and sender thread change.
+      final int n = PRODUCERS_PER_REGION;
+      // 2 * n total tasks: one per (region, producer-index) combination.
+      CountDownLatch latch = new CountDownLatch(2 * n);
+      for (int region = 0; region < 2; region++) {
+        for (int p = 0; p < n; p++) {
+          final int regionFinal = region;
+          final int producerIdxFinal = p;
+          sendWorkerPool.submit(() -> {
+            try {
+              VeniceSystemProducer producer = producerForRegion(regionFinal, producerIdxFinal);
+              // Iterate i values in [0, totalRecords) where i%2 == regionFinal AND the
+              // per-region-stripe counter ((i/2) % n) == producerIdxFinal. This gives
+              // a disjoint partition of the full range across all 2*n tasks.
+              for (int i = regionFinal; i < totalRecords; i += 2) {
+                int stripeIdxWithinRegion = (i - regionFinal) / 2;
+                if ((stripeIdxWithinRegion % n) != producerIdxFinal) {
+                  continue;
+                }
+                long seq = invocationBaseSeq + i;
+                sendOnePutRecord(producer, seq, i);
+              }
+            } finally {
+              latch.countDown();
+            }
+          });
+        }
+      }
+      try {
+        latch.await();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException("Phase3 send-pool interrupted", e);
+      }
     }
 
-    // Sentinel: unique fresh key via DC1 so visibility on DC0 router proves
-    // cross-region replication has drained.
+    // Sentinel: unique fresh key via the primary DC1 producer so visibility on DC0 router
+    // proves cross-region replication has drained.
     long sentinelSeq = keyCounter.getAndIncrement();
     String sentinelKey = "put-sentinel-" + sentinelSeq;
     GenericRecord sentinelRecord = new GenericData.Record(valueSchema);
@@ -509,9 +632,36 @@ public class ActiveActiveIngestionBenchmark {
     sentinelRecord.put("tags", Collections.emptyMap());
     sendStreamingRecordWithoutFlush(producerDC1, storeName, sentinelKey, sentinelRecord);
 
-    producerDC0.flush(storeName);
-    producerDC1.flush(storeName);
+    // Flush ALL producers (every region, every producer instance) so the burst of buffered
+    // records drains to the brokers before the iteration teardown waits for the sentinel.
+    for (VeniceSystemProducer p: producersDC0) {
+      p.flush(storeName);
+    }
+    for (VeniceSystemProducer p: producersDC1) {
+      p.flush(storeName);
+    }
     return sentinelKey;
+  }
+
+  /**
+   * Encapsulates the per-record value construction + send for the PUT workload. Used by both
+   * the single-producer path and the multi-producer / multi-thread path.
+   */
+  private void sendOnePutRecord(VeniceSystemProducer producer, long seq, int recordIdxWithinInvocation) {
+    String key = "put-pool-" + (seq % PUT_KEY_POOL_SIZE);
+    GenericRecord record = new GenericData.Record(valueSchema);
+    record.put("name", "user-" + seq);
+    record.put("age", (int) (seq % 100));
+    record.put("score", seq * 1.1);
+    Map<String, String> tags = new HashMap<>();
+    tags.put("region", recordIdxWithinInvocation % 2 == 0 ? "dc-0" : "dc-1");
+    record.put("tags", tags);
+    sendStreamingRecordWithoutFlush(producer, storeName, key, record);
+  }
+
+  private VeniceSystemProducer producerForRegion(int region, int producerIndex) {
+    List<VeniceSystemProducer> list = (region == 0) ? producersDC0 : producersDC1;
+    return list.get(producerIndex % list.size());
   }
 
   private String runPartialUpdateWorkload() {
