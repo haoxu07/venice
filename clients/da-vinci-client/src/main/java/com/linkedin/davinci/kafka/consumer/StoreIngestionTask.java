@@ -35,6 +35,7 @@ import com.linkedin.davinci.helix.LeaderFollowerPartitionStateModel;
 import com.linkedin.davinci.ingestion.LagType;
 import com.linkedin.davinci.listener.response.AdminResponse;
 import com.linkedin.davinci.notifier.VeniceNotifier;
+import com.linkedin.davinci.stats.AaLeaderBottleneckReporter;
 import com.linkedin.davinci.stats.AggVersionedDIVStats;
 import com.linkedin.davinci.stats.AggVersionedDaVinciRecordTransformerStats;
 import com.linkedin.davinci.stats.AggVersionedIngestionStats;
@@ -1324,6 +1325,9 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       long currentTimeForMetricsMs) throws InterruptedException {
     boolean measureTime = recordLevelMetricEnabled.get();
     long queuePutStartTimeInNS = measureTime ? System.nanoTime() : 0;
+    // [BOTTLENECK-INSTRUMENTATION] drainer_enqueue — called by the Kafka producer
+    // callback thread, so this is off-leader but we still track it.
+    final long bottleneckEnqueueStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
     storeBufferService.putConsumerRecord(
         consumedRecord,
         this,
@@ -1331,6 +1335,11 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         partition,
         kafkaUrl,
         beforeProcessingRecordTimestampNs); // blocking call
+    if (AaLeaderBottleneckReporter.ENABLED) {
+      AaLeaderBottleneckReporter.record(
+          AaLeaderBottleneckReporter.Stage.DRAINER_ENQUEUE,
+          System.nanoTime() - bottleneckEnqueueStart);
+    }
 
     if (measureTime) {
       double queuePutLatency = LatencyUtils.getElapsedTimeFromNSToMS(queuePutStartTimeInNS);
@@ -4764,8 +4773,15 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
               versionNumber,
               LatencyUtils.getElapsedTimeFromNSToMS(recordTransformerStartTime),
               currentTimeMs);
+          final long bnRocksWriteStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
           writeToStorageEngine(producedPartition, keyBytes, put);
+          if (AaLeaderBottleneckReporter.ENABLED) {
+            AaLeaderBottleneckReporter.record(
+                AaLeaderBottleneckReporter.Stage.ROCKSDB_VALUE_WRITE,
+                System.nanoTime() - bnRocksWriteStart);
+          }
         } else {
+          final long bnRocksWriteStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
           prependHeaderAndWriteToStorageEngine(
               // Leaders might consume from a RT topic and immediately write into StorageEngine,
               // so we need to re-calculate partition.
@@ -4773,6 +4789,11 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
               producedPartition,
               keyBytes,
               put);
+          if (AaLeaderBottleneckReporter.ENABLED) {
+            AaLeaderBottleneckReporter.record(
+                AaLeaderBottleneckReporter.Stage.ROCKSDB_VALUE_WRITE,
+                System.nanoTime() - bnRocksWriteStart);
+          }
         }
         // grab the positive schema id (actual value schema id) to be used in schema warm-up value schema id.
         // for hybrid use case in read compute store in future we need revisit this as we can have multiple schemas.
@@ -4881,10 +4902,16 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     if (purgeTransientRecordBuffer && isTransientRecordBufferUsed(partitionConsumptionState)
         && leaderProducedRecordContext != null
         && !PubSubSymbolicPosition.EARLIEST.equals(leaderProducedRecordContext.getConsumedPosition())) {
+      final long bnTransientRemoveStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
       partitionConsumptionState.mayRemoveTransientRecord(
           leaderProducedRecordContext.getConsumedKafkaClusterId(),
           leaderProducedRecordContext.getConsumedPosition(),
           kafkaKey.getKey());
+      if (AaLeaderBottleneckReporter.ENABLED) {
+        AaLeaderBottleneckReporter.record(
+            AaLeaderBottleneckReporter.Stage.TRANSIENT_MAP_REMOVE,
+            System.nanoTime() - bnTransientRemoveStart);
+      }
     }
 
     if (recordMetrics) {

@@ -1,0 +1,88 @@
+{
+  "study_goal": "Identify the AA leader PUT-path throughput bottleneck and explain why eliminating RocksDB RMD reads (the new RMD timestamp cache) only buys +8% throughput.",
+  "study_prompt_file": "/home/coder/AA_INGESTION_BOTTLENECK_STUDY_PROMPT.md",
+  "baseline_git_sha": "c2477d40792d426ad2813c9f6caaf46e7676ea75",
+  "study_head_sha": "bab13cc39",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "run_date_utc": "2026-04-24",
+  "instrumentation_flag": "venice.server.aa.bottleneck.instrumentation.enabled",
+  "rmd_cache_flag": "venice.server.aa.rmd.timestamp.cache.enabled (DISABLED for this study)",
+  "jvm": {
+    "path": "/export/apps/jdk/JDK-17_0_5-msft",
+    "version": "17.0.5+8-LTS",
+    "fork_heap": "-Xms32G -Xmx32G",
+    "runner_heap": "-Xms2G -Xmx4G"
+  },
+  "jmh": {
+    "version": "1.35",
+    "fork": 1,
+    "warmup_iterations": 2,
+    "warmup_time_s": 20,
+    "measurement_iterations": 2,
+    "measurement_time_s": 20,
+    "mode": "Throughput",
+    "ops_per_invocation": 1000,
+    "profilers": ["gc"]
+  },
+  "workload": {
+    "type": "PUT",
+    "num_records_per_invocation": 1000,
+    "put_key_pool_size": 10000,
+    "partition_count": 2,
+    "regions": 2,
+    "server_aa_wc_workload_parallel_processing_enabled": true
+  },
+  "criterion_6_off_vs_on_overhead_check": {
+    "off_run_log": "/tmp/aa-bench-off-1.log",
+    "off_run_e2e_warmup_ops_per_sec": [84251.08, 101260.70],
+    "off_run_e2e_measurement_ops_per_sec": [92467.51, 95295.20],
+    "off_run_measurement_median_ops_per_sec": 93881.355,
+    "locked_baseline_median_ops_per_sec": 92486.375,
+    "delta_pct_vs_locked_baseline": 1.51,
+    "passes_3pct_window": true,
+    "notes": "With instrumentation flag OFF the throughput is within +1.5% of the locked baseline, well inside the criterion-6 +/-3% window."
+  },
+  "primary_run_for_breakdown": {
+    "log_file": "/tmp/aa-bench-on-2.log",
+    "e2e_warmup_ops_per_sec": [85525.69, 85219.56],
+    "e2e_measurement_ops_per_sec": [98250.39, 120690.62],
+    "e2e_measurement_median_ops_per_sec": 109470.505,
+    "delta_pct_vs_locked_baseline": 18.36,
+    "instrumentation_overhead_observation": "ON-runs show high run-to-run variance (87k - 109k - 96k medians) but OFF-vs-ON difference at the median is small. Single-run JMH variance dominates over instrumentation cost.",
+    "per_stage_pct_of_wall_last_measurement_window_tick": {
+      "leader_record_wall_ns": 100.00,
+      "rt_deserialize": 0.39,
+      "rmd_lookup_total": 47.19,
+      "rmd_lookup_transient": 0.54,
+      "rmd_lookup_rocksdb": 42.18,
+      "rmd_deserialize": 1.40,
+      "dcr_merge": 46.48,
+      "value_serialize": 0.71,
+      "value_chunk": 0.00,
+      "transient_map_put": 0.48,
+      "OTHER": 4.84
+    },
+    "off_leader_wall_stages_for_context": {
+      "rt_poll_wait_pct": "1700-1800 (large, off-leader-thread; consumer thread)",
+      "vt_produce_ack_wait_pct": "169000+ (huge, off-leader-thread; producer-callback thread; this is cumulative wait time across many in-flight produces)",
+      "aa_wc_pool_handoff_pct": "130+ (off-leader-thread; pool dispatch wait)",
+      "vt_produce_send_pct": "15 (off-leader-thread; sync send portion)",
+      "rocksdb_value_write_pct": "12-14 (off-leader-thread; drainer thread)",
+      "drainer_enqueue_pct": "4-5 (off-leader-thread)",
+      "key_lock_wait_pct": "0.8-1 (off-leader-thread)",
+      "transient_map_remove_pct": "0.86 (off-leader-thread; drainer)"
+    }
+  },
+  "headline_finding": {
+    "top_stage": "rmd_lookup_total",
+    "top_stage_pct_of_wall_avg": 47.06,
+    "tied_second_stage": "dcr_merge",
+    "tied_second_stage_pct_of_wall_avg": 46.62,
+    "rocksdb_read_share_inside_rmd_lookup_total_pct": 42.05,
+    "calls_per_sec_at_85k_throughput": 170000
+  },
+  "log_files": {
+    "instrumented_runs": ["/tmp/aa-bench-on-2.log", "/tmp/aa-bench-on-3.log", "/tmp/aa-bench-on-4.log"],
+    "off_run_overhead_check": "/tmp/aa-bench-off-1.log"
+  }
+}

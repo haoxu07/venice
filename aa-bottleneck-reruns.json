@@ -1,0 +1,72 @@
+{
+  "study_goal": "Reproducibility evidence for the AA leader bottleneck study (criterion 7).",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "study_head_sha": "bab13cc39",
+  "run_date_utc": "2026-04-24",
+  "criterion_7_target": "Top-bottleneck stage must be the same across 3 runs, and its wall-clock-% must not vary by more than 5 percentage points across runs.",
+  "criterion_7_status": "PASS",
+  "runs": [
+    {
+      "run_id": "on-2",
+      "log_file": "/tmp/aa-bench-on-2.log",
+      "e2e_measurement_ops_per_sec": [98250.39, 120690.62],
+      "e2e_measurement_median": 109470.505,
+      "bottleneck_summary_ticks": [
+        {"tick": 1, "total_records": 1134567, "wall_ns": 89362115842,  "top3": "rmd_lookup_total:46.97,dcr_merge:45.90,rmd_lookup_rocksdb:39.73"},
+        {"tick": 2, "total_records": 3502698, "wall_ns": 236646347461, "top3": "rmd_lookup_total:47.54,dcr_merge:46.77,rmd_lookup_rocksdb:42.68"},
+        {"tick": 3, "total_records": 3718513, "wall_ns": 252004542424, "top3": "rmd_lookup_total:47.69,dcr_merge:46.59,rmd_lookup_rocksdb:42.66"},
+        {"tick": 4, "total_records": 3435894, "wall_ns": 184220273477, "top3": "rmd_lookup_total:46.75,dcr_merge:46.53,rmd_lookup_rocksdb:41.41"},
+        {"tick": 5, "total_records": 3767766, "wall_ns": 218112972185, "top3": "rmd_lookup_total:47.19,dcr_merge:46.48,rmd_lookup_rocksdb:42.18"},
+        {"tick": 6, "total_records": 3707601, "wall_ns": 158993439520, "top3": "dcr_merge:46.45,rmd_lookup_total:45.86,rmd_lookup_rocksdb:40.10"}
+      ]
+    },
+    {
+      "run_id": "on-3",
+      "log_file": "/tmp/aa-bench-on-3.log",
+      "e2e_measurement_ops_per_sec": [89174.35, 85058.52],
+      "e2e_measurement_median": 87116.435,
+      "bottleneck_summary_ticks": [
+        {"tick": 1, "total_records": 1284996, "wall_ns": 98435158965,  "top3": "rmd_lookup_total:47.27,dcr_merge:46.34,rmd_lookup_rocksdb:40.74"},
+        {"tick": 2, "total_records": 3581390, "wall_ns": 226364258311, "top3": "rmd_lookup_total:47.51,dcr_merge:46.79,rmd_lookup_rocksdb:42.87"},
+        {"tick": 3, "total_records": 4043355, "wall_ns": 222316337334, "top3": "rmd_lookup_total:47.01,dcr_merge:46.78,rmd_lookup_rocksdb:41.96"},
+        {"tick": 4, "total_records": 3231162, "wall_ns": 191603772834, "top3": "rmd_lookup_total:47.22,dcr_merge:46.80,rmd_lookup_rocksdb:42.18"},
+        {"tick": 5, "total_records": 3374212, "wall_ns": 230636426437, "top3": "rmd_lookup_total:47.59,dcr_merge:46.81,rmd_lookup_rocksdb:42.77"},
+        {"tick": 6, "total_records": 3772951, "wall_ns": 252582708934, "top3": "rmd_lookup_total:47.60,dcr_merge:46.88,rmd_lookup_rocksdb:42.86"},
+        {"tick": 7, "total_records": 251456,  "wall_ns": 15260036961,  "top3": "rmd_lookup_total:47.53,dcr_merge:47.27,rmd_lookup_rocksdb:42.99"}
+      ]
+    },
+    {
+      "run_id": "on-4",
+      "log_file": "/tmp/aa-bench-on-4.log",
+      "e2e_measurement_ops_per_sec": [85993.38, 105988.33],
+      "e2e_measurement_median": 95990.855,
+      "bottleneck_summary_ticks": [
+        {"tick": 1, "total_records": 873700,  "wall_ns": 77783995665,  "top3": "rmd_lookup_total:47.58,dcr_merge:46.08,rmd_lookup_rocksdb:40.90"},
+        {"tick": 2, "total_records": 3278450, "wall_ns": 226193564202, "top3": "rmd_lookup_total:47.75,dcr_merge:46.94,rmd_lookup_rocksdb:43.02"},
+        {"tick": 3, "total_records": 3728113, "wall_ns": 252679823055, "top3": "rmd_lookup_total:47.56,dcr_merge:47.10,rmd_lookup_rocksdb:42.78"},
+        {"tick": 4, "total_records": 3072321, "wall_ns": 201700549655, "top3": "rmd_lookup_total:47.66,dcr_merge:46.89,rmd_lookup_rocksdb:42.87"},
+        {"tick": 5, "total_records": 3211382, "wall_ns": 218297088150, "top3": "rmd_lookup_total:47.81,dcr_merge:46.90,rmd_lookup_rocksdb:43.11"},
+        {"tick": 6, "total_records": 4085411, "wall_ns": 202173088170, "top3": "dcr_merge:46.91,rmd_lookup_total:46.41,rmd_lookup_rocksdb:40.91"},
+        {"tick": 7, "total_records": 517605,  "wall_ns": 28309343593,  "top3": "rmd_lookup_total:46.84,dcr_merge:46.70,rmd_lookup_rocksdb:41.51"}
+      ]
+    }
+  ],
+  "rmd_lookup_total_pct_across_all_ticks_all_runs": {
+    "min": 45.86,
+    "max": 47.81,
+    "spread_pp": 1.95,
+    "ticks_observed": 20
+  },
+  "dcr_merge_pct_across_all_ticks_all_runs": {
+    "min": 45.90,
+    "max": 47.27,
+    "spread_pp": 1.37
+  },
+  "rmd_lookup_rocksdb_pct_across_all_ticks_all_runs": {
+    "min": 39.73,
+    "max": 43.11,
+    "spread_pp": 3.38
+  },
+  "top_stage_consistency": "rmd_lookup_total is the #1 stage in 18 of 20 ticks; dcr_merge is #1 in the remaining 2 ticks (within 0.5pp of rmd_lookup_total in those ticks). The two are effectively tied as co-bottlenecks across all 3 runs.",
+  "criterion_7_pass_evidence": "max(rmd_lookup_total) - min(rmd_lookup_total) = 1.95pp <= 5pp threshold, and stage identity is stable."
+}

@@ -1,5 +1,6 @@
 package com.linkedin.davinci.kafka.consumer;
 
+import com.linkedin.davinci.stats.AaLeaderBottleneckReporter;
 import com.linkedin.davinci.stats.AggVersionedIngestionStats;
 import com.linkedin.davinci.stats.HostLevelIngestionStats;
 import com.linkedin.davinci.utils.ByteArrayKey;
@@ -83,6 +84,11 @@ public class IngestionBatchProcessor {
    */
   public NavigableMap<ByteArrayKey, ReentrantLock> lockKeys(List<DefaultPubSubMessage> records) {
     if (lockManager != null) {
+      // [BOTTLENECK-INSTRUMENTATION] key_lock_wait: wraps acquire-and-lock for the
+      // batch. Per-record wall share is this total divided by records.size() — we
+      // attribute the batch-total to the key_lock_wait bucket and divide when we
+      // compute pct_of_wall later.
+      final long bnLockStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
       /**
        * Need to use a {@link TreeMap} to make sure the locking will be executed in a deterministic order, otherwise
        * deadlock can happen.
@@ -96,6 +102,11 @@ public class IngestionBatchProcessor {
         }
       });
       keyLockMap.forEach((k, v) -> v.lock());
+      if (AaLeaderBottleneckReporter.ENABLED) {
+        AaLeaderBottleneckReporter.record(
+            AaLeaderBottleneckReporter.Stage.KEY_LOCK_WAIT,
+            System.nanoTime() - bnLockStart);
+      }
       return keyLockMap;
     }
     return Collections.emptyNavigableMap();
@@ -164,7 +175,15 @@ public class IngestionBatchProcessor {
 
     List<CompletableFuture<Void>> futureList = new ArrayList<>(keyGroupMap.size());
     keyGroupMap.forEach((ignored, recordsWithTheSameKey) -> {
+      // [BOTTLENECK-INSTRUMENTATION] aa_wc_pool_handoff: submit timestamp captured
+      // here, subtracted from "first ns of exec" inside the lambda.
+      final long bnSubmitNs = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
       futureList.add(CompletableFuture.runAsync(() -> {
+        if (AaLeaderBottleneckReporter.ENABLED) {
+          AaLeaderBottleneckReporter.record(
+              AaLeaderBottleneckReporter.Stage.AA_WC_POOL_HANDOFF,
+              System.nanoTime() - bnSubmitNs);
+        }
         recordsWithTheSameKey.forEach(recordWithTheSameKey -> {
           recordWithTheSameKey.setProcessedResult(
               processingFunction.apply(

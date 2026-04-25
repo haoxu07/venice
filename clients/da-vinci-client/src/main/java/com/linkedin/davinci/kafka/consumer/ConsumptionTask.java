@@ -1,6 +1,7 @@
 package com.linkedin.davinci.kafka.consumer;
 
 import com.linkedin.davinci.ingestion.consumption.ConsumedDataReceiver;
+import com.linkedin.davinci.stats.AaLeaderBottleneckReporter;
 import com.linkedin.davinci.stats.AggKafkaConsumerServiceStats;
 import com.linkedin.davinci.stats.KafkaConsumerServiceStats;
 import com.linkedin.venice.pubsub.api.DefaultPubSubMessage;
@@ -126,7 +127,16 @@ class ConsumptionTask implements Runnable {
           long beforePollingTimestamp = System.currentTimeMillis();
           processAndClearUnsubscriptions(topicPartitionsToUnsub);
 
+          // [BOTTLENECK-INSTRUMENTATION] rt_poll_wait: wall time of a single Kafka
+          // consumer poll. Per-record average is computed as total_ns / delta_records
+          // at report time.
+          final long bnPollStart = AaLeaderBottleneckReporter.ENABLED ? System.nanoTime() : 0L;
           Map<PubSubTopicPartition, List<DefaultPubSubMessage>> polledMessages = pollFunction.get();
+          if (AaLeaderBottleneckReporter.ENABLED) {
+            AaLeaderBottleneckReporter.record(
+                AaLeaderBottleneckReporter.Stage.RT_POLL_WAIT,
+                System.nanoTime() - bnPollStart);
+          }
           lastSuccessfulPollTimestamp = System.currentTimeMillis();
           aggStats.recordTotalPollRequestLatency(lastSuccessfulPollTimestamp - beforePollingTimestamp);
 

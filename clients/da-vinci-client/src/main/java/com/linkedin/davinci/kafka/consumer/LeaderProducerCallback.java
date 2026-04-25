@@ -1,5 +1,6 @@
 package com.linkedin.davinci.kafka.consumer;
 
+import com.linkedin.davinci.stats.AaLeaderBottleneckReporter;
 import com.linkedin.davinci.store.record.ValueRecord;
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.kafka.protocol.Delete;
@@ -78,6 +79,13 @@ public class LeaderProducerCallback implements ChunkAwareCallback {
 
   @Override
   public void onCompletion(PubSubProduceResult produceResult, Exception e) {
+    // [BOTTLENECK-INSTRUMENTATION] vt_produce_ack_wait: time from send to ACK callback
+    // dispatch. Measured on the producer IO thread, so off-leader-wall.
+    if (AaLeaderBottleneckReporter.ENABLED && produceTimeNs != 0L) {
+      AaLeaderBottleneckReporter.record(
+          AaLeaderBottleneckReporter.Stage.VT_PRODUCE_ACK_WAIT,
+          System.nanoTime() - produceTimeNs);
+    }
     this.onCompletionFunction.accept(produceResult);
     if (e != null) {
       ingestionTask.getVersionedDIVStats()

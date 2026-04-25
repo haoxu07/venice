@@ -25,6 +25,7 @@ import com.linkedin.davinci.ingestion.LagType;
 import com.linkedin.davinci.listener.response.NoOpReadResponseStats;
 import com.linkedin.davinci.schema.merge.CollectionTimestampMergeRecordHelper;
 import com.linkedin.davinci.schema.merge.MergeRecordHelper;
+import com.linkedin.davinci.stats.AaLeaderBottleneckReporter;
 import com.linkedin.davinci.stats.ingestion.heartbeat.HeartbeatKey;
 import com.linkedin.davinci.stats.ingestion.heartbeat.HeartbeatLagMonitorAction;
 import com.linkedin.davinci.stats.ingestion.heartbeat.HeartbeatMonitoringService;
@@ -2057,6 +2058,12 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
     partitionConsumptionState.setLastLeaderPersistFuture(leaderProducedRecordContext.getPersistedToDBFuture());
     long beforeProduceTimestampNS = System.nanoTime();
     produceFunction.accept(callback, leaderMetadataWrapper);
+    // [BOTTLENECK-INSTRUMENTATION] vt_produce_send: sync portion of VT KafkaProducer.send().
+    if (AaLeaderBottleneckReporter.ENABLED) {
+      AaLeaderBottleneckReporter.record(
+          AaLeaderBottleneckReporter.Stage.VT_PRODUCE_SEND,
+          System.nanoTime() - beforeProduceTimestampNS);
+    }
     double enqueueLatency = LatencyUtils.getElapsedTimeFromNSToMS(beforeProduceTimestampNS);
     getHostLevelIngestionStats().recordLeaderProduceLatency(enqueueLatency);
     getVersionIngestionStats().recordProducerEnqueueTime(storeName, versionNumber, enqueueLatency);
