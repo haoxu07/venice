@@ -13,6 +13,7 @@ import com.linkedin.davinci.replication.RmdWithValueSchemaId;
 import com.linkedin.davinci.schema.merge.ValueAndRmd;
 import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
 import com.linkedin.davinci.serializer.avro.fast.MapOrderPreservingFastSerDeFactory;
+import com.linkedin.davinci.stats.AaDcrMergeReporter;
 import com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer;
 import com.linkedin.davinci.store.record.ValueRecord;
 import com.linkedin.venice.annotation.Threadsafe;
@@ -115,42 +116,51 @@ public class MergeConflictResolver {
       final long putOperationTimestamp,
       final int newValueSchemaID,
       final int newValueColoID) {
-    if (rmdWithValueSchemaID == null) {
-      // TODO: Honor BatchConflictResolutionPolicy when replication metadata is null
-      return putWithoutRmd(newValueBytes, putOperationTimestamp, newValueSchemaID);
-    }
-    if (rmdWithValueSchemaID.getValueSchemaId() <= 0) {
-      throw new VeniceException(
-          "Invalid schema Id of old value found when replication metadata exists for store = " + storeName
-              + "; schema ID = " + rmdWithValueSchemaID.getValueSchemaId());
-    }
-    final GenericRecord oldRmdRecord = rmdWithValueSchemaID.getRmdRecord();
-    final Object oldTimestampObject = oldRmdRecord.get(TIMESTAMP_FIELD_POS);
+    // [PHASE-4] OUTER timer = total wall of MergeConflictResolver.put. Used as the
+    // denominator for pct_of_dcr_merge for each named sub-stage.
+    final long phase4OuterStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
+    try {
+      if (rmdWithValueSchemaID == null) {
+        // TODO: Honor BatchConflictResolutionPolicy when replication metadata is null
+        return putWithoutRmd(newValueBytes, putOperationTimestamp, newValueSchemaID);
+      }
+      if (rmdWithValueSchemaID.getValueSchemaId() <= 0) {
+        throw new VeniceException(
+            "Invalid schema Id of old value found when replication metadata exists for store = " + storeName
+                + "; schema ID = " + rmdWithValueSchemaID.getValueSchemaId());
+      }
+      final GenericRecord oldRmdRecord = rmdWithValueSchemaID.getRmdRecord();
+      final Object oldTimestampObject = oldRmdRecord.get(TIMESTAMP_FIELD_POS);
 
-    /**
-     * Ideally the "useFieldLevelTimestamp" flag should be sufficient to decide here. However, since current write compute
-     * flag is a store-level config, when an A/A store enabled write compute feature, it will accept incoming UPDATE message
-     * without changing version level write computation flag. This is a safeguard to make sure the version ingestion won't
-     * fail even though the version should be recreated / repushed with correct config setup.
-     */
-    if (useFieldLevelTimestamp || RmdUtils.getRmdTimestampType(oldTimestampObject).equals(PER_FIELD_TIMESTAMP)) {
-      return mergePutWithFieldLevelTimestamp(
-          rmdWithValueSchemaID.getValueSchemaId(),
-          oldTimestampObject,
+      /**
+       * Ideally the "useFieldLevelTimestamp" flag should be sufficient to decide here. However, since current write compute
+       * flag is a store-level config, when an A/A store enabled write compute feature, it will accept incoming UPDATE message
+       * without changing version level write computation flag. This is a safeguard to make sure the version ingestion won't
+       * fail even though the version should be recreated / repushed with correct config setup.
+       */
+      if (useFieldLevelTimestamp || RmdUtils.getRmdTimestampType(oldTimestampObject).equals(PER_FIELD_TIMESTAMP)) {
+        return mergePutWithFieldLevelTimestamp(
+            rmdWithValueSchemaID.getValueSchemaId(),
+            oldTimestampObject,
+            oldValueBytesProvider,
+            oldRmdRecord,
+            putOperationTimestamp,
+            newValueBytes,
+            newValueColoID,
+            newValueSchemaID);
+      }
+      return mergePutWithValueLevelTimestamp(
           oldValueBytesProvider,
           oldRmdRecord,
           putOperationTimestamp,
           newValueBytes,
           newValueColoID,
           newValueSchemaID);
+    } finally {
+      if (AaDcrMergeReporter.ENABLED) {
+        AaDcrMergeReporter.record(AaDcrMergeReporter.SubStage.OUTER, System.nanoTime() - phase4OuterStart);
+      }
     }
-    return mergePutWithValueLevelTimestamp(
-        oldValueBytesProvider,
-        oldRmdRecord,
-        putOperationTimestamp,
-        newValueBytes,
-        newValueColoID,
-        newValueSchemaID);
   }
 
   /**
@@ -289,22 +299,42 @@ public class MergeConflictResolver {
 
     if (oldTimestampObject instanceof GenericRecord) {
       final GenericRecord oldValueFieldTimestampsRecord = (GenericRecord) oldTimestampObject;
-      if (ignoreNewPut(oldValueSchemaID, oldValueFieldTimestampsRecord, newValueSchemaID, putOperationTimestamp)) {
+      // [PHASE-4] sub_stage=ignore_new_put_check
+      final long phase4IgnoreStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
+      boolean ignored =
+          ignoreNewPut(oldValueSchemaID, oldValueFieldTimestampsRecord, newValueSchemaID, putOperationTimestamp);
+      if (AaDcrMergeReporter.ENABLED) {
+        AaDcrMergeReporter
+            .record(AaDcrMergeReporter.SubStage.IGNORE_NEW_PUT_CHECK, System.nanoTime() - phase4IgnoreStart);
+      }
+      if (ignored) {
         return MergeConflictResult.getIgnoredResult();
       }
     }
 
+    // [PHASE-4] sub_stage=schema_resolve
+    final long phase4SchemaResolveStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     final SchemaEntry mergeResultValueSchemaEntry =
         mergeResultValueSchemaResolver.getMergeResultValueSchema(oldValueSchemaID, newValueSchemaID);
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.SCHEMA_RESOLVE, System.nanoTime() - phase4SchemaResolveStart);
+    }
     /**
      * New value record should use {@link mergeResultValueSchemaEntry} as reader schema for potential schema up-convert.
      * {@link mergeResultValueSchemaEntry} is either the same as new value schema, if old value schema is the same as
      * the new value schema, or it will be the superset schema. In the latter case, new value should be up-converted, so
      * that it contains all the fields and updated value can be properly serialized.
      */
+    // [PHASE-4] sub_stage=new_value_deserialize
+    final long phase4NewValueDeserStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     GenericRecord newValueRecord =
         deserializerCacheForFullValue.get(newValueSchemaID, mergeResultValueSchemaEntry.getId())
             .deserialize(newValueBytes);
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.NEW_VALUE_DESERIALIZE, System.nanoTime() - phase4NewValueDeserStart);
+    }
     ValueAndRmd<GenericRecord> oldValueAndRmd = createOldValueAndRmd(
         mergeResultValueSchemaEntry.getSchema(),
         mergeResultValueSchemaEntry.getId(),
@@ -312,18 +342,36 @@ public class MergeConflictResolver {
         oldValueBytesProvider,
         oldRmdRecord);
     // Actual merge happens here!
+    // [PHASE-4] sub_stage=merge_put_apply
+    final long phase4MergeStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     ValueAndRmd<GenericRecord> mergedValueAndRmd =
         mergeGenericRecord.put(oldValueAndRmd, newValueRecord, putOperationTimestamp, newValueColoID);
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter.record(AaDcrMergeReporter.SubStage.MERGE_PUT_APPLY, System.nanoTime() - phase4MergeStart);
+    }
     if (mergedValueAndRmd.isUpdateIgnored()) {
       return MergeConflictResult.getIgnoredResult();
     }
+    // [PHASE-4] sub_stage=merged_value_serialize
+    final long phase4SerStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     ByteBuffer mergedValueBytes =
         serializeMergedValueRecord(mergeResultValueSchemaEntry.getId(), mergedValueAndRmd.getValue());
-    return new MergeConflictResult(
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.MERGED_VALUE_SERIALIZE, System.nanoTime() - phase4SerStart);
+    }
+    // [PHASE-4] sub_stage=merge_result_alloc
+    final long phase4AllocStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
+    MergeConflictResult result = new MergeConflictResult(
         mergedValueBytes,
         mergeResultValueSchemaEntry.getId(),
         false,
         mergedValueAndRmd.getRmd());
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.MERGE_RESULT_ALLOC, System.nanoTime() - phase4AllocStart);
+    }
+    return result;
   }
 
   private MergeConflictResult mergeDeleteWithValueLevelTimestamp(
@@ -391,12 +439,20 @@ public class MergeConflictResolver {
       int oldValueWriterSchemaID,
       Lazy<ByteBuffer> oldValueBytesProvider,
       GenericRecord oldRmdRecord) {
+    // [PHASE-4] sub_stage=old_value_deserialize — wraps Avro decode of old value bytes.
+    final long phase4OldValueDeserStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     final GenericRecord oldValueRecord = createValueRecordFromByteBuffer(
         readerValueSchema,
         readerValueSchemaID,
         oldValueWriterSchemaID,
         oldValueBytesProvider.get());
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.OLD_VALUE_DESERIALIZE, System.nanoTime() - phase4OldValueDeserStart);
+    }
 
+    // [PHASE-4] sub_stage=rmd_prepare — RMD timestamp/schema conversion + ValueAndRmd alloc.
+    final long phase4RmdPrepStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     // RMD record should contain a per-field timestamp and it should use the RMD schema generated from
     // mergeResultValueSchema.
     oldRmdRecord = convertToPerFieldTimestampRmd(oldRmdRecord, oldValueRecord);
@@ -405,6 +461,9 @@ public class MergeConflictResolver {
     }
     ValueAndRmd<GenericRecord> createdOldValueAndRmd = new ValueAndRmd<>(Lazy.of(() -> oldValueRecord), oldRmdRecord);
     createdOldValueAndRmd.setValueSchemaId(readerValueSchemaID);
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter.record(AaDcrMergeReporter.SubStage.RMD_PREPARE, System.nanoTime() - phase4RmdPrepStart);
+    }
     return createdOldValueAndRmd;
   }
 

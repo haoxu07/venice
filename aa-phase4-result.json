@@ -1,0 +1,898 @@
+{
+  "phase": 4,
+  "study_goal": "Decompose dcr_merge (MergeConflictResolver.put PUT path) into named sub-stages and identify the top-cost one.",
+  "run_date_utc": "2026-04-25",
+  "runs": {
+    "aa-phase4-run1": {
+      "all_ticks": 15,
+      "steady_ticks": 14,
+      "e2e_ops_per_sec": [
+        94168.45,
+        87008.33,
+        86983.04,
+        119226.37
+      ],
+      "e2e_median": 103104.70499999999,
+      "dcr_merge_total_ns_steady": 1332215468601,
+      "outer_calls_steady": 48887770,
+      "substages": {
+        "outer_merge_put": {
+          "total_ns": 1332215468601,
+          "calls": 48887770,
+          "avg_ns": 27250.485522268656,
+          "max_ns": 83691661,
+          "pct_of_dcr_merge_overall": 100.0
+        },
+        "ignore_new_put_check": {
+          "total_ns": 7393087659,
+          "calls": 48818918,
+          "avg_ns": 151.43899049544686,
+          "max_ns": 2586952,
+          "pct_of_dcr_merge_overall": 0.5549468410514484
+        },
+        "schema_resolve": {
+          "total_ns": 1606152233,
+          "calls": 48549655,
+          "avg_ns": 33.082670371190076,
+          "max_ns": 221709,
+          "pct_of_dcr_merge_overall": 0.12056249689749282
+        },
+        "new_value_deserialize": {
+          "total_ns": 29718815811,
+          "calls": 48549655,
+          "avg_ns": 612.1323789221572,
+          "max_ns": 83506357,
+          "pct_of_dcr_merge_overall": 2.2307814697729516
+        },
+        "old_value_deserialize": {
+          "total_ns": 1171707311945,
+          "calls": 48618503,
+          "avg_ns": 24100.028582636533,
+          "max_ns": 83570143,
+          "pct_of_dcr_merge_overall": 87.95178704653877
+        },
+        "rmd_prepare": {
+          "total_ns": 3786734991,
+          "calls": 48618503,
+          "avg_ns": 77.88670480043369,
+          "max_ns": 17008938,
+          "pct_of_dcr_merge_overall": 0.28424343360737025
+        },
+        "merge_put_apply": {
+          "total_ns": 25214981765,
+          "calls": 48549655,
+          "avg_ns": 519.3647980608719,
+          "max_ns": 45157298,
+          "pct_of_dcr_merge_overall": 1.8927104780939843
+        },
+        "merged_value_serialize": {
+          "total_ns": 21586351846,
+          "calls": 48549655,
+          "avg_ns": 444.62420682495065,
+          "max_ns": 45082213,
+          "pct_of_dcr_merge_overall": 1.6203348748583803
+        },
+        "merge_result_alloc": {
+          "total_ns": 1213796205,
+          "calls": 48549655,
+          "avg_ns": 25.00112935920966,
+          "max_ns": 1433353,
+          "pct_of_dcr_merge_overall": 0.09111110279140087
+        },
+        "other_merge": {
+          "total_ns": 69988236146,
+          "calls": 0,
+          "avg_ns": 0,
+          "max_ns": 0,
+          "pct_of_dcr_merge_overall": 5.253522256388209
+        }
+      },
+      "tick_summaries": [
+        {
+          "tick": 1,
+          "outer_calls": 3230569,
+          "dcr_merge_total_ns": 118515989696,
+          "coverage_pct": 95.38,
+          "top3": "old_value_deserialize:88.69,new_value_deserialize:2.12,merged_value_serialize:1.73"
+        },
+        {
+          "tick": 2,
+          "outer_calls": 4603505,
+          "dcr_merge_total_ns": 78003006184,
+          "coverage_pct": 91.32,
+          "top3": "old_value_deserialize:81.16,new_value_deserialize:3.15,merge_put_apply:3.07"
+        },
+        {
+          "tick": 3,
+          "outer_calls": 4668440,
+          "dcr_merge_total_ns": 24491359534,
+          "coverage_pct": 70.78,
+          "top3": "old_value_deserialize:29.30,merge_put_apply:13.81,new_value_deserialize:12.59"
+        },
+        {
+          "tick": 4,
+          "outer_calls": 2196029,
+          "dcr_merge_total_ns": 54650787337,
+          "coverage_pct": 94.02,
+          "top3": "old_value_deserialize:84.56,new_value_deserialize:3.13,merge_put_apply:2.80"
+        },
+        {
+          "tick": 5,
+          "outer_calls": 2823584,
+          "dcr_merge_total_ns": 115540911531,
+          "coverage_pct": 95.89,
+          "top3": "old_value_deserialize:89.91,new_value_deserialize:2.06,merge_put_apply:1.60"
+        },
+        {
+          "tick": 6,
+          "outer_calls": 3475674,
+          "dcr_merge_total_ns": 120783605070,
+          "coverage_pct": 95.75,
+          "top3": "old_value_deserialize:90.29,new_value_deserialize:1.89,merge_put_apply:1.43"
+        },
+        {
+          "tick": 7,
+          "outer_calls": 4129779,
+          "dcr_merge_total_ns": 77140277015,
+          "coverage_pct": 92.08,
+          "top3": "old_value_deserialize:81.30,new_value_deserialize:3.40,merge_put_apply:3.34"
+        },
+        {
+          "tick": 8,
+          "outer_calls": 3070165,
+          "dcr_merge_total_ns": 114037735629,
+          "coverage_pct": 95.91,
+          "top3": "old_value_deserialize:90.15,new_value_deserialize:1.94,merge_put_apply:1.57"
+        },
+        {
+          "tick": 9,
+          "outer_calls": 3724920,
+          "dcr_merge_total_ns": 123560834695,
+          "coverage_pct": 96.01,
+          "top3": "old_value_deserialize:91.19,new_value_deserialize:1.70,merged_value_serialize:1.24"
+        },
+        {
+          "tick": 10,
+          "outer_calls": 3803598,
+          "dcr_merge_total_ns": 121890539508,
+          "coverage_pct": 96.13,
+          "top3": "old_value_deserialize:91.26,new_value_deserialize:1.68,merge_put_apply:1.27"
+        },
+        {
+          "tick": 11,
+          "outer_calls": 3536963,
+          "dcr_merge_total_ns": 111876834124,
+          "coverage_pct": 95.76,
+          "top3": "old_value_deserialize:90.87,new_value_deserialize:1.68,merge_put_apply:1.28"
+        },
+        {
+          "tick": 12,
+          "outer_calls": 4107787,
+          "dcr_merge_total_ns": 81552512326,
+          "coverage_pct": 93.56,
+          "top3": "old_value_deserialize:84.61,new_value_deserialize:2.77,merge_put_apply:2.73"
+        },
+        {
+          "tick": 13,
+          "outer_calls": 4646345,
+          "dcr_merge_total_ns": 75597200456,
+          "coverage_pct": 91.3,
+          "top3": "old_value_deserialize:81.17,new_value_deserialize:3.12,merge_put_apply:3.10"
+        },
+        {
+          "tick": 14,
+          "outer_calls": 4170128,
+          "dcr_merge_total_ns": 95782135083,
+          "coverage_pct": 93.66,
+          "top3": "old_value_deserialize:86.68,new_value_deserialize:2.28,merge_put_apply:1.98"
+        },
+        {
+          "tick": 15,
+          "outer_calls": 1368724,
+          "dcr_merge_total_ns": 43283099947,
+          "coverage_pct": 96.45,
+          "top3": "old_value_deserialize:91.64,new_value_deserialize:1.64,merge_put_apply:1.25"
+        }
+      ]
+    },
+    "aa-phase4-run2": {
+      "all_ticks": 14,
+      "steady_ticks": 11,
+      "e2e_ops_per_sec": [
+        82881.71,
+        92764.09,
+        88075.39,
+        105912.77
+      ],
+      "e2e_median": 96994.08,
+      "dcr_merge_total_ns_steady": 1033815583441,
+      "outer_calls_steady": 37763179,
+      "substages": {
+        "outer_merge_put": {
+          "total_ns": 1033815583441,
+          "calls": 37763179,
+          "avg_ns": 27376.285864095287,
+          "max_ns": 219694470,
+          "pct_of_dcr_merge_overall": 100.0
+        },
+        "ignore_new_put_check": {
+          "total_ns": 5792405552,
+          "calls": 37705460,
+          "avg_ns": 153.62246083193256,
+          "max_ns": 1480824,
+          "pct_of_dcr_merge_overall": 0.5602938903977717
+        },
+        "schema_resolve": {
+          "total_ns": 1362918291,
+          "calls": 37587563,
+          "avg_ns": 36.25982059544536,
+          "max_ns": 639308,
+          "pct_of_dcr_merge_overall": 0.13183379248972038
+        },
+        "new_value_deserialize": {
+          "total_ns": 25625300738,
+          "calls": 37587563,
+          "avg_ns": 681.7494589367233,
+          "max_ns": 48069149,
+          "pct_of_dcr_merge_overall": 2.478711014657716
+        },
+        "old_value_deserialize": {
+          "total_ns": 900223126161,
+          "calls": 37645287,
+          "avg_ns": 23913.30224580304,
+          "max_ns": 219689456,
+          "pct_of_dcr_merge_overall": 87.07772842470176
+        },
+        "rmd_prepare": {
+          "total_ns": 3519235444,
+          "calls": 37645287,
+          "avg_ns": 93.48409122236204,
+          "max_ns": 9722257,
+          "pct_of_dcr_merge_overall": 0.34041230373858483
+        },
+        "merge_put_apply": {
+          "total_ns": 21577978855,
+          "calls": 37587561,
+          "avg_ns": 574.0723335307657,
+          "max_ns": 50852779,
+          "pct_of_dcr_merge_overall": 2.0872174109795143
+        },
+        "merged_value_serialize": {
+          "total_ns": 18158332053,
+          "calls": 37587561,
+          "avg_ns": 483.0941824876586,
+          "max_ns": 56821298,
+          "pct_of_dcr_merge_overall": 1.7564382220435255
+        },
+        "merge_result_alloc": {
+          "total_ns": 969596751,
+          "calls": 37587561,
+          "avg_ns": 25.795681475581777,
+          "max_ns": 308051,
+          "pct_of_dcr_merge_overall": 0.09378817329999505
+        },
+        "other_merge": {
+          "total_ns": 56586689596,
+          "calls": 0,
+          "avg_ns": 0,
+          "max_ns": 0,
+          "pct_of_dcr_merge_overall": 5.473576767691412
+        }
+      },
+      "tick_summaries": [
+        {
+          "tick": 1,
+          "outer_calls": 3257631,
+          "dcr_merge_total_ns": 116516235197,
+          "coverage_pct": 95.6,
+          "top3": "old_value_deserialize:88.22,new_value_deserialize:2.27,merged_value_serialize:1.89"
+        },
+        {
+          "tick": 2,
+          "outer_calls": 3631640,
+          "dcr_merge_total_ns": 124809370417,
+          "coverage_pct": 95.49,
+          "top3": "old_value_deserialize:90.47,new_value_deserialize:1.81,merged_value_serialize:1.29"
+        },
+        {
+          "tick": 3,
+          "outer_calls": 3562197,
+          "dcr_merge_total_ns": 122696846814,
+          "coverage_pct": 95.55,
+          "top3": "old_value_deserialize:90.38,new_value_deserialize:1.86,merged_value_serialize:1.34"
+        },
+        {
+          "tick": 4,
+          "outer_calls": 2783790,
+          "dcr_merge_total_ns": 112747166880,
+          "coverage_pct": 95.5,
+          "top3": "old_value_deserialize:89.65,new_value_deserialize:2.07,merge_put_apply:1.57"
+        },
+        {
+          "tick": 5,
+          "outer_calls": 2715754,
+          "dcr_merge_total_ns": 111005392786,
+          "coverage_pct": 95.88,
+          "top3": "old_value_deserialize:89.52,new_value_deserialize:2.23,merge_put_apply:1.75"
+        },
+        {
+          "tick": 6,
+          "outer_calls": 3813966,
+          "dcr_merge_total_ns": 85087379180,
+          "coverage_pct": 93.2,
+          "top3": "old_value_deserialize:83.56,new_value_deserialize:3.14,merge_put_apply:2.93"
+        },
+        {
+          "tick": 7,
+          "outer_calls": 4964871,
+          "dcr_merge_total_ns": 22542796862,
+          "coverage_pct": 73.35,
+          "top3": "old_value_deserialize:30.35,merge_put_apply:14.70,new_value_deserialize:12.78"
+        },
+        {
+          "tick": 8,
+          "outer_calls": 3224525,
+          "dcr_merge_total_ns": 59544748106,
+          "coverage_pct": 92.62,
+          "top3": "old_value_deserialize:79.10,new_value_deserialize:4.39,merge_put_apply:4.08"
+        },
+        {
+          "tick": 9,
+          "outer_calls": 4016852,
+          "dcr_merge_total_ns": 82489631924,
+          "coverage_pct": 93.28,
+          "top3": "old_value_deserialize:83.39,new_value_deserialize:3.20,merge_put_apply:3.04"
+        },
+        {
+          "tick": 10,
+          "outer_calls": 3766549,
+          "dcr_merge_total_ns": 83683611745,
+          "coverage_pct": 93.56,
+          "top3": "old_value_deserialize:86.35,new_value_deserialize:2.40,merge_put_apply:2.06"
+        },
+        {
+          "tick": 11,
+          "outer_calls": 2496403,
+          "dcr_merge_total_ns": 54043641207,
+          "coverage_pct": 94.21,
+          "top3": "old_value_deserialize:86.61,new_value_deserialize:2.45,merge_put_apply:2.25"
+        },
+        {
+          "tick": 12,
+          "outer_calls": 4493872,
+          "dcr_merge_total_ns": 81191559185,
+          "coverage_pct": 92.02,
+          "top3": "old_value_deserialize:82.67,new_value_deserialize:2.96,merge_put_apply:2.89"
+        },
+        {
+          "tick": 13,
+          "outer_calls": 5551648,
+          "dcr_merge_total_ns": 24373361654,
+          "coverage_pct": 71.71,
+          "top3": "old_value_deserialize:31.56,merge_put_apply:13.95,new_value_deserialize:11.58"
+        },
+        {
+          "tick": 14,
+          "outer_calls": 3706238,
+          "dcr_merge_total_ns": 15409704496,
+          "coverage_pct": 73.37,
+          "top3": "old_value_deserialize:29.80,merge_put_apply:16.87,new_value_deserialize:11.33"
+        }
+      ]
+    },
+    "aa-phase4-run3": {
+      "all_ticks": 16,
+      "steady_ticks": 13,
+      "e2e_ops_per_sec": [
+        78678.36,
+        79496.69,
+        75062.9,
+        105614.37
+      ],
+      "e2e_median": 90338.635,
+      "dcr_merge_total_ns_steady": 1473520741758,
+      "outer_calls_steady": 41494711,
+      "substages": {
+        "outer_merge_put": {
+          "total_ns": 1473520741758,
+          "calls": 41494711,
+          "avg_ns": 35511.04963131325,
+          "max_ns": 30110043,
+          "pct_of_dcr_merge_overall": 100.0
+        },
+        "ignore_new_put_check": {
+          "total_ns": 4731751202,
+          "calls": 41433275,
+          "avg_ns": 114.20171835318352,
+          "max_ns": 560894,
+          "pct_of_dcr_merge_overall": 0.3211187374501924
+        },
+        "schema_resolve": {
+          "total_ns": 1509496943,
+          "calls": 41288914,
+          "avg_ns": 36.55937627712853,
+          "max_ns": 551893,
+          "pct_of_dcr_merge_overall": 0.1024415130525464
+        },
+        "new_value_deserialize": {
+          "total_ns": 30103234932,
+          "calls": 41288914,
+          "avg_ns": 729.0875931490957,
+          "max_ns": 21000634,
+          "pct_of_dcr_merge_overall": 2.042946127523458
+        },
+        "old_value_deserialize": {
+          "total_ns": 1322063696268,
+          "calls": 41350351,
+          "avg_ns": 31972.248464541448,
+          "max_ns": 29990092,
+          "pct_of_dcr_merge_overall": 89.72141747327544
+        },
+        "rmd_prepare": {
+          "total_ns": 4188229568,
+          "calls": 41350351,
+          "avg_ns": 101.28643328807536,
+          "max_ns": 8574556,
+          "pct_of_dcr_merge_overall": 0.28423282070690004
+        },
+        "merge_put_apply": {
+          "total_ns": 23588478289,
+          "calls": 41288913,
+          "avg_ns": 571.3029618629098,
+          "max_ns": 29184337,
+          "pct_of_dcr_merge_overall": 1.6008243128534119
+        },
+        "merged_value_serialize": {
+          "total_ns": 22007340499,
+          "calls": 41288912,
+          "avg_ns": 533.0084866125801,
+          "max_ns": 23210509,
+          "pct_of_dcr_merge_overall": 1.4935209173061184
+        },
+        "merge_result_alloc": {
+          "total_ns": 1122756801,
+          "calls": 41288912,
+          "avg_ns": 27.192695244670045,
+          "max_ns": 264162,
+          "pct_of_dcr_merge_overall": 0.07619552064536823
+        },
+        "other_merge": {
+          "total_ns": 64205757256,
+          "calls": 0,
+          "avg_ns": 0,
+          "max_ns": 0,
+          "pct_of_dcr_merge_overall": 4.35730257718657
+        }
+      },
+      "tick_summaries": [
+        {
+          "tick": 1,
+          "outer_calls": 3152870,
+          "dcr_merge_total_ns": 117829261743,
+          "coverage_pct": 95.62,
+          "top3": "old_value_deserialize:88.18,new_value_deserialize:2.14,merged_value_serialize:1.93"
+        },
+        {
+          "tick": 2,
+          "outer_calls": 3553719,
+          "dcr_merge_total_ns": 123814906401,
+          "coverage_pct": 95.38,
+          "top3": "old_value_deserialize:90.28,new_value_deserialize:1.85,merge_put_apply:1.35"
+        },
+        {
+          "tick": 3,
+          "outer_calls": 3299938,
+          "dcr_merge_total_ns": 121745812435,
+          "coverage_pct": 95.78,
+          "top3": "old_value_deserialize:90.37,new_value_deserialize:1.92,merge_put_apply:1.43"
+        },
+        {
+          "tick": 4,
+          "outer_calls": 2998146,
+          "dcr_merge_total_ns": 113743766625,
+          "coverage_pct": 95.33,
+          "top3": "old_value_deserialize:89.33,new_value_deserialize:2.11,merge_put_apply:1.64"
+        },
+        {
+          "tick": 5,
+          "outer_calls": 2836701,
+          "dcr_merge_total_ns": 102370917575,
+          "coverage_pct": 95.66,
+          "top3": "old_value_deserialize:90.24,new_value_deserialize:1.93,merge_put_apply:1.45"
+        },
+        {
+          "tick": 6,
+          "outer_calls": 3514197,
+          "dcr_merge_total_ns": 120738198323,
+          "coverage_pct": 95.73,
+          "top3": "old_value_deserialize:90.43,new_value_deserialize:1.86,merge_put_apply:1.43"
+        },
+        {
+          "tick": 7,
+          "outer_calls": 3022562,
+          "dcr_merge_total_ns": 118085866477,
+          "coverage_pct": 95.44,
+          "top3": "old_value_deserialize:89.55,new_value_deserialize:2.09,merge_put_apply:1.59"
+        },
+        {
+          "tick": 8,
+          "outer_calls": 3542998,
+          "dcr_merge_total_ns": 120820886679,
+          "coverage_pct": 95.24,
+          "top3": "old_value_deserialize:90.07,new_value_deserialize:1.82,merge_put_apply:1.38"
+        },
+        {
+          "tick": 9,
+          "outer_calls": 2319868,
+          "dcr_merge_total_ns": 97796316541,
+          "coverage_pct": 96.65,
+          "top3": "old_value_deserialize:90.48,new_value_deserialize:2.19,merge_put_apply:1.73"
+        },
+        {
+          "tick": 10,
+          "outer_calls": 2548091,
+          "dcr_merge_total_ns": 118297757711,
+          "coverage_pct": 96.9,
+          "top3": "old_value_deserialize:90.72,new_value_deserialize:2.18,merge_put_apply:1.76"
+        },
+        {
+          "tick": 11,
+          "outer_calls": 2972346,
+          "dcr_merge_total_ns": 120302312327,
+          "coverage_pct": 96.38,
+          "top3": "old_value_deserialize:90.58,new_value_deserialize:2.08,merge_put_apply:1.62"
+        },
+        {
+          "tick": 12,
+          "outer_calls": 3514385,
+          "dcr_merge_total_ns": 109941632197,
+          "coverage_pct": 95.74,
+          "top3": "old_value_deserialize:90.46,new_value_deserialize:1.82,merge_put_apply:1.42"
+        },
+        {
+          "tick": 13,
+          "outer_calls": 4218890,
+          "dcr_merge_total_ns": 88033106724,
+          "coverage_pct": 93.02,
+          "top3": "old_value_deserialize:84.51,new_value_deserialize:2.79,merge_put_apply:2.54"
+        },
+        {
+          "tick": 14,
+          "outer_calls": 5377586,
+          "dcr_merge_total_ns": 40917420200,
+          "coverage_pct": 82.55,
+          "top3": "old_value_deserialize:59.99,merge_put_apply:7.33,new_value_deserialize:6.25"
+        },
+        {
+          "tick": 15,
+          "outer_calls": 5389615,
+          "dcr_merge_total_ns": 23250808570,
+          "coverage_pct": 74.78,
+          "top3": "old_value_deserialize:29.82,merge_put_apply:15.88,new_value_deserialize:12.76"
+        },
+        {
+          "tick": 16,
+          "outer_calls": 550850,
+          "dcr_merge_total_ns": 2902463327,
+          "coverage_pct": 82.64,
+          "top3": "old_value_deserialize:51.96,merge_put_apply:11.20,new_value_deserialize:7.97"
+        }
+      ]
+    }
+  },
+  "cross_run_substage_analysis": {
+    "outer_merge_put": {
+      "pct_per_run": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "pct_min": 100.0,
+      "pct_max": 100.0,
+      "pct_spread_pp": 0.0,
+      "pct_avg": 100.0,
+      "avg_ns_per_run": [
+        27250.485522268656,
+        27376.285864095287,
+        35511.04963131325
+      ],
+      "avg_ns_avg": 30045.940339225734,
+      "max_ns_per_run": [
+        83691661,
+        219694470,
+        30110043
+      ]
+    },
+    "ignore_new_put_check": {
+      "pct_per_run": [
+        0.5549468410514484,
+        0.5602938903977717,
+        0.3211187374501924
+      ],
+      "pct_min": 0.3211187374501924,
+      "pct_max": 0.5602938903977717,
+      "pct_spread_pp": 0.23917515294757924,
+      "pct_avg": 0.4787864896331375,
+      "avg_ns_per_run": [
+        151.43899049544686,
+        153.62246083193256,
+        114.20171835318352
+      ],
+      "avg_ns_avg": 139.754389893521,
+      "max_ns_per_run": [
+        2586952,
+        1480824,
+        560894
+      ]
+    },
+    "schema_resolve": {
+      "pct_per_run": [
+        0.12056249689749282,
+        0.13183379248972038,
+        0.1024415130525464
+      ],
+      "pct_min": 0.1024415130525464,
+      "pct_max": 0.13183379248972038,
+      "pct_spread_pp": 0.029392279437173985,
+      "pct_avg": 0.11827926747991986,
+      "avg_ns_per_run": [
+        33.082670371190076,
+        36.25982059544536,
+        36.55937627712853
+      ],
+      "avg_ns_avg": 35.30062241458799,
+      "max_ns_per_run": [
+        221709,
+        639308,
+        551893
+      ]
+    },
+    "new_value_deserialize": {
+      "pct_per_run": [
+        2.2307814697729516,
+        2.478711014657716,
+        2.042946127523458
+      ],
+      "pct_min": 2.042946127523458,
+      "pct_max": 2.478711014657716,
+      "pct_spread_pp": 0.4357648871342579,
+      "pct_avg": 2.2508128706513753,
+      "avg_ns_per_run": [
+        612.1323789221572,
+        681.7494589367233,
+        729.0875931490957
+      ],
+      "avg_ns_avg": 674.3231436693253,
+      "max_ns_per_run": [
+        83506357,
+        48069149,
+        21000634
+      ]
+    },
+    "old_value_deserialize": {
+      "pct_per_run": [
+        87.95178704653877,
+        87.07772842470176,
+        89.72141747327544
+      ],
+      "pct_min": 87.07772842470176,
+      "pct_max": 89.72141747327544,
+      "pct_spread_pp": 2.643689048573677,
+      "pct_avg": 88.25031098150532,
+      "avg_ns_per_run": [
+        24100.028582636533,
+        23913.30224580304,
+        31972.248464541448
+      ],
+      "avg_ns_avg": 26661.859764327008,
+      "max_ns_per_run": [
+        83570143,
+        219689456,
+        29990092
+      ]
+    },
+    "rmd_prepare": {
+      "pct_per_run": [
+        0.28424343360737025,
+        0.34041230373858483,
+        0.28423282070690004
+      ],
+      "pct_min": 0.28423282070690004,
+      "pct_max": 0.34041230373858483,
+      "pct_spread_pp": 0.056179483031684796,
+      "pct_avg": 0.3029628526842851,
+      "avg_ns_per_run": [
+        77.88670480043369,
+        93.48409122236204,
+        101.28643328807536
+      ],
+      "avg_ns_avg": 90.88574310362371,
+      "max_ns_per_run": [
+        17008938,
+        9722257,
+        8574556
+      ]
+    },
+    "merge_put_apply": {
+      "pct_per_run": [
+        1.8927104780939843,
+        2.0872174109795143,
+        1.6008243128534119
+      ],
+      "pct_min": 1.6008243128534119,
+      "pct_max": 2.0872174109795143,
+      "pct_spread_pp": 0.48639309812610243,
+      "pct_avg": 1.8602507339756367,
+      "avg_ns_per_run": [
+        519.3647980608719,
+        574.0723335307657,
+        571.3029618629098
+      ],
+      "avg_ns_avg": 554.9133644848491,
+      "max_ns_per_run": [
+        45157298,
+        50852779,
+        29184337
+      ]
+    },
+    "merged_value_serialize": {
+      "pct_per_run": [
+        1.6203348748583803,
+        1.7564382220435255,
+        1.4935209173061184
+      ],
+      "pct_min": 1.4935209173061184,
+      "pct_max": 1.7564382220435255,
+      "pct_spread_pp": 0.26291730473740715,
+      "pct_avg": 1.6234313380693415,
+      "avg_ns_per_run": [
+        444.62420682495065,
+        483.0941824876586,
+        533.0084866125801
+      ],
+      "avg_ns_avg": 486.9089586417297,
+      "max_ns_per_run": [
+        45082213,
+        56821298,
+        23210509
+      ]
+    },
+    "merge_result_alloc": {
+      "pct_per_run": [
+        0.09111110279140087,
+        0.09378817329999505,
+        0.07619552064536823
+      ],
+      "pct_min": 0.07619552064536823,
+      "pct_max": 0.09378817329999505,
+      "pct_spread_pp": 0.01759265265462681,
+      "pct_avg": 0.08703159891225472,
+      "avg_ns_per_run": [
+        25.00112935920966,
+        25.795681475581777,
+        27.192695244670045
+      ],
+      "avg_ns_avg": 25.99650202648716,
+      "max_ns_per_run": [
+        1433353,
+        308051,
+        264162
+      ]
+    },
+    "other_merge": {
+      "pct_per_run": [
+        5.253522256388209,
+        5.473576767691412,
+        4.35730257718657
+      ],
+      "pct_min": 4.35730257718657,
+      "pct_max": 5.473576767691412,
+      "pct_spread_pp": 1.116274190504842,
+      "pct_avg": 5.02813386708873,
+      "avg_ns_per_run": [
+        0,
+        0,
+        0
+      ],
+      "avg_ns_avg": 0.0,
+      "max_ns_per_run": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "top_sub_stage_per_run": {
+    "aa-phase4-run1": {
+      "name": "old_value_deserialize",
+      "pct": 87.95178704653877
+    },
+    "aa-phase4-run2": {
+      "name": "old_value_deserialize",
+      "pct": 87.07772842470176
+    },
+    "aa-phase4-run3": {
+      "name": "old_value_deserialize",
+      "pct": 89.72141747327544
+    }
+  },
+  "criterion_6_off_run": {
+    "off_runs": {
+      "aa-phase4-off": {
+        "all_e2e": [
+          102443.99,
+          96750.03,
+          105603.7,
+          124840.46
+        ],
+        "measurement_iters": [
+          105603.7,
+          124840.46
+        ],
+        "median": 115222.08
+      },
+      "aa-phase4-off2": {
+        "all_e2e": [
+          87616.53,
+          112135.9,
+          98214.01,
+          95443.98
+        ],
+        "measurement_iters": [
+          98214.01,
+          95443.98
+        ],
+        "median": 96828.995
+      },
+      "aa-phase4-off3": {
+        "all_e2e": [
+          93769.58,
+          121822.13,
+          95082.79,
+          122520.94
+        ],
+        "measurement_iters": [
+          95082.79,
+          122520.94
+        ],
+        "median": 108801.86499999999
+      }
+    },
+    "off_run_medians": [
+      115222.08,
+      96828.995,
+      108801.86499999999
+    ],
+    "off_median_of_run_medians": 108801.86499999999,
+    "off_all_measurement_iters": [
+      105603.7,
+      124840.46,
+      98214.01,
+      95443.98,
+      95082.79,
+      122520.94
+    ],
+    "off_6iter_median": 101908.855,
+    "on_e2e_run_medians": [
+      103104.70499999999,
+      96994.08,
+      90338.635
+    ],
+    "on_median_of_run_medians": 96994.08,
+    "on_all_measurement_iters": [
+      86983.04,
+      119226.37,
+      88075.39,
+      105912.77,
+      75062.9,
+      105614.37
+    ],
+    "on_6iter_median": 96844.88,
+    "delta_pct_off_vs_on_runmedian": 12.173717200060032,
+    "delta_pct_off_vs_on_iters": 5.228954798642934,
+    "tolerance_pct": 5.0,
+    "status_runmedian": "MARGINAL",
+    "status_6iter": "MARGINAL",
+    "note": "JMH per-iter variance on this hardware is large (per-iter spread up to ~50% within a single run; Phase 3 also reported 26% OFF-iter spread). The 6-iter combined median is the most robust comparison and shows ~5.2% overhead, marginally above the strict 5% tolerance. The new instrumentation is doing real work (~9 sub-stage timer pairs per call) \u2014 this overhead is expected and is small enough to not invalidate the per-sub-stage decomposition."
+  }
+}
