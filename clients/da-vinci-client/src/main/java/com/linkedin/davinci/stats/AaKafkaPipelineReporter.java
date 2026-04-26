@@ -53,6 +53,10 @@ public final class AaKafkaPipelineReporter {
     if (ENABLED) {
       startReporter();
     }
+    // Phase 7: also pull in the broker-side JMX scraper. It self-gates on
+    // `venice.server.aa.kafka.broker.jmx.enabled` so this is a no-op unless
+    // that property is explicitly set.
+    AaKafkaBrokerReporter.ensureStarted();
   }
 
   private AaKafkaPipelineReporter() {

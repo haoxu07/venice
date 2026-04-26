@@ -1,0 +1,209 @@
+{
+  "phase": 7,
+  "study_goal": "Tune Kafka producer / consumer / broker configs at the Phase 5 winning configuration (WC=off + RMD-cache-on, 100k keys, 4 producers / 2 per region) and find which knob, if any, lifts the E2E throughput cap above the ~132k ops/s observed in Phase 6.",
+  "run_date_utc": "2026-04-25",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "config_locked": {
+    "workload": "PUT",
+    "key_pool_size": 100000,
+    "producers_per_region": 2,
+    "wc_enabled_for_put": false,
+    "rmd_cache_enabled": true,
+    "kafka_acks": "all",
+    "kafka_max_in_flight": 1,
+    "phase6_instrumentation_enabled": true,
+    "phase7_broker_jmx_enabled": true
+  },
+  "baseline_e2e_median": 142297.72,
+  "experiments": [
+    {
+      "experiment": "baseline",
+      "knob_changed": "(none \u2014 Phase 5/6 winning config: linger=1000ms, batch=512KB, max.poll=1000, comp=gzip)",
+      "log_path": "aa-phase7-baseline.log",
+      "e2e_median": 142297.72,
+      "e2e_warmup": [
+        129833.21,
+        130450.51
+      ],
+      "e2e_measurement": [
+        144430.76,
+        140164.68
+      ],
+      "delta_vs_baseline_pct": 0.0,
+      "handler_idle_pct": 2.48,
+      "net_idle_pct": 0.33,
+      "produce_total_time_ms": 0.04,
+      "fetch_total_time_ms": 341.45,
+      "broker_bytes_in_per_sec": 8039000.0,
+      "broker_messages_in_per_sec": 349616.6,
+      "producer_request_latency_avg_ms": 1.93,
+      "record_queue_time_avg_ms": 47.56,
+      "consumer_consumed_rate_per_sec": 296915.86,
+      "producer_total_send_rate_per_sec": 452131.01,
+      "poll_empty_pct": 62.11,
+      "poll_full_pct": 37.89
+    },
+    {
+      "experiment": "Exp.E",
+      "knob_changed": "broker num.io.threads=16",
+      "log_path": "aa-phase7-expE.log",
+      "e2e_median": 141788.6,
+      "e2e_warmup": [
+        149565.19,
+        148454.13
+      ],
+      "e2e_measurement": [
+        144988.77,
+        138588.43
+      ],
+      "delta_vs_baseline_pct": -0.36,
+      "handler_idle_pct": 2.54,
+      "net_idle_pct": 0.33,
+      "produce_total_time_ms": 0.04,
+      "fetch_total_time_ms": 338.41,
+      "broker_bytes_in_per_sec": 8522700.0,
+      "broker_messages_in_per_sec": 365480.56,
+      "producer_request_latency_avg_ms": 27.2,
+      "record_queue_time_avg_ms": 3034.36,
+      "consumer_consumed_rate_per_sec": 275321.78,
+      "producer_total_send_rate_per_sec": 347066.57,
+      "poll_empty_pct": 69.95,
+      "poll_full_pct": 30.05
+    },
+    {
+      "experiment": "Exp.A",
+      "knob_changed": "venice.kafka.linger.ms=5",
+      "log_path": "aa-phase7-expA.log",
+      "e2e_median": 131865.36,
+      "e2e_warmup": [
+        115460.22,
+        126492.92
+      ],
+      "e2e_measurement": [
+        134755.59,
+        128975.14
+      ],
+      "delta_vs_baseline_pct": -7.33,
+      "handler_idle_pct": 2.77,
+      "net_idle_pct": 0.67,
+      "produce_total_time_ms": 0.18,
+      "fetch_total_time_ms": 360.59,
+      "broker_bytes_in_per_sec": 6413300.0,
+      "broker_messages_in_per_sec": 325666.57,
+      "producer_request_latency_avg_ms": 1.2,
+      "record_queue_time_avg_ms": 23.19,
+      "consumer_consumed_rate_per_sec": 251606.11,
+      "producer_total_send_rate_per_sec": 397474.45,
+      "poll_empty_pct": 51.88,
+      "poll_full_pct": 48.12
+    },
+    {
+      "experiment": "Exp.C",
+      "knob_changed": "linger.ms=5 + max.poll.records=5000 (A+B)",
+      "log_path": "aa-phase7-expC.log",
+      "e2e_median": 130712.24,
+      "e2e_warmup": [
+        119500.66,
+        117315.87
+      ],
+      "e2e_measurement": [
+        130027.97,
+        131396.52
+      ],
+      "delta_vs_baseline_pct": -8.14,
+      "handler_idle_pct": 2.56,
+      "net_idle_pct": 0.33,
+      "produce_total_time_ms": 0.21,
+      "fetch_total_time_ms": 339.69,
+      "broker_bytes_in_per_sec": 6504100.0,
+      "broker_messages_in_per_sec": 336649.29,
+      "producer_request_latency_avg_ms": 1.57,
+      "record_queue_time_avg_ms": 134.6,
+      "consumer_consumed_rate_per_sec": 252425.66,
+      "producer_total_send_rate_per_sec": 377637.31,
+      "poll_empty_pct": 96.94,
+      "poll_full_pct": 3.06
+    },
+    {
+      "experiment": "Exp.B",
+      "knob_changed": "phase3.server.max.poll.records=5000",
+      "log_path": "aa-phase7-expB.log",
+      "e2e_median": 129782.84,
+      "e2e_warmup": [
+        138065.45,
+        123478.49
+      ],
+      "e2e_measurement": [
+        130432.99,
+        129132.69
+      ],
+      "delta_vs_baseline_pct": -8.79,
+      "handler_idle_pct": 2.7,
+      "net_idle_pct": 0.67,
+      "produce_total_time_ms": 0.04,
+      "fetch_total_time_ms": 358.67,
+      "broker_bytes_in_per_sec": 8584700.0,
+      "broker_messages_in_per_sec": 372832.25,
+      "producer_request_latency_avg_ms": 21.74,
+      "record_queue_time_avg_ms": 1315.41,
+      "consumer_consumed_rate_per_sec": 269251.66,
+      "producer_total_send_rate_per_sec": 393812.75,
+      "poll_empty_pct": 99.71,
+      "poll_full_pct": 0.29
+    },
+    {
+      "experiment": "Exp.D",
+      "knob_changed": "venice.kafka.compression.type=lz4",
+      "log_path": "aa-phase7-expD.log",
+      "e2e_median": 126888.8,
+      "e2e_warmup": [
+        123839.77,
+        123121.77
+      ],
+      "e2e_measurement": [
+        126316.32,
+        127461.28
+      ],
+      "delta_vs_baseline_pct": -10.83,
+      "handler_idle_pct": 2.54,
+      "net_idle_pct": 0.33,
+      "produce_total_time_ms": 0.05,
+      "fetch_total_time_ms": 348.0,
+      "broker_bytes_in_per_sec": 8094300.0,
+      "broker_messages_in_per_sec": 349858.47,
+      "producer_request_latency_avg_ms": 21.13,
+      "record_queue_time_avg_ms": 2443.99,
+      "consumer_consumed_rate_per_sec": 261545.32,
+      "producer_total_send_rate_per_sec": 414295.94,
+      "poll_empty_pct": 44.62,
+      "poll_full_pct": 55.38
+    }
+  ],
+  "named_answer": "b",
+  "named_answer_justification": "No single knob moved E2E by >= +5% above the 142298 ops/s baseline. Max upward delta = +0.00% (within run variance). Largest downward = -10.83%. Broker JMX `RequestHandlerAvgIdlePercent` averaged 2.60 across all experiments (with 3 in-process brokers in the JVM, that's ~87% spare capacity per broker), meaning the broker handler pool is HIGHLY IDLE and is NOT the bottleneck. Combined with Phase 6's 96.81% leader-record-wall named coverage, the cap appears to be on the AA leader thread / per-record overhead path that is unaffected by Kafka client-side or broker-side thread tuning. Phase 6 named answer (b) is validated insofar as Kafka client tuning does not move the cap; the deeper cap source is on the AA leader hot path.",
+  "broker_jmx_summary": {
+    "handler_idle_pct_avg_across_experiments": 2.598333333333333,
+    "interpretation": "RequestHandlerAvgIdlePercent is a yammer Meter measuring idle thread-time per second summed across the request-handler thread pool. With 3 in-process brokers (parent + 2 child regions) in the same JVM, the platform MBeanServer reports the value summed across them; ~2.5-2.8 indicates roughly 0.83-0.93 per broker, i.e. brokers are 83-93% idle on the request-handler dimension. Coupled with broker `produce_total_ms < 0.25 ms` (near-zero broker write latency), the in-process broker has substantial CPU headroom for the AA workload."
+  },
+  "criterion_7_itests": {
+    "build_status": "SUCCESS",
+    "build_time": "7m 5s",
+    "failures": 0,
+    "errors": 0,
+    "tests": 16,
+    "classes": {
+      "ActiveActiveReplicationForHybridTest": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "time_s": 330.126
+      },
+      "TestActiveActiveIngestion": {
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "time_s": 201.641
+      }
+    }
+  }
+}

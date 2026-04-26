@@ -93,6 +93,21 @@ class KafkaBrokerFactory implements PubSubBrokerFactory<KafkaBrokerFactory.Kafka
       configMap.put(KafkaConfig.OffsetsTopicReplicationFactorProp(), OFFSET_TOPIC_REPLICATION_FACTOR);
       configMap.put(KafkaConfig.LogCleanerEnableProp(), LOG_CLEANER_ENABLE);
 
+      // Phase 7: optional broker-side thread-pool overrides driven by sysprop. When set,
+      // these supplant the Kafka defaults (num.io.threads=8, num.network.threads=3) for
+      // every embedded broker started in this JVM. Only used by the Phase 7 tuning study;
+      // unset = default Kafka behaviour (no diff vs Phase 0-6).
+      String phase7NumIoThreads = System.getProperty("venice.kafka.broker.num.io.threads");
+      if (phase7NumIoThreads != null && !phase7NumIoThreads.isEmpty()) {
+        configMap.put(KafkaConfig.NumIoThreadsProp(), phase7NumIoThreads);
+        LOGGER.info("[Phase7] kafka broker num.io.threads={}", phase7NumIoThreads);
+      }
+      String phase7NumNetThreads = System.getProperty("venice.kafka.broker.num.network.threads");
+      if (phase7NumNetThreads != null && !phase7NumNetThreads.isEmpty()) {
+        configMap.put(KafkaConfig.NumNetworkThreadsProp(), phase7NumNetThreads);
+        LOGGER.info("[Phase7] kafka broker num.network.threads={}", phase7NumNetThreads);
+      }
+
       // Setup ssl related configs for kafka.
 
       VeniceTlsConfiguration tlsConfiguration = SslUtils.getTlsConfiguration();

@@ -231,6 +231,13 @@ public final class AaLeaderBottleneckReporter {
       @SuppressWarnings("unused")
       boolean kafkaPipelineEnabled = AaKafkaPipelineReporter.ENABLED;
     }
+    // Phase 7: also touch AaKafkaBrokerReporter so its class initializer (which
+    // starts its own scheduler when `venice.server.aa.kafka.broker.jmx.enabled`
+    // is set) runs in the server JVM even if no other class references it.
+    if (AaKafkaBrokerReporter.ENABLED) {
+      @SuppressWarnings("unused")
+      boolean kafkaBrokerEnabled = AaKafkaBrokerReporter.ENABLED;
+    }
   }
 
   private AaLeaderBottleneckReporter() {

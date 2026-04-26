@@ -1,0 +1,326 @@
+{
+  "aa-phase7-baseline.log": {
+    "log_path": "aa-phase7-baseline.log",
+    "e2e_iters_all": [
+      129833.21,
+      130450.51,
+      144430.76,
+      140164.68
+    ],
+    "e2e_warmup": [
+      129833.21,
+      130450.51
+    ],
+    "e2e_measurement": [
+      144430.76,
+      140164.68
+    ],
+    "e2e_median": 142297.72,
+    "e2e_all_pooled_median": 135307.595,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.33316666666666667,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.0424,
+      "fetch_local_ms": 0.1583,
+      "fetch_remote_ms": 340.4729,
+      "fetch_req_queue_ms": 0.0023,
+      "log_flush_mean_ms": 14.0067,
+      "bytes_out_per_sec": 6877800.0,
+      "handler_idle": 2.4824666666666664,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 349616.6045,
+      "produce_resp_queue_ms": 0.00036099,
+      "produce_local_ms": 0.0388,
+      "fetch_total_ms": 341.4535,
+      "log_flush_per_sec": 3.3165,
+      "produce_req_queue_ms": 0.00074267,
+      "fetch_resp_queue_ms": 0.0032,
+      "bytes_in_per_sec": 8039000.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 452131.0087666667,
+      "consumer_total_consume_rate_avg": 296915.86186666664,
+      "rep_producer_request_latency_avg_ms": 1.9341,
+      "rep_producer_batch_size_avg_bytes": 26288.0099,
+      "rep_producer_record_queue_time_avg_ms": 47.5577,
+      "rep_consumer_fetch_latency_avg_ms": 1.8485
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 37889,
+      "rt_poll_full_count": 23114,
+      "poll_empty_pct": 62.11006016097569,
+      "poll_full_pct": 37.88993983902431
+    }
+  },
+  "aa-phase7-expA.log": {
+    "log_path": "aa-phase7-expA.log",
+    "e2e_iters_all": [
+      115460.22,
+      126492.92,
+      134755.59,
+      128975.14
+    ],
+    "e2e_warmup": [
+      115460.22,
+      126492.92
+    ],
+    "e2e_measurement": [
+      134755.59,
+      128975.14
+    ],
+    "e2e_median": 131865.365,
+    "e2e_all_pooled_median": 127734.03,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.6662666666666667,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.18065,
+      "fetch_local_ms": 0.0144,
+      "fetch_remote_ms": 360.0213,
+      "fetch_req_queue_ms": 0.00255,
+      "log_flush_mean_ms": 5.5622,
+      "bytes_out_per_sec": 3535300.0,
+      "handler_idle": 2.7663333333333333,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 325666.565,
+      "produce_resp_queue_ms": 0.00017619,
+      "produce_local_ms": 0.15435,
+      "fetch_total_ms": 360.5861,
+      "log_flush_per_sec": 3.5552,
+      "produce_req_queue_ms": 0.00135,
+      "fetch_resp_queue_ms": 0.00895,
+      "bytes_in_per_sec": 6413300.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 397474.4545666667,
+      "consumer_total_consume_rate_avg": 251606.10533333337,
+      "rep_producer_request_latency_avg_ms": 1.2022,
+      "rep_producer_batch_size_avg_bytes": 10281.3705,
+      "rep_producer_record_queue_time_avg_ms": 23.1921,
+      "rep_consumer_fetch_latency_avg_ms": 152.8529
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 37113,
+      "rt_poll_full_count": 34430,
+      "poll_empty_pct": 51.87509609605412,
+      "poll_full_pct": 48.12490390394588
+    }
+  },
+  "aa-phase7-expB.log": {
+    "log_path": "aa-phase7-expB.log",
+    "e2e_iters_all": [
+      138065.45,
+      123478.49,
+      130432.99,
+      129132.69
+    ],
+    "e2e_warmup": [
+      138065.45,
+      123478.49
+    ],
+    "e2e_measurement": [
+      130432.99,
+      129132.69
+    ],
+    "e2e_median": 129782.84,
+    "e2e_all_pooled_median": 129782.84,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.6666666666666666,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.0417,
+      "fetch_local_ms": 0.0118,
+      "fetch_remote_ms": 341.7876,
+      "fetch_req_queue_ms": 0.0018,
+      "log_flush_mean_ms": 9.96715,
+      "bytes_out_per_sec": 7555900.0,
+      "handler_idle": 2.7005666666666666,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 372832.2536,
+      "produce_resp_queue_ms": 0.00029229,
+      "produce_local_ms": 0.0374,
+      "fetch_total_ms": 358.6675,
+      "log_flush_per_sec": 1.6355,
+      "produce_req_queue_ms": 0.00047313,
+      "fetch_resp_queue_ms": 0.0048,
+      "bytes_in_per_sec": 8584700.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 393812.7469666666,
+      "consumer_total_consume_rate_avg": 269251.6588,
+      "rep_producer_request_latency_avg_ms": 21.7381,
+      "rep_producer_batch_size_avg_bytes": 411762.8383,
+      "rep_producer_record_queue_time_avg_ms": 1315.406,
+      "rep_consumer_fetch_latency_avg_ms": 77.5098
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 30832,
+      "rt_poll_full_count": 91,
+      "poll_empty_pct": 99.70572066099666,
+      "poll_full_pct": 0.29427933900333086
+    }
+  },
+  "aa-phase7-expC.log": {
+    "log_path": "aa-phase7-expC.log",
+    "e2e_iters_all": [
+      119500.66,
+      117315.87,
+      130027.97,
+      131396.52
+    ],
+    "e2e_warmup": [
+      119500.66,
+      117315.87
+    ],
+    "e2e_measurement": [
+      130027.97,
+      131396.52
+    ],
+    "e2e_median": 130712.245,
+    "e2e_all_pooled_median": 124764.315,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.3330666666666667,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.2114,
+      "fetch_local_ms": 0.0186,
+      "fetch_remote_ms": 331.0438,
+      "fetch_req_queue_ms": 0.00086711,
+      "log_flush_mean_ms": 5.8722,
+      "bytes_out_per_sec": 3830400.0,
+      "handler_idle": 2.557933333333333,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 336649.288,
+      "produce_resp_queue_ms": 0.00017809,
+      "produce_local_ms": 0.1834,
+      "fetch_total_ms": 339.6935,
+      "log_flush_per_sec": 3.6047000000000002,
+      "produce_req_queue_ms": 0.00024933,
+      "fetch_resp_queue_ms": 0.002,
+      "bytes_in_per_sec": 6504100.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 377637.30600000004,
+      "consumer_total_consume_rate_avg": 252425.66279999996,
+      "rep_producer_request_latency_avg_ms": 1.5674,
+      "rep_producer_batch_size_avg_bytes": 20273.747,
+      "rep_producer_record_queue_time_avg_ms": 134.6008,
+      "rep_consumer_fetch_latency_avg_ms": 163.5085
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 37983,
+      "rt_poll_full_count": 1200,
+      "poll_empty_pct": 96.93744736237655,
+      "poll_full_pct": 3.062552637623459
+    }
+  },
+  "aa-phase7-expD.log": {
+    "log_path": "aa-phase7-expD.log",
+    "e2e_iters_all": [
+      123839.77,
+      123121.77,
+      126316.32,
+      127461.28
+    ],
+    "e2e_warmup": [
+      123839.77,
+      123121.77
+    ],
+    "e2e_measurement": [
+      126316.32,
+      127461.28
+    ],
+    "e2e_median": 126888.8,
+    "e2e_all_pooled_median": 125078.04500000001,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.3329666666666667,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.0479,
+      "fetch_local_ms": 0.0884,
+      "fetch_remote_ms": 347.1421,
+      "fetch_req_queue_ms": 0.0028,
+      "log_flush_mean_ms": 10.8466,
+      "bytes_out_per_sec": 7416300.0,
+      "handler_idle": 2.537433333333334,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 349858.4702,
+      "produce_resp_queue_ms": 0.00023267,
+      "produce_local_ms": 0.044,
+      "fetch_total_ms": 347.9973,
+      "log_flush_per_sec": 3.6047000000000002,
+      "produce_req_queue_ms": 0.0012,
+      "fetch_resp_queue_ms": 0.0054,
+      "bytes_in_per_sec": 8094300.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 414295.9433666666,
+      "consumer_total_consume_rate_avg": 261545.31860000003,
+      "rep_producer_request_latency_avg_ms": 21.1311,
+      "rep_producer_batch_size_avg_bytes": 416603.0856,
+      "rep_producer_record_queue_time_avg_ms": 2443.9922,
+      "rep_consumer_fetch_latency_avg_ms": 2.4688
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 37844,
+      "rt_poll_full_count": 46973,
+      "poll_empty_pct": 44.618413761392176,
+      "poll_full_pct": 55.381586238607824
+    }
+  },
+  "aa-phase7-expE.log": {
+    "log_path": "aa-phase7-expE.log",
+    "e2e_iters_all": [
+      149565.19,
+      148454.13,
+      144988.77,
+      138588.43
+    ],
+    "e2e_warmup": [
+      149565.19,
+      148454.13
+    ],
+    "e2e_measurement": [
+      144988.77,
+      138588.43
+    ],
+    "e2e_median": 141788.59999999998,
+    "e2e_all_pooled_median": 146721.45,
+    "broker_jmx_last3_avg": {
+      "net_idle": 0.3333333333333333,
+      "produce_remote_ms": 0.0,
+      "produce_total_ms": 0.0399,
+      "fetch_local_ms": 0.1357,
+      "fetch_remote_ms": 337.4583,
+      "fetch_req_queue_ms": 0.0015,
+      "log_flush_mean_ms": 21.907,
+      "bytes_out_per_sec": 7419800.0,
+      "handler_idle": 2.5414333333333334,
+      "broker_count": 1.0,
+      "messages_in_per_sec": 365480.5649,
+      "produce_resp_queue_ms": 0.0003399,
+      "produce_local_ms": 0.0339,
+      "fetch_total_ms": 338.4081,
+      "log_flush_per_sec": 1.72275,
+      "produce_req_queue_ms": 0.00084864,
+      "fetch_resp_queue_ms": 0.001,
+      "bytes_in_per_sec": 8522700.0
+    },
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 347066.56666666665,
+      "consumer_total_consume_rate_avg": 275321.7826,
+      "rep_producer_request_latency_avg_ms": 27.2024,
+      "rep_producer_batch_size_avg_bytes": 405009.171,
+      "rep_producer_record_queue_time_avg_ms": 3034.3623,
+      "rep_consumer_fetch_latency_avg_ms": 54.9149
+    },
+    "poll_counts": {
+      "rt_poll_empty_count": 12488,
+      "rt_poll_full_count": 5366,
+      "poll_empty_pct": 69.94511033941974,
+      "poll_full_pct": 30.054889660580265
+    }
+  }
+}

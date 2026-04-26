@@ -24,6 +24,7 @@ import com.linkedin.venice.integration.utils.VeniceTwoLayerMultiRegionMultiClust
 import com.linkedin.venice.meta.Store;
 import com.linkedin.venice.samza.VeniceSystemProducer;
 import com.linkedin.venice.utils.IntegrationTestPushUtils;
+import com.linkedin.venice.utils.Pair;
 import com.linkedin.venice.utils.TestUtils;
 import com.linkedin.venice.utils.Utils;
 import com.linkedin.venice.writer.update.UpdateBuilder;
@@ -113,7 +114,21 @@ public class ActiveActiveIngestionBenchmark {
   // Phase 3 server-side max.poll.records override. If set (>0), wired into
   // SERVER_KAFKA_MAX_POLL_RECORDS in the server-properties block of setUp(). Default 0
   // (do not override — server uses its built-in default of 100).
-  private static final int SERVER_MAX_POLL_RECORDS_OVERRIDE = Integer.getInteger("phase3.server.max.poll.records", 0);
+  // Phase 7: also accept the alias `phase7.server.max.poll.records` (preferred for new
+  // experiments) — falls back to `phase3.server.max.poll.records` when unset.
+  private static final int SERVER_MAX_POLL_RECORDS_OVERRIDE =
+      Integer.getInteger("phase7.server.max.poll.records", Integer.getInteger("phase3.server.max.poll.records", 0));
+  // Phase 7 producer-side knobs (read at @Setup time, route into Samza/VeniceWriter
+  // producer properties via the `kafka.<config>` prefix that Venice strips before
+  // handing the prop to Apache Kafka's producer).
+  private static final String VENICE_KAFKA_LINGER_MS = System.getProperty("venice.kafka.linger.ms");
+  private static final String VENICE_KAFKA_BATCH_SIZE = System.getProperty("venice.kafka.batch.size");
+  private static final String VENICE_KAFKA_COMPRESSION_TYPE = System.getProperty("venice.kafka.compression.type");
+  // Phase 7 broker-side knobs are picked up by `KafkaBrokerFactory` at broker-start
+  // time directly from sysprops (no benchmark wiring needed). They are mentioned here
+  // for documentation:
+  //   -Dvenice.kafka.broker.num.io.threads=&lt;N&gt;
+  //   -Dvenice.kafka.broker.num.network.threads=&lt;N&gt;
   // Bounded key pool size for PARTIAL_UPDATE so updates actually hit existing records
   // and exercise the server-side read-modify-write + field-level DCR path.
   private static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 10_000;
@@ -269,11 +284,33 @@ public class ActiveActiveIngestionBenchmark {
     dc1Client.close();
 
     // Start Samza system producers for both regions. Phase 3: N producers per region.
+    // Phase 7: thread per-experiment producer knobs (linger.ms, batch.size, compression.type)
+    // through `getSamzaProducerForStream`'s varargs Pair API. Each Pair becomes an entry in
+    // the Samza config map; Venice's ApacheKafkaProducerConfig strips the `kafka.` prefix
+    // before handing the property to the underlying Apache Kafka producer.
+    List<Pair<String, String>> phase7ProducerOpts = new ArrayList<>();
+    if (VENICE_KAFKA_LINGER_MS != null) {
+      phase7ProducerOpts.add(new Pair<>("kafka.linger.ms", VENICE_KAFKA_LINGER_MS));
+      System.err.println("[ActiveActiveIngestionBenchmark] Phase7: kafka.linger.ms=" + VENICE_KAFKA_LINGER_MS);
+    }
+    if (VENICE_KAFKA_BATCH_SIZE != null) {
+      phase7ProducerOpts.add(new Pair<>("kafka.batch.size", VENICE_KAFKA_BATCH_SIZE));
+      System.err.println("[ActiveActiveIngestionBenchmark] Phase7: kafka.batch.size=" + VENICE_KAFKA_BATCH_SIZE);
+    }
+    if (VENICE_KAFKA_COMPRESSION_TYPE != null) {
+      phase7ProducerOpts.add(new Pair<>("kafka.compression.type", VENICE_KAFKA_COMPRESSION_TYPE));
+      System.err
+          .println("[ActiveActiveIngestionBenchmark] Phase7: kafka.compression.type=" + VENICE_KAFKA_COMPRESSION_TYPE);
+    }
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    Pair<String, String>[] phase7ProducerOptsArr = phase7ProducerOpts.toArray(new Pair[0]);
     producersDC0 = new ArrayList<>(PRODUCERS_PER_REGION);
     producersDC1 = new ArrayList<>(PRODUCERS_PER_REGION);
     for (int n = 0; n < PRODUCERS_PER_REGION; n++) {
-      producersDC0.add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 0, storeName));
-      producersDC1.add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 1, storeName));
+      producersDC0
+          .add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 0, storeName, phase7ProducerOptsArr));
+      producersDC1
+          .add(IntegrationTestPushUtils.getSamzaProducerForStream(multiRegionCluster, 1, storeName, phase7ProducerOptsArr));
     }
     producerDC0 = producersDC0.get(0);
     producerDC1 = producersDC1.get(0);
