@@ -96,9 +96,8 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
         position,
         isInclusive);
     String topicName = pubSubTopicPartition.getPubSubTopic().getName();
-    if (topicName.contains("_rt_v") || topicName.contains("_rt_")) {
-      // Only log RT subscriptions to keep the debug file scoped (admin/system-store topic
-      // chatter is not in scope for the iter5 diagnosis).
+    if (topicName.contains("_rt_v") || topicName.contains("_rt_") || topicName.endsWith("_rt")) {
+      // Log RT subscriptions including meta-store-rt for iter7 Shape B diagnosis.
       debugLog(
           "subscribe topic=" + topicName + " partition=" + pubSubTopicPartition.getPartitionNumber() + " pos=" + position
               + " incl=" + isInclusive + " broker=" + broker.getPubSubBrokerAddress());
@@ -226,6 +225,15 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
                 "FIRST-READ topic=" + topicName + " partition=" + partition + " pos=" + next + " broker="
                     + broker.getPubSubBrokerAddress());
           }
+          // iter7 Shape B: log EVERY meta-store-rt read so we can verify dc-0 server
+          // actually consumes positions 0-7 (where STORE_CLUSTER_CONFIG resides).
+          if (topicName.contains("venice_system_store_meta_store_") && topicName.endsWith("_rt")) {
+            boolean isCtrl = message.get().key.isControlMessage();
+            int keyLen = message.get().key.getKey() == null ? 0 : message.get().key.getKey().length;
+            debugLog(
+                "META-RT-READ topic=" + topicName + " partition=" + partition + " pos=" + next + " isCtrl=" + isCtrl
+                    + " keyLen=" + keyLen + " broker=" + broker.getPubSubBrokerAddress());
+          }
           KafkaMessageEnvelope kafkaMessageEnvelope = message.get().value;
           if (!AdminTopicUtils.isAdminTopic(topicName) && !message.get().key.isControlMessage()
               && MessageType.valueOf(kafkaMessageEnvelope) == MessageType.PUT
@@ -313,12 +321,28 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
       PubSubTopicPartition pubSubTopicPartition,
       long timestamp,
       Duration timeout) {
-    return null;
+    return getPositionByTimestamp(pubSubTopicPartition, timestamp);
   }
 
   @Override
   public synchronized PubSubPosition getPositionByTimestamp(PubSubTopicPartition pubSubTopicPartition, long timestamp) {
-    return null;
+    // iter7 Shape B fix: real Kafka returns the offset of the earliest message whose
+    // timestamp is >= the requested timestamp, or null if no such message exists (in
+    // which case TopicMetadataFetcher.getPositionForTime falls back to LATEST). For the
+    // bounded in-memory broker we don't track per-message timestamps, but the only
+    // caller that drives critical correctness is
+    // LeaderFollowerStoreIngestionTask.getRewindStartPositionForRealTimeTopic, which
+    // uses this to figure out where to begin consuming RT for a hybrid store on a fresh
+    // version. The "right" answer for that case in tests is EARLIEST (offset 0): the RT
+    // is fresh and all messages are typically newer than the requested rewind time. If
+    // we returned null the wrapper would fall back to LATEST and the leader would skip
+    // the controller's STORE_CLUSTER_CONFIG / STORE_PROPERTIES writes that landed
+    // before the version's StartOfPush -- producing the Shape B
+    // MissingKeyInStoreMetadataException in tests like
+    // ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions.
+    // Returning beginningPosition (offset 0) restores correct behavior without needing
+    // a full per-message-timestamp index.
+    return InMemoryPubSubPosition.of(0);
   }
 
   @Override
