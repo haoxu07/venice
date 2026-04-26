@@ -439,14 +439,27 @@ public class MergeConflictResolver {
       int oldValueWriterSchemaID,
       Lazy<ByteBuffer> oldValueBytesProvider,
       GenericRecord oldRmdRecord) {
-    // [PHASE-4] sub_stage=old_value_deserialize — wraps Avro decode of old value bytes.
+    // [PHASE-4.5] split old_value_deserialize into:
+    //   old_value_fetch  = oldValueBytesProvider.get()  (transient cache or RocksDB)
+    //   old_value_decode = createValueRecordFromByteBuffer (Avro decode)
+    // The legacy old_value_deserialize bucket is preserved as the SUM of fetch+decode
+    // for backward comparison with Phase 4 numbers.
     final long phase4OldValueDeserStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
+    final long phase45FetchStart = AaDcrMergeReporter.ENABLED ? phase4OldValueDeserStart : 0L;
+    final ByteBuffer oldValueBytes = oldValueBytesProvider.get();
+    if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.OLD_VALUE_FETCH, System.nanoTime() - phase45FetchStart);
+    }
+    final long phase45DecodeStart = AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     final GenericRecord oldValueRecord = createValueRecordFromByteBuffer(
         readerValueSchema,
         readerValueSchemaID,
         oldValueWriterSchemaID,
-        oldValueBytesProvider.get());
+        oldValueBytes);
     if (AaDcrMergeReporter.ENABLED) {
+      AaDcrMergeReporter
+          .record(AaDcrMergeReporter.SubStage.OLD_VALUE_DECODE, System.nanoTime() - phase45DecodeStart);
       AaDcrMergeReporter
           .record(AaDcrMergeReporter.SubStage.OLD_VALUE_DESERIALIZE, System.nanoTime() - phase4OldValueDeserStart);
     }

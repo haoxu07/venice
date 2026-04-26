@@ -1,0 +1,761 @@
+{
+  "phase": 6,
+  "study_goal": "Identify the actual remaining throughput constraint at the Phase 5 combined-fix configuration (WC=off + RMD-cache-on, 100k keys, 4 producers / 2 per region): leader OTHER, Kafka pipeline, or hybrid.",
+  "run_date_utc": "2026-04-25",
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "config": {
+    "workload": "PUT",
+    "key_pool_size": 100000,
+    "producers_per_region": 2,
+    "wc_enabled_for_put": false,
+    "rmd_cache_enabled": true,
+    "phase6_leader_other_enabled": true,
+    "phase6_kafka_pipeline_enabled": true
+  },
+  "runs": {
+    "aa-phase6-run1.log": {
+      "e2e_ops_per_sec": [
+        130946.46,
+        128870.0
+      ],
+      "e2e_median": 129908.23,
+      "e2e_all_iters_incl_warmup": [
+        119254.67,
+        124655.97,
+        130946.46,
+        128870.0
+      ],
+      "n_steady_ticks": 12,
+      "leader_substages": {
+        "leader_record_wall_ns": {
+          "calls": 58936880,
+          "total_ns": 253859933314,
+          "avg_ns": 4307.32,
+          "pct_of_wall": 100.0
+        },
+        "rt_deserialize": {
+          "calls": 58936880,
+          "total_ns": 11949913087,
+          "avg_ns": 202.76,
+          "pct_of_wall": 4.71
+        },
+        "rmd_lookup_total": {
+          "calls": 258880,
+          "total_ns": 15324841050,
+          "avg_ns": 59196.7,
+          "pct_of_wall": 6.04
+        },
+        "rmd_lookup_transient": {
+          "calls": 258880,
+          "total_ns": 92640468,
+          "avg_ns": 357.85,
+          "pct_of_wall": 0.04
+        },
+        "rmd_lookup_rocksdb": {
+          "calls": 258880,
+          "total_ns": 14358094576,
+          "avg_ns": 55462.36,
+          "pct_of_wall": 5.66
+        },
+        "rmd_deserialize": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "dcr_merge": {
+          "calls": 58592053,
+          "total_ns": 12554201678,
+          "avg_ns": 214.26,
+          "pct_of_wall": 4.95
+        },
+        "value_serialize": {
+          "calls": 58592053,
+          "total_ns": 15337338086,
+          "avg_ns": 261.76,
+          "pct_of_wall": 6.04
+        },
+        "transient_map_put": {
+          "calls": 58592053,
+          "total_ns": 26890312593,
+          "avg_ns": 458.94,
+          "pct_of_wall": 10.59
+        },
+        "lo_lazy_oldvalue_init": {
+          "calls": 58936880,
+          "total_ns": 4615409980,
+          "avg_ns": 78.31,
+          "pct_of_wall": 1.82
+        },
+        "lo_rmd_cache_decide": {
+          "calls": 58936880,
+          "total_ns": 23876278975,
+          "avg_ns": 405.12,
+          "pct_of_wall": 9.41
+        },
+        "lo_write_timestamp": {
+          "calls": 58936880,
+          "total_ns": 5518150907,
+          "avg_ns": 93.63,
+          "pct_of_wall": 2.17
+        },
+        "lo_put_dispatch": {
+          "calls": 58592053,
+          "total_ns": 13640120410,
+          "avg_ns": 232.8,
+          "pct_of_wall": 5.37
+        },
+        "lo_rmd_cache_remember": {
+          "calls": 258880,
+          "total_ns": 526916144,
+          "avg_ns": 2035.37,
+          "pct_of_wall": 0.21
+        },
+        "lo_result_wrapper_alloc": {
+          "calls": 58592053,
+          "total_ns": 3431494078,
+          "avg_ns": 58.57,
+          "pct_of_wall": 1.35
+        },
+        "lo_sensor_calls": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "lo_post_merge_sensors": {
+          "calls": 58592053,
+          "total_ns": 35145060139,
+          "avg_ns": 599.83,
+          "pct_of_wall": 13.84
+        },
+        "lo_internal_remainder": {
+          "calls": 58936880,
+          "total_ns": 76884509766,
+          "avg_ns": 1304.52,
+          "pct_of_wall": 30.29
+        }
+      },
+      "off_leader_substages": {
+        "vt_produce_send": {
+          "calls": 58592057,
+          "total_ns": 560417008424,
+          "avg_ns": 9564.73
+        },
+        "vt_produce_ack_wait": {
+          "calls": 58104777,
+          "total_ns": 155394483709958573,
+          "avg_ns": 2674383961.75
+        },
+        "vt_callback_total_body": {
+          "calls": 58104972,
+          "total_ns": 367483295552,
+          "avg_ns": 6324.47
+        },
+        "vt_callback_entry_to_drainer": {
+          "calls": 58104972,
+          "total_ns": 333980689179,
+          "avg_ns": 5747.88
+        },
+        "drainer_enqueue": {
+          "calls": 58104972,
+          "total_ns": 271168548045,
+          "avg_ns": 4666.87
+        },
+        "rt_poll_block_ns": {
+          "calls": 1047175,
+          "total_ns": 23395813642621,
+          "avg_ns": 22341837.46
+        },
+        "rt_poll_empty_count": {
+          "calls": 456510,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "rt_poll_full_count": {
+          "calls": 588667,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "lo_poll_wait_empty_ns": {
+          "calls": 456510,
+          "total_ns": 23198795494081,
+          "avg_ns": 50817715.92
+        },
+        "lo_poll_fetch_nonempty_ns": {
+          "calls": 590665,
+          "total_ns": 197018148540,
+          "avg_ns": 333553.11
+        },
+        "leader_idle": {
+          "calls": 58936864,
+          "total_ns": 3382973020282,
+          "avg_ns": 57399.95
+        }
+      },
+      "kafka_pipeline": {
+        "ticks_used": 3,
+        "producer_total_send_rate_avg": 422053.30993333337,
+        "consumer_total_consume_rate_avg": 269021.98473333335,
+        "producer_request_latency_avg_ms": 8.827166666666667,
+        "producer_batch_size_avg_bytes": 167871.4044,
+        "producer_records_per_request_avg": 16887.2743,
+        "producer_record_queue_time_avg_ms": 1092.4508333333333,
+        "consumer_fetch_latency_avg_ms": 99.88499999999999,
+        "consumer_fetch_size_avg_bytes": 3883933.3333333335
+      },
+      "named_coverage_pct": 96.78,
+      "phase6_coverage_pct": 64.46
+    },
+    "aa-phase6-run2.log": {
+      "e2e_ops_per_sec": [
+        128444.82,
+        136887.39
+      ],
+      "e2e_median": 132666.11,
+      "e2e_all_iters_incl_warmup": [
+        137155.16,
+        132003.99,
+        128444.82,
+        136887.39
+      ],
+      "n_steady_ticks": 12,
+      "leader_substages": {
+        "leader_record_wall_ns": {
+          "calls": 59965908,
+          "total_ns": 253160200732,
+          "avg_ns": 4221.74,
+          "pct_of_wall": 100.0
+        },
+        "rt_deserialize": {
+          "calls": 59965908,
+          "total_ns": 11606560080,
+          "avg_ns": 193.55,
+          "pct_of_wall": 4.58
+        },
+        "rmd_lookup_total": {
+          "calls": 259908,
+          "total_ns": 14564421550,
+          "avg_ns": 56036.83,
+          "pct_of_wall": 5.75
+        },
+        "rmd_lookup_transient": {
+          "calls": 259908,
+          "total_ns": 83769716,
+          "avg_ns": 322.31,
+          "pct_of_wall": 0.03
+        },
+        "rmd_lookup_rocksdb": {
+          "calls": 259908,
+          "total_ns": 13742958779,
+          "avg_ns": 52876.24,
+          "pct_of_wall": 5.43
+        },
+        "rmd_deserialize": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "dcr_merge": {
+          "calls": 59320010,
+          "total_ns": 13751508566,
+          "avg_ns": 231.82,
+          "pct_of_wall": 5.43
+        },
+        "value_serialize": {
+          "calls": 59320010,
+          "total_ns": 14018645659,
+          "avg_ns": 236.32,
+          "pct_of_wall": 5.54
+        },
+        "transient_map_put": {
+          "calls": 59320010,
+          "total_ns": 27832215952,
+          "avg_ns": 469.19,
+          "pct_of_wall": 10.99
+        },
+        "lo_lazy_oldvalue_init": {
+          "calls": 59965908,
+          "total_ns": 4792848752,
+          "avg_ns": 79.93,
+          "pct_of_wall": 1.89
+        },
+        "lo_rmd_cache_decide": {
+          "calls": 59965908,
+          "total_ns": 24618879173,
+          "avg_ns": 410.55,
+          "pct_of_wall": 9.72
+        },
+        "lo_write_timestamp": {
+          "calls": 59965908,
+          "total_ns": 5365982547,
+          "avg_ns": 89.48,
+          "pct_of_wall": 2.12
+        },
+        "lo_put_dispatch": {
+          "calls": 59320010,
+          "total_ns": 13366419707,
+          "avg_ns": 225.33,
+          "pct_of_wall": 5.28
+        },
+        "lo_rmd_cache_remember": {
+          "calls": 259908,
+          "total_ns": 477693402,
+          "avg_ns": 1837.93,
+          "pct_of_wall": 0.19
+        },
+        "lo_result_wrapper_alloc": {
+          "calls": 59320010,
+          "total_ns": 4116080272,
+          "avg_ns": 69.39,
+          "pct_of_wall": 1.63
+        },
+        "lo_sensor_calls": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "lo_post_merge_sensors": {
+          "calls": 59320010,
+          "total_ns": 37664693647,
+          "avg_ns": 634.94,
+          "pct_of_wall": 14.88
+        },
+        "lo_internal_remainder": {
+          "calls": 59965908,
+          "total_ns": 72868741442,
+          "avg_ns": 1215.17,
+          "pct_of_wall": 28.78
+        }
+      },
+      "off_leader_substages": {
+        "vt_produce_send": {
+          "calls": 59320014,
+          "total_ns": 569357056758,
+          "avg_ns": 9598.06
+        },
+        "vt_produce_ack_wait": {
+          "calls": 59320479,
+          "total_ns": 178117458970430213,
+          "avg_ns": 3002630153.58
+        },
+        "vt_callback_total_body": {
+          "calls": 59320671,
+          "total_ns": 374331316798,
+          "avg_ns": 6310.3
+        },
+        "vt_callback_entry_to_drainer": {
+          "calls": 59320671,
+          "total_ns": 337150532585,
+          "avg_ns": 5683.53
+        },
+        "drainer_enqueue": {
+          "calls": 59320671,
+          "total_ns": 271591560032,
+          "avg_ns": 4578.36
+        },
+        "rt_poll_block_ns": {
+          "calls": 1054428,
+          "total_ns": 23307670896521,
+          "avg_ns": 22104563.7
+        },
+        "rt_poll_empty_count": {
+          "calls": 453483,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "rt_poll_full_count": {
+          "calls": 598947,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "lo_poll_wait_empty_ns": {
+          "calls": 453483,
+          "total_ns": 23122231339150,
+          "avg_ns": 50988088.5
+        },
+        "lo_poll_fetch_nonempty_ns": {
+          "calls": 600945,
+          "total_ns": 185439557371,
+          "avg_ns": 308579.92
+        },
+        "leader_idle": {
+          "calls": 59965892,
+          "total_ns": 3289559548833,
+          "avg_ns": 54857.18
+        }
+      },
+      "kafka_pipeline": {
+        "ticks_used": 3,
+        "producer_total_send_rate_avg": 413168.5142666666,
+        "consumer_total_consume_rate_avg": 252379.65186666665,
+        "producer_request_latency_avg_ms": 12.0907,
+        "producer_batch_size_avg_bytes": 230913.64563333333,
+        "producer_records_per_request_avg": 23223.326133333332,
+        "producer_record_queue_time_avg_ms": 3023.8667666666665,
+        "consumer_fetch_latency_avg_ms": 111.55496666666667,
+        "consumer_fetch_size_avg_bytes": 3891666.6666666665
+      },
+      "named_coverage_pct": 96.79,
+      "phase6_coverage_pct": 64.49
+    },
+    "aa-phase6-run3.log": {
+      "e2e_ops_per_sec": [
+        129000.15,
+        140562.36
+      ],
+      "e2e_median": 134781.26,
+      "e2e_all_iters_incl_warmup": [
+        124244.03,
+        126387.66,
+        129000.15,
+        140562.36
+      ],
+      "n_steady_ticks": 12,
+      "leader_substages": {
+        "leader_record_wall_ns": {
+          "calls": 59916397,
+          "total_ns": 261462557702,
+          "avg_ns": 4363.79,
+          "pct_of_wall": 100.0
+        },
+        "rt_deserialize": {
+          "calls": 59916397,
+          "total_ns": 11361315621,
+          "avg_ns": 189.62,
+          "pct_of_wall": 4.35
+        },
+        "rmd_lookup_total": {
+          "calls": 259853,
+          "total_ns": 15981984481,
+          "avg_ns": 61503.94,
+          "pct_of_wall": 6.11
+        },
+        "rmd_lookup_transient": {
+          "calls": 259853,
+          "total_ns": 75504964,
+          "avg_ns": 290.57,
+          "pct_of_wall": 0.03
+        },
+        "rmd_lookup_rocksdb": {
+          "calls": 259853,
+          "total_ns": 14947982842,
+          "avg_ns": 57524.77,
+          "pct_of_wall": 5.72
+        },
+        "rmd_deserialize": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "dcr_merge": {
+          "calls": 59752012,
+          "total_ns": 12542276009,
+          "avg_ns": 209.91,
+          "pct_of_wall": 4.8
+        },
+        "value_serialize": {
+          "calls": 59752012,
+          "total_ns": 15955862865,
+          "avg_ns": 267.03,
+          "pct_of_wall": 6.1
+        },
+        "transient_map_put": {
+          "calls": 59752012,
+          "total_ns": 28074904422,
+          "avg_ns": 469.86,
+          "pct_of_wall": 10.74
+        },
+        "lo_lazy_oldvalue_init": {
+          "calls": 59916397,
+          "total_ns": 4999701108,
+          "avg_ns": 83.44,
+          "pct_of_wall": 1.91
+        },
+        "lo_rmd_cache_decide": {
+          "calls": 59916397,
+          "total_ns": 26888802488,
+          "avg_ns": 448.77,
+          "pct_of_wall": 10.28
+        },
+        "lo_write_timestamp": {
+          "calls": 59916397,
+          "total_ns": 5195451359,
+          "avg_ns": 86.71,
+          "pct_of_wall": 1.99
+        },
+        "lo_put_dispatch": {
+          "calls": 59752012,
+          "total_ns": 13760971698,
+          "avg_ns": 230.3,
+          "pct_of_wall": 5.26
+        },
+        "lo_rmd_cache_remember": {
+          "calls": 259853,
+          "total_ns": 458841871,
+          "avg_ns": 1765.77,
+          "pct_of_wall": 0.18
+        },
+        "lo_result_wrapper_alloc": {
+          "calls": 59752012,
+          "total_ns": 3429612770,
+          "avg_ns": 57.4,
+          "pct_of_wall": 1.31
+        },
+        "lo_sensor_calls": {
+          "calls": 0,
+          "total_ns": 0,
+          "avg_ns": 0.0,
+          "pct_of_wall": 0.0
+        },
+        "lo_post_merge_sensors": {
+          "calls": 59752012,
+          "total_ns": 45781766656,
+          "avg_ns": 766.2,
+          "pct_of_wall": 17.51
+        },
+        "lo_internal_remainder": {
+          "calls": 59916397,
+          "total_ns": 68828231447,
+          "avg_ns": 1148.74,
+          "pct_of_wall": 26.32
+        }
+      },
+      "off_leader_substages": {
+        "vt_produce_send": {
+          "calls": 59752007,
+          "total_ns": 570860039709,
+          "avg_ns": 9553.82
+        },
+        "vt_produce_ack_wait": {
+          "calls": 58225432,
+          "total_ns": 224098153654759406,
+          "avg_ns": 3848801905.92
+        },
+        "vt_callback_total_body": {
+          "calls": 58225626,
+          "total_ns": 382941197642,
+          "avg_ns": 6576.85
+        },
+        "vt_callback_entry_to_drainer": {
+          "calls": 58225626,
+          "total_ns": 350467668466,
+          "avg_ns": 6019.13
+        },
+        "drainer_enqueue": {
+          "calls": 58225626,
+          "total_ns": 292960708203,
+          "avg_ns": 5031.47
+        },
+        "rt_poll_block_ns": {
+          "calls": 1053032,
+          "total_ns": 23364243225146,
+          "avg_ns": 22187590.9
+        },
+        "rt_poll_empty_count": {
+          "calls": 452587,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "rt_poll_full_count": {
+          "calls": 598468,
+          "total_ns": 0,
+          "avg_ns": 0.0
+        },
+        "lo_poll_wait_empty_ns": {
+          "calls": 452587,
+          "total_ns": 23172254881828,
+          "avg_ns": 51199559.16
+        },
+        "lo_poll_fetch_nonempty_ns": {
+          "calls": 600445,
+          "total_ns": 191988343318,
+          "avg_ns": 319743.43
+        },
+        "leader_idle": {
+          "calls": 59916381,
+          "total_ns": 3365277955681,
+          "avg_ns": 56166.24
+        }
+      },
+      "kafka_pipeline": {
+        "ticks_used": 3,
+        "producer_total_send_rate_avg": 387585.047,
+        "consumer_total_consume_rate_avg": 250857.67913333335,
+        "producer_request_latency_avg_ms": 8.041666666666666,
+        "producer_batch_size_avg_bytes": 152377.0055,
+        "producer_records_per_request_avg": 15441.8822,
+        "producer_record_queue_time_avg_ms": 1183.5463333333332,
+        "consumer_fetch_latency_avg_ms": 106.54133333333334,
+        "consumer_fetch_size_avg_bytes": 3968833.3333333335
+      },
+      "named_coverage_pct": 96.86,
+      "phase6_coverage_pct": 64.77
+    }
+  },
+  "cross_run_summary": {
+    "named_coverage_pct_per_run": [
+      96.78,
+      96.79,
+      96.86
+    ],
+    "named_coverage_pct_avg": 96.81,
+    "phase6_coverage_pct_per_run": [
+      64.46,
+      64.49,
+      64.77
+    ],
+    "phase6_coverage_pct_avg": 64.57,
+    "e2e_median_per_run": [
+      129908.23,
+      132666.11,
+      134781.26
+    ],
+    "e2e_median_of_medians": 132666.11,
+    "e2e_all_iters_pooled_median": 129973.3,
+    "top_new_substage": {
+      "name": "lo_internal_remainder",
+      "pct_of_wall_avg": 28.46
+    },
+    "stage_avg_pct_of_wall_sorted": [
+      {
+        "stage": "vt_produce_ack_wait",
+        "pct_of_wall_avg": 72426585.23
+      },
+      {
+        "stage": "rt_poll_wait",
+        "pct_of_wall_avg": 9119.57
+      },
+      {
+        "stage": "rt_poll_block_ns",
+        "pct_of_wall_avg": 9119.57
+      },
+      {
+        "stage": "lo_poll_wait_empty_ns",
+        "pct_of_wall_avg": 9044.8
+      },
+      {
+        "stage": "leader_idle",
+        "pct_of_wall_avg": 1306.37
+      },
+      {
+        "stage": "aa_wc_pool_handoff",
+        "pct_of_wall_avg": 728.82
+      },
+      {
+        "stage": "vt_produce_send",
+        "pct_of_wall_avg": 221.33
+      },
+      {
+        "stage": "vt_callback_total_body",
+        "pct_of_wall_avg": 146.36
+      },
+      {
+        "stage": "vt_callback_entry_to_drainer",
+        "pct_of_wall_avg": 132.93
+      },
+      {
+        "stage": "drainer_enqueue",
+        "pct_of_wall_avg": 108.72
+      },
+      {
+        "stage": "leader_record_wall_ns",
+        "pct_of_wall_avg": 100.0
+      },
+      {
+        "stage": "rocksdb_value_write",
+        "pct_of_wall_avg": 96.32
+      },
+      {
+        "stage": "lo_poll_fetch_nonempty_ns",
+        "pct_of_wall_avg": 74.76
+      },
+      {
+        "stage": "lo_internal_remainder",
+        "pct_of_wall_avg": 28.46
+      },
+      {
+        "stage": "lo_post_merge_sensors",
+        "pct_of_wall_avg": 15.41
+      },
+      {
+        "stage": "transient_map_remove",
+        "pct_of_wall_avg": 11.17
+      },
+      {
+        "stage": "transient_map_put",
+        "pct_of_wall_avg": 10.77
+      },
+      {
+        "stage": "key_lock_wait",
+        "pct_of_wall_avg": 10.34
+      },
+      {
+        "stage": "lo_rmd_cache_decide",
+        "pct_of_wall_avg": 9.8
+      },
+      {
+        "stage": "rmd_lookup_total",
+        "pct_of_wall_avg": 5.97
+      },
+      {
+        "stage": "value_serialize",
+        "pct_of_wall_avg": 5.89
+      },
+      {
+        "stage": "rmd_lookup_rocksdb",
+        "pct_of_wall_avg": 5.6
+      },
+      {
+        "stage": "lo_put_dispatch",
+        "pct_of_wall_avg": 5.31
+      },
+      {
+        "stage": "dcr_merge",
+        "pct_of_wall_avg": 5.06
+      },
+      {
+        "stage": "rt_deserialize",
+        "pct_of_wall_avg": 4.55
+      }
+    ],
+    "kafka_pipeline_summary": {
+      "producer_total_send_rate_avg": 407602.29,
+      "consumer_total_consume_rate_avg": 257419.77,
+      "producer_request_latency_avg_ms": 9.65,
+      "producer_batch_size_avg_bytes": 183720.69,
+      "producer_records_per_request_avg": 18517.49,
+      "producer_record_queue_time_avg_ms": 1766.62,
+      "consumer_fetch_latency_avg_ms": 105.99,
+      "consumer_fetch_size_avg_bytes": 3914811.11
+    }
+  },
+  "criterion_6_off_run": {
+    "on_e2e_median": 132666.11,
+    "off_e2e_median": 134349.61,
+    "off_e2e_iters": [
+      139166.42,
+      129532.8
+    ],
+    "off_e2e_all_iters_incl_warmup": [
+      139419.05,
+      135650.68,
+      139166.42,
+      129532.8
+    ],
+    "delta_pct": 1.27,
+    "tolerance_pct": 5.0,
+    "status": "PASS"
+  },
+  "criterion_7_itests": {
+    "build_status": "SUCCESS",
+    "failures": 0,
+    "errors": 0,
+    "tests": 16
+  },
+  "named_answer": "b",
+  "named_answer_justification": "producer_total_send_rate (407602/s) >> consumer_total_consume_rate (257420/s) producer record_queue_time_avg = 1767 ms (records waiting in accumulator); request_latency_avg = 9.65 ms (broker roundtrip). vt_produce_ack_wait avg ~3.18s is dominated by record_queue_time, not callback dispatch (vt_callback_total_body avg = 6.40 \u03bcs)."
+}

@@ -65,8 +65,29 @@ public final class AaDcrMergeReporter {
     SCHEMA_RESOLVE("schema_resolve"),
     /** Avro decode of the incoming PUT value bytes via {@code deserializerCacheForFullValue}. */
     NEW_VALUE_DESERIALIZE("new_value_deserialize"),
-    /** Avro decode of the old value bytes (called inside {@code createValueRecordFromByteBuffer}). */
+    /** Total wrapper around old-value lookup+decode (= OLD_VALUE_FETCH + OLD_VALUE_DECODE). */
     OLD_VALUE_DESERIALIZE("old_value_deserialize"),
+    /** [Phase 4.5] Storage fetch only: {@code oldValueBytesProvider.get()} — transient cache or RocksDB. */
+    OLD_VALUE_FETCH("old_value_fetch"),
+    /** [Phase 4.5] Avro decode only: {@code createValueRecordFromByteBuffer} on the fetched bytes. */
+    OLD_VALUE_DECODE("old_value_decode"),
+    /**
+     * [Phase 4.6] Inside getValueBytesForKey: transient record map lookup
+     * ({@code partitionConsumptionState.getTransientRecord(key)}). Always called.
+     */
+    VALUE_FETCH_TRANSIENT_LOOKUP("value_fetch_transient_lookup"),
+    /**
+     * [Phase 4.6] Inside getValueBytesForKey: TRANSIENT-HIT branch — reconstruct
+     * ByteBufferValueRecord from the transient entry, possibly decompress.
+     * Only counted when the transient lookup returned non-null.
+     */
+    VALUE_FETCH_TRANSIENT_HIT_PATH("value_fetch_transient_hit_path"),
+    /**
+     * [Phase 4.6] Inside getValueBytesForKey: TRANSIENT-MISS branch — full RocksDB
+     * lookup via {@code databaseLookupWithConcurrencyLimit} + chunking adapter.
+     * Only counted when the transient lookup returned null.
+     */
+    VALUE_FETCH_ROCKSDB_PATH("value_fetch_rocksdb_path"),
     /**
      * RMD prep: {@code convertToPerFieldTimestampRmd} + {@code convertRmdToUseReaderValueSchema}
      * + {@code ValueAndRmd<>} wrapper allocation inside {@code createOldValueAndRmd}.

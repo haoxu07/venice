@@ -164,6 +164,20 @@ class ConsumptionTask implements Runnable {
               AaLeaderBottleneckReporter.recordCount(
                   AaLeaderBottleneckReporter.Stage.RT_POLL_FULL_COUNT);
             }
+            // [PHASE-6] poll empty/fetch decomposition. Splits the existing rt_poll_block_ns
+            // into "broker had nothing to give us" (lo_poll_wait_empty_ns) and "broker had
+            // records — fetch + deserialize" (lo_poll_fetch_nonempty_ns). Both off-leader-wall.
+            if (AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+              if (bnTotalRecords == 0) {
+                AaLeaderBottleneckReporter.record(
+                    AaLeaderBottleneckReporter.Stage.LO_POLL_WAIT_EMPTY_NS,
+                    bnPollNanos);
+              } else {
+                AaLeaderBottleneckReporter.record(
+                    AaLeaderBottleneckReporter.Stage.LO_POLL_FETCH_NONEMPTY_NS,
+                    bnPollNanos);
+              }
+            }
           }
           lastSuccessfulPollTimestamp = System.currentTimeMillis();
           aggStats.recordTotalPollRequestLatency(lastSuccessfulPollTimestamp - beforePollingTimestamp);

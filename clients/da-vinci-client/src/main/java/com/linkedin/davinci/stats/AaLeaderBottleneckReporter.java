@@ -42,6 +42,19 @@ public final class AaLeaderBottleneckReporter {
       Boolean.getBoolean("venice.server.aa.bottleneck.instrumentation.enabled");
 
   /**
+   * Phase 6 sub-flag. When true (and {@link #ENABLED} is true) the new Phase 6
+   * leader OTHER sub-stage timer brackets, VT producer callback decomposition,
+   * and consumer poll empty/fetch split timers are recorded. Gated separately
+   * from {@link #ENABLED} so the OFF run for criterion 6 can disable just the
+   * Phase 6 instrumentation while keeping Phase 1-5 instrumentation on.
+   *
+   * <p>Set at class-load time from the system property
+   * {@code venice.server.aa.leader.other.instrumentation.enabled}.</p>
+   */
+  public static final boolean LEADER_OTHER_ENABLED =
+      Boolean.getBoolean("venice.server.aa.leader.other.instrumentation.enabled");
+
+  /**
    * Stages of the AA leader PUT hot loop instrumented by this reporter.
    * The order here is also the reporting order. Keep in sync with the
    * AA bottleneck study prompt.
@@ -95,7 +108,53 @@ public final class AaLeaderBottleneckReporter {
     RT_POLL_FULL_COUNT("rt_poll_full_count", true),
     // Tasks submitted to the AA/WC parallel processing pool by the consumer.
     // Per-tick rate = aa_pool_submit_count.calls / 20s. Count-only.
-    AA_POOL_SUBMIT_COUNT("aa_pool_submit_count", true);
+    AA_POOL_SUBMIT_COUNT("aa_pool_submit_count", true),
+    // ---- Phase 6 stages (leader OTHER decomposition, on-leader-wall) ----
+    // Allocation of ChunkedValueManifestContainer + Lazy<ByteBufferValueRecord<...>>
+    // builder + lambda capture. Gated by LEADER_OTHER_ENABLED.
+    LO_LAZY_OLDVALUE_INIT("lo_lazy_oldvalue_init", false),
+    // Hash key + RmdTimestampCacheManager.getOrCreate(partition).decideAndUpdate(...).
+    // Per Phase 5 the cache hit rate is ~99.9 % so this branch fires for almost every PUT.
+    LO_RMD_CACHE_DECIDE("lo_rmd_cache_decide", false),
+    // Tiny but per-record: getWriteTimestampFromKME(kafkaValue) + branch on logicalTimestamp.
+    LO_WRITE_TIMESTAMP("lo_write_timestamp", false),
+    // The "before-DCR" overhead: aggVersionedIngestionStats.recordTotalDCR (tehuti
+    // sensor.record), unwrapByteBufferFromOldValueProvider Lazy.of allocation, and
+    // beforeDCRTimestampInNs = System.nanoTime() setup.
+    LO_PUT_DISPATCH("lo_put_dispatch", false),
+    // RmdTimestampCacheManager.getOrCreate(partition).rememberAfterFallback(...) on
+    // the FALLBACK_TO_RMD_LOOKUP path; only fires when cache decision said fallback.
+    LO_RMD_CACHE_REMEMBER("lo_rmd_cache_remember", false),
+    // Final MergeConflictResultWrapper + PubSubMessageProcessedResult allocation +
+    // lambda capture for storeDeserializerCache. Per-PUT allocation cost.
+    LO_RESULT_WRAPPER_ALLOC("lo_result_wrapper_alloc", false),
+    // aggVersionedIngestionStats.recordTotalDuplicateKeyUpdate(...) — tehuti sensor
+    // record on the per-PUT post-merge path. Phase 6 prompt's leading suspect.
+    LO_SENSOR_CALLS("lo_sensor_calls", false),
+    // Tehuti sensor record + LatencyUtils.getElapsedTimeFromNSToMS after dcr_merge for
+    // EVERY PUT path. Phase 6 hot bracket since these run on the cache-hit fast path too.
+    LO_POST_MERGE_SENSORS("lo_post_merge_sensors", false),
+    // [PHASE-6 CATCH-ALL] Wall time of processActiveActiveMessageInternal MINUS the sum of
+    // its inner brackets. Measured by capturing nanoTime at method entry and method exit,
+    // then subtracting the per-record sum of inner sub-stage durations as recorded into
+    // LongAdders by the inner brackets themselves. This recovers the inter-bracket "drift"
+    // (System.nanoTime() call overhead between brackets, unwrapped statements like switch
+    // dispatch and branch conditionals, and the method's own try/finally outer wrapper).
+    LO_INTERNAL_REMAINDER("lo_internal_remainder", false),
+    // ---- Phase 6 stages (consumer poll decomp, off-leader-wall) ----
+    // Total nanos spent in polls that returned 0 records. Off-wall (poll thread).
+    LO_POLL_WAIT_EMPTY_NS("lo_poll_wait_empty_ns", true),
+    // Total nanos spent in polls that returned >=1 record. Off-wall.
+    LO_POLL_FETCH_NONEMPTY_NS("lo_poll_fetch_nonempty_ns", true),
+    // ---- Phase 6 stages (VT producer callback decomp, off-leader-wall) ----
+    // Total wall time of LeaderProducerCallback.onCompletion body — runs on the
+    // producer IO thread, so off-wall. Difference vt_produce_ack_wait minus this
+    // is the broker-roundtrip portion.
+    VT_CALLBACK_TOTAL_BODY("vt_callback_total_body", true),
+    // From callback ENTRY to right after produceToStoreBufferService returns —
+    // i.e., callback dispatch up to drainer enqueue. The "JVM internal scheduling"
+    // portion of vt_produce_ack_wait per the Phase 6 design notes.
+    VT_CALLBACK_ENTRY_TO_DRAINER("vt_callback_entry_to_drainer", true);
 
     private final String label;
     /**
@@ -136,6 +195,12 @@ public final class AaLeaderBottleneckReporter {
   // between consecutive records processed on the same pool thread.
   private static final ThreadLocal<Long> LAST_LEADER_EXIT_NS = new ThreadLocal<>();
 
+  // Per-thread accumulator of inner-bracket nanos, used to compute the
+  // LO_INTERNAL_REMAINDER stage at the end of a leader internal record body.
+  // Reset at the start of each per-record processActiveActiveMessageInternal call,
+  // updated by each Phase 6 inner bracket via {@link #recordAndAccumulate}.
+  private static final ThreadLocal<long[]> INNER_BRACKET_SUM = ThreadLocal.withInitial(() -> new long[1]);
+
   private static final LongAdder RECORD_COUNT = new LongAdder();
   private static long lastRecordCount = 0L;
 
@@ -157,6 +222,14 @@ public final class AaLeaderBottleneckReporter {
     }
     if (ENABLED) {
       startReporter();
+    }
+    // Touch AaKafkaPipelineReporter so its class initializer (which starts its
+    // own scheduler when its flag is on) runs even if no other class references
+    // it on the hot path.
+    if (AaKafkaPipelineReporter.ENABLED) {
+      // No-op read of a public static; the JVM forces class init.
+      @SuppressWarnings("unused")
+      boolean kafkaPipelineEnabled = AaKafkaPipelineReporter.ENABLED;
     }
   }
 
@@ -206,6 +279,52 @@ public final class AaLeaderBottleneckReporter {
       return;
     }
     STAGE_COUNT[stage.ordinal()].add(n);
+  }
+
+  /**
+   * Record a Phase 6 inner bracket AND accumulate its duration into the
+   * thread-local sum used to compute {@link Stage#LO_INTERNAL_REMAINDER}. Caller
+   * SHOULD guard with {@link #ENABLED} and {@link #LEADER_OTHER_ENABLED}.
+   */
+  public static void recordAndAccumulate(Stage stage, long nanos) {
+    if (!ENABLED) {
+      return;
+    }
+    record(stage, nanos);
+    INNER_BRACKET_SUM.get()[0] += nanos;
+  }
+
+  /**
+   * Reset the thread-local inner-bracket sum at the start of a leader internal
+   * record body. Returns the start nanoTime that callers should pass back to
+   * {@link #recordInternalRemainder(long)}.
+   */
+  public static long internalBodyStart() {
+    if (!ENABLED) {
+      return 0L;
+    }
+    INNER_BRACKET_SUM.get()[0] = 0L;
+    return System.nanoTime();
+  }
+
+  /**
+   * Record the {@link Stage#LO_INTERNAL_REMAINDER} = elapsed - innerBracketSum
+   * at the end of a leader internal record body. Caller passes the value
+   * returned by {@link #internalBodyStart()}.
+   */
+  public static void recordInternalRemainder(long bodyStartNs) {
+    if (!ENABLED || !LEADER_OTHER_ENABLED) {
+      return;
+    }
+    long elapsed = System.nanoTime() - bodyStartNs;
+    long innerSum = INNER_BRACKET_SUM.get()[0];
+    long remainder = elapsed - innerSum;
+    if (remainder < 0L) {
+      // Inner brackets summed slightly more than the wrapper window — possible
+      // due to clock drift or instrumentation timing. Clamp to 0.
+      remainder = 0L;
+    }
+    record(Stage.LO_INTERNAL_REMAINDER, remainder);
   }
 
   /**

@@ -81,11 +81,27 @@ public class LeaderProducerCallback implements ChunkAwareCallback {
   public void onCompletion(PubSubProduceResult produceResult, Exception e) {
     // [BOTTLENECK-INSTRUMENTATION] vt_produce_ack_wait: time from send to ACK callback
     // dispatch. Measured on the producer IO thread, so off-leader-wall.
+    final long bnCallbackEntryNs = System.nanoTime();
     if (AaLeaderBottleneckReporter.ENABLED && produceTimeNs != 0L) {
       AaLeaderBottleneckReporter.record(
           AaLeaderBottleneckReporter.Stage.VT_PRODUCE_ACK_WAIT,
-          System.nanoTime() - produceTimeNs);
+          bnCallbackEntryNs - produceTimeNs);
     }
+    try {
+      onCompletionInternal(produceResult, e, bnCallbackEntryNs);
+    } finally {
+      // [PHASE-6] vt_callback_total_body — total wall time of the callback body
+      // on the producer IO thread. Difference vs vt_produce_ack_wait gives the
+      // broker-roundtrip portion of the wait.
+      if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+        AaLeaderBottleneckReporter.record(
+            AaLeaderBottleneckReporter.Stage.VT_CALLBACK_TOTAL_BODY,
+            System.nanoTime() - bnCallbackEntryNs);
+      }
+    }
+  }
+
+  private void onCompletionInternal(PubSubProduceResult produceResult, Exception e, final long bnCallbackEntryNs) {
     this.onCompletionFunction.accept(produceResult);
     if (e != null) {
       ingestionTask.getVersionedDIVStats()
@@ -178,6 +194,13 @@ public class LeaderProducerCallback implements ChunkAwareCallback {
               kafkaUrl,
               beforeProcessingRecordTimestampNs,
               currentTimeForMetricsMs);
+          // [PHASE-6] vt_callback_entry_to_drainer — from callback ENTRY to right after
+          // drainer enqueue completed (non-chunked path; the dominant case for this study).
+          if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+            AaLeaderBottleneckReporter.record(
+                AaLeaderBottleneckReporter.Stage.VT_CALLBACK_ENTRY_TO_DRAINER,
+                System.nanoTime() - bnCallbackEntryNs);
+          }
 
           producedRecordNum++;
           producedRecordSize = Math.max(0, produceResult.getSerializedSize());

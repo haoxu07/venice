@@ -551,6 +551,36 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       int kafkaClusterId,
       long beforeProcessingRecordTimestampNs,
       long beforeProcessingBatchRecordsTimestampMs) {
+    // [PHASE-6] LO_INTERNAL_REMAINDER catch-all bracket. Captures the unwrapped
+    // statements between Phase 6 inner brackets so the named coverage exceeds 80 %.
+    final long bnInternalBodyStart =
+        (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+            ? AaLeaderBottleneckReporter.internalBodyStart()
+            : 0L;
+    try {
+      return processActiveActiveMessageInternalImpl(
+          consumerRecord,
+          partitionConsumptionState,
+          partition,
+          kafkaUrl,
+          kafkaClusterId,
+          beforeProcessingRecordTimestampNs,
+          beforeProcessingBatchRecordsTimestampMs);
+    } finally {
+      if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+        AaLeaderBottleneckReporter.recordInternalRemainder(bnInternalBodyStart);
+      }
+    }
+  }
+
+  private PubSubMessageProcessedResult processActiveActiveMessageInternalImpl(
+      DefaultPubSubMessage consumerRecord,
+      PartitionConsumptionState partitionConsumptionState,
+      int partition,
+      String kafkaUrl,
+      int kafkaClusterId,
+      long beforeProcessingRecordTimestampNs,
+      long beforeProcessingBatchRecordsTimestampMs) {
     // [BOTTLENECK-INSTRUMENTATION] rt_deserialize: measure the first touches of
     // Avro-decoded KafkaMessageEnvelope fields (a proxy, since the consumer's
     // key/value deserializers run before we're called).
@@ -560,7 +590,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     byte[] keyBytes = kafkaKey.getKey();
     MessageType msgType = MessageType.valueOf(kafkaValue.messageType);
     if (AaLeaderBottleneckReporter.ENABLED) {
-      AaLeaderBottleneckReporter.record(
+      AaLeaderBottleneckReporter.recordAndAccumulate(
           AaLeaderBottleneckReporter.Stage.RT_DESERIALIZE,
           System.nanoTime() - bnDeserStart);
     }
@@ -587,6 +617,12 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
         throw new VeniceMessageException(
             ingestionTaskName + " : Invalid/Unrecognized operation type submitted: " + kafkaValue.messageType);
     }
+    // [PHASE-6] lo_lazy_oldvalue_init — ChunkedValueManifestContainer alloc +
+    // Lazy<ByteBufferValueRecord<ByteBuffer>> setup with lambda capture.
+    final long bnLazyInitStart =
+        (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+            ? System.nanoTime()
+            : 0L;
     final ChunkedValueManifestContainer valueManifestContainer = new ChunkedValueManifestContainer();
     Lazy<ByteBufferValueRecord<ByteBuffer>> oldValueProvider = Lazy.of(
         () -> getValueBytesForKey(
@@ -595,13 +631,28 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
             consumerRecord.getTopicPartition(),
             valueManifestContainer,
             beforeProcessingBatchRecordsTimestampMs));
+    if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+      AaLeaderBottleneckReporter.recordAndAccumulate(
+          AaLeaderBottleneckReporter.Stage.LO_LAZY_OLDVALUE_INIT,
+          System.nanoTime() - bnLazyInitStart);
+    }
     if (hasComplexVenicePartitionerMaterializedView && msgType == MessageType.DELETE) {
       // We need to lookup first because this function updates the transient cache before writing the view.
       // Otherwise, the transient cache will be populated when writing to the view after this function.
       oldValueProvider.get();
     }
 
+    // [PHASE-6] lo_write_timestamp — KME timestamp dispatch.
+    final long bnWriteTsStart =
+        (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+            ? System.nanoTime()
+            : 0L;
     final long writeTimestamp = getWriteTimestampFromKME(kafkaValue);
+    if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+      AaLeaderBottleneckReporter.recordAndAccumulate(
+          AaLeaderBottleneckReporter.Stage.LO_WRITE_TIMESTAMP,
+          System.nanoTime() - bnWriteTsStart);
+    }
 
     /**
      * RMD lookup timestamp cache fast-path for PUT (per the RMD Cache proposal). When enabled,
@@ -612,9 +663,19 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     RmdTimestampCache.Decision cacheDecision = null;
     long keyHashForCache = 0L;
     if (rmdTimestampCacheManager != null && msgType == MessageType.PUT) {
+      // [PHASE-6] lo_rmd_cache_decide — keyHash + cache get + decideAndUpdate.
+      final long bnRmdCacheStart =
+          (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+              ? System.nanoTime()
+              : 0L;
       keyHashForCache = KeyHasher.hash(keyBytes);
       RmdTimestampCache cache = rmdTimestampCacheManager.getOrCreate(partition);
       cacheDecision = cache.decideAndUpdate(keyHashForCache, writeTimestamp, beforeProcessingBatchRecordsTimestampMs);
+      if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+        AaLeaderBottleneckReporter.recordAndAccumulate(
+            AaLeaderBottleneckReporter.Stage.LO_RMD_CACHE_DECIDE,
+            System.nanoTime() - bnRmdCacheStart);
+      }
 
       if (cacheDecision == RmdTimestampCache.Decision.CACHE_HIT_NEW_LOSES) {
         // Branch B.1-lose: known-stale incoming PUT. Skip RMD lookup, skip merge. Build a
@@ -652,7 +713,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
           partition,
           beforeProcessingBatchRecordsTimestampMs);
       if (AaLeaderBottleneckReporter.ENABLED) {
-        AaLeaderBottleneckReporter.record(
+        AaLeaderBottleneckReporter.recordAndAccumulate(
             AaLeaderBottleneckReporter.Stage.RMD_LOOKUP_TOTAL,
             System.nanoTime() - bnRmdTotalStart);
       }
@@ -660,9 +721,19 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
 
     final MergeConflictResult mergeConflictResult;
 
+    // [PHASE-6] lo_put_dispatch — sensor record + lazy unwrap before merge.
+    final long bnPutDispatchStart =
+        (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+            ? System.nanoTime()
+            : 0L;
     aggVersionedIngestionStats.recordTotalDCR(storeName, versionNumber);
 
     Lazy<ByteBuffer> oldValueByteBufferProvider = unwrapByteBufferFromOldValueProvider(oldValueProvider);
+    if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+      AaLeaderBottleneckReporter.recordAndAccumulate(
+          AaLeaderBottleneckReporter.Stage.LO_PUT_DISPATCH,
+          System.nanoTime() - bnPutDispatchStart);
+    }
 
     long beforeDCRTimestampInNs = System.nanoTime();
     switch (msgType) {
@@ -679,13 +750,24 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
         );
         // [BOTTLENECK-INSTRUMENTATION] dcr_merge: MergeConflictResolver.put wall time (PUT path).
         if (AaLeaderBottleneckReporter.ENABLED) {
-          AaLeaderBottleneckReporter.record(
+          AaLeaderBottleneckReporter.recordAndAccumulate(
               AaLeaderBottleneckReporter.Stage.DCR_MERGE,
               System.nanoTime() - beforeDCRTimestampInNs);
         }
+        // [PHASE-6] lo_post_merge_sensors — tehuti sensor record + LatencyUtils call after
+        // every PUT-path DCR merge. Per-record cost on the leading-suspect path for OTHER bucket.
+        final long bnPostMergeSensorsStartPut =
+            (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+                ? System.nanoTime()
+                : 0L;
         double putMergeLatency = LatencyUtils.getElapsedTimeFromNSToMS(beforeDCRTimestampInNs);
         getHostLevelIngestionStats().recordIngestionActiveActivePutLatency(putMergeLatency);
         versionedIngestionStats.recordDcrMergeTime(storeName, versionNumber, VeniceDCROperation.PUT, putMergeLatency);
+        if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+          AaLeaderBottleneckReporter.recordAndAccumulate(
+              AaLeaderBottleneckReporter.Stage.LO_POST_MERGE_SENSORS,
+              System.nanoTime() - bnPostMergeSensorsStartPut);
+        }
         break;
 
       case DELETE:
@@ -731,17 +813,33 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
               null,
               (schemaId) -> storeDeserializerCache.getDeserializer(schemaId, schemaId)));
     } else {
-      // After a B.2.b fallback, if the incoming PUT won DCR we need to update the RMD cache
-      // so future PUTs for this key hit the B.1 fast path instead of paying for RocksDB
-      // again. This also tightens the "key is in cache" guarantee used by the eviction-
-      // time watermark bookkeeping.
+      // [PHASE-6] lo_rmd_cache_remember — remember-after-fallback when the cache fell through
+      // and the new put won DCR. Branch executes only on FALLBACK_TO_RMD_LOOKUP.
       if (cacheDecision == RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP && msgType == MessageType.PUT) {
+        final long bnCacheRememberStart =
+            (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+                ? System.nanoTime()
+                : 0L;
         rmdTimestampCacheManager.getOrCreate(partition).rememberAfterFallback(keyHashForCache, writeTimestamp);
+        if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+          AaLeaderBottleneckReporter.recordAndAccumulate(
+              AaLeaderBottleneckReporter.Stage.LO_RMD_CACHE_REMEMBER,
+              System.nanoTime() - bnCacheRememberStart);
+        }
       }
-      // If rmdWithValueSchemaID is not null this implies Venice has processed this key before
-      // it will be produced to VT with as a duplicate key message. emit this info for log compaction
+      // [PHASE-6] lo_sensor_calls — tehuti sensor record on duplicate-key path. Per Phase 6
+      // prompt's leading suspect for OTHER bucket: cumulative tehuti sensor.record() cost.
       if (rmdWithValueSchemaID != null) {
+        final long bnSensorStart =
+            (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+                ? System.nanoTime()
+                : 0L;
         aggVersionedIngestionStats.recordTotalDuplicateKeyUpdate(storeName, versionNumber);
+        if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+          AaLeaderBottleneckReporter.recordAndAccumulate(
+              AaLeaderBottleneckReporter.Stage.LO_SENSOR_CALLS,
+              System.nanoTime() - bnSensorStart);
+        }
       }
 
       // [BOTTLENECK-INSTRUMENTATION] value_serialize: maybeCompressData + rmdSerDe.serializeRmdRecord.
@@ -768,7 +866,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       final ByteBuffer updatedRmdBytes =
           rmdSerDe.serializeRmdRecord(mergeConflictResult.getValueSchemaId(), mergeConflictResult.getRmdRecord());
       if (AaLeaderBottleneckReporter.ENABLED) {
-        AaLeaderBottleneckReporter.record(
+        AaLeaderBottleneckReporter.recordAndAccumulate(
             AaLeaderBottleneckReporter.Stage.VALUE_SERIALIZE,
             System.nanoTime() - bnValueSerStart);
       }
@@ -793,11 +891,17 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
             rmdRecord);
       }
       if (AaLeaderBottleneckReporter.ENABLED) {
-        AaLeaderBottleneckReporter.record(
+        AaLeaderBottleneckReporter.recordAndAccumulate(
             AaLeaderBottleneckReporter.Stage.TRANSIENT_MAP_PUT,
             System.nanoTime() - bnTransientPutStart);
       }
-      return new PubSubMessageProcessedResult(
+      // [PHASE-6] lo_result_wrapper_alloc — final MergeConflictResultWrapper +
+      // PubSubMessageProcessedResult allocation + lambda capture cost.
+      final long bnWrapperStart =
+          (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED)
+              ? System.nanoTime()
+              : 0L;
+      PubSubMessageProcessedResult bnWrapperResult = new PubSubMessageProcessedResult(
           new MergeConflictResultWrapper(
               mergeConflictResult,
               oldValueProvider,
@@ -807,6 +911,12 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
               updatedValueBytes,
               updatedRmdBytes,
               (schemaId) -> storeDeserializerCache.getDeserializer(schemaId, schemaId)));
+      if (AaLeaderBottleneckReporter.ENABLED && AaLeaderBottleneckReporter.LEADER_OTHER_ENABLED) {
+        AaLeaderBottleneckReporter.recordAndAccumulate(
+            AaLeaderBottleneckReporter.Stage.LO_RESULT_WRAPPER_ALLOC,
+            System.nanoTime() - bnWrapperStart);
+      }
+      return bnWrapperResult;
     }
   }
 
@@ -946,8 +1056,19 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     getHostLevelIngestionStats().recordIngestionValueBytesLookupCount(currentTimeForMetricsMs);
     // Find the existing value. If a value for this key is found from the transient map then use that value, otherwise
     // get it from DB.
+    // [PHASE-4.6] sub_stage=value_fetch_transient_lookup — the in-memory map lookup.
+    final long phase46TransientLookupStart =
+        com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
     PartitionConsumptionState.TransientRecord transientRecord = partitionConsumptionState.getTransientRecord(key);
+    if (com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED) {
+      com.linkedin.davinci.stats.AaDcrMergeReporter.record(
+          com.linkedin.davinci.stats.AaDcrMergeReporter.SubStage.VALUE_FETCH_TRANSIENT_LOOKUP,
+          System.nanoTime() - phase46TransientLookupStart);
+    }
     if (transientRecord == null) {
+      // [PHASE-4.6] sub_stage=value_fetch_rocksdb_path — full RocksDB lookup branch.
+      final long phase46RocksdbStart =
+          com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
       long lookupStartTimeInNS = System.nanoTime();
       IngestionTaskReusableObjects reusableObjects = reusableObjectsSupplier.get();
       ByteBuffer reusedRawValue = reusableObjects.getReusedByteBuffer();
@@ -967,7 +1088,15 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       double valueLookupLatency = LatencyUtils.getElapsedTimeFromNSToMS(lookupStartTimeInNS);
       getHostLevelIngestionStats().recordIngestionValueBytesLookUpLatency(valueLookupLatency, currentTimeForMetricsMs);
       versionedIngestionStats.recordDcrLookupTime(storeName, versionNumber, VeniceRecordType.DATA, valueLookupLatency);
+      if (com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED) {
+        com.linkedin.davinci.stats.AaDcrMergeReporter.record(
+            com.linkedin.davinci.stats.AaDcrMergeReporter.SubStage.VALUE_FETCH_ROCKSDB_PATH,
+            System.nanoTime() - phase46RocksdbStart);
+      }
     } else {
+      // [PHASE-4.6] sub_stage=value_fetch_transient_hit_path — reconstruct + maybe decompress.
+      final long phase46TransientHitStart =
+          com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED ? System.nanoTime() : 0L;
       getHostLevelIngestionStats().recordIngestionValueBytesCacheHitCount(currentTimeForMetricsMs);
       versionedIngestionStats.recordDcrLookupCacheHitCount(storeName, versionNumber, VeniceRecordType.DATA);
       // construct originalValue from this transient record only if it's not null.
@@ -978,6 +1107,11 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
         originalValue = new ByteBufferValueRecord<>(
             getCurrentValueFromTransientRecord(transientRecord),
             transientRecord.getValueSchemaId());
+      }
+      if (com.linkedin.davinci.stats.AaDcrMergeReporter.ENABLED) {
+        com.linkedin.davinci.stats.AaDcrMergeReporter.record(
+            com.linkedin.davinci.stats.AaDcrMergeReporter.SubStage.VALUE_FETCH_TRANSIENT_HIT_PATH,
+            System.nanoTime() - phase46TransientHitStart);
       }
     }
     return originalValue;

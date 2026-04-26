@@ -119,7 +119,7 @@ public class ActiveActiveIngestionBenchmark {
   private static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 10_000;
   // Bounded key pool size for PUT so both producers concurrently hit the same keys
   // and exercise the value-level DCR path (timestamp-based conflict resolution).
-  private static final int PUT_KEY_POOL_SIZE = 10_000;
+  private static final int PUT_KEY_POOL_SIZE = 100_000;
   // Each PARTIAL_UPDATE pool key is pre-populated with a tags map of this size.
   // AddToMap updates during the benchmark only overwrite values for map keys in
   // [0, TAGS_MAP_SIZE), so the map size stays constant instead of growing.
@@ -243,7 +243,8 @@ public class ActiveActiveIngestionBenchmark {
         .setChunkingEnabled(false)
         .setHybridRewindSeconds(25L)
         .setHybridOffsetLagThreshold(1L)
-        .setWriteComputationEnabled(true)
+        // [Phase 6] WC disabled for PUT workload (winning Phase 5 config: WC off + RMD cache on).
+        .setWriteComputationEnabled(workloadType != WorkloadType.PUT)
         .setPartitionCount(2);
     assertCommand(parentControllerClient.updateStore(storeName, storeParams));
 
