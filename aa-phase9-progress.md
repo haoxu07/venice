@@ -167,4 +167,75 @@ capacity 10000 and admin-topic / system-store traffic of ~10 messages,
 capacity-driven eviction is never reached during the test, so MAX vs MIN
 doesn't matter here. Stage B benchmark may revisit this.
 
+## 2026-04-26 — Iteration 3: targeted test PASSED with fix
+
+Commit: c5a859a2f [bench] Phase 9: fix multi-consumer admin propagation
+
+Smoke test:
+```
+./gradlew -DpubSubBrokerFactory=com.linkedin.venice.integration.utils.InMemoryPubSubBrokerFactory \
+  :internal:venice-test-common:integrationTest \
+  --tests "com.linkedin.venice.endToEnd.TestActiveActiveIngestion.testActiveActiveStoreRestart" \
+  --rerun-tasks
+```
+Result: `testActiveActiveStoreRestart PASSED (30.636 s)`. BUILD SUCCESSFUL in 1m46s.
+(Was failing in 45s with "non-deterministic condition not met" before the fix.)
+
+Will follow up with broader run of TestActiveActiveIngestion + ActiveActiveReplicationForHybridTest.
+
+## 2026-04-26 — Iteration 4: broader suite reveals second bug
+
+Ran:
+```
+./gradlew -DpubSubBrokerFactory=...InMemoryPubSubBrokerFactory \
+  :internal:venice-test-common:integrationTest \
+  --tests "com.linkedin.venice.endToEnd.TestActiveActiveIngestion" \
+  --tests "com.linkedin.venice.endToEnd.ActiveActiveReplicationForHybridTest" \
+  --rerun-tasks
+```
+
+Results (process killed by harness budget before all tests finished, but
+clear pattern emerged from completed tests):
+- `testActiveActiveStoreRestart` PASSED 30.4s
+- `controllerClientCanGetStoreReplicationMetadataSchema` PASSED 22.4s
+- `testAAReplicationCanConsumeFromAllRegions[0..6]` FAILED 67-168s each
+- `testAAReplicationCanResolveConflicts[0..2+]` FAILED 67-68s each
+- `testBatchPushWithSeparateDrainer` FAILED 360s (test method timeout)
+
+All the `testAA…` failures share a common stack:
+```
+VeniceException: Error while constructing VeniceWriter for store name: test-store_<id>_rt_v1
+  at VeniceSystemProducer.start(...) (line 507)
+  at IntegrationTestPushUtils.getSamzaProducerForStream(...)
+  at ActiveActiveReplicationForHybridTest line 246
+Caused by: java.util.concurrent.TimeoutException
+  at CompletableFuture.timedGet
+```
+
+The Samza producer's VeniceWriter is calling
+`producerAdapter.getNumberOfPartitions(rt_topic_name)` inside
+`CompletableFuture.supplyAsync(...).get(30, TimeUnit.SECONDS)`. Our bounded
+producer's `getNumberOfPartitions` synchronously calls
+`broker.getPartitionCount(topic)` which throws IllegalArgumentException if
+the topic is missing. If it threw, we'd see ExecutionException wrapping
+IAE — but we see plain TimeoutException, meaning the supplier never returns.
+
+This is a SECOND, distinct bug from the admin propagation one. My fix moved
+the failure forward from line 215 (sendEmptyPushAndWait timing out because
+child controllers couldn't see the store) to line 246 (Samza producer init
+timing out on RT topic partition lookup).
+
+Comparing v3 (pre-fix) to iter4 (post-fix) for testAAReplicationCanConsumeFromAllRegions[0]:
+  v3: failed at line 215 with `404 - Store: <name> does not exist` from
+      both dc-0 AND dc-1 controllers (admin propagation broken)
+  iter4: failed at line 246 with TimeoutException constructing VeniceWriter
+      for `<store>_rt_v1` (admin propagation works, RT topic lookup fails)
+
+So my fix is correct and reveals a second issue. Wrote
+aa-phase9-PARTIAL.txt with details. Master to decide whether to:
+  (a) accept Stage A as PARTIAL and proceed to Stage B (benchmark; may not
+      hit bug 2 since it uses a single in-region producer/consumer pair),
+      OR
+  (b) respawn with focused diagnosis of bug 2.
+
 
