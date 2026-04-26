@@ -13,6 +13,8 @@ import com.linkedin.venice.pubsub.mock.InMemoryPubSubPosition;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMap;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMaps;
 import java.util.concurrent.CompletableFuture;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 
 /**
@@ -28,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
  * back-pressure.
  */
 public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter {
+  private static final Logger LOGGER = LogManager.getLogger(BoundedMockInMemoryProducerAdapter.class);
   private final BoundedInMemoryPubSubBroker broker;
 
   public BoundedMockInMemoryProducerAdapter(BoundedInMemoryPubSubBroker broker) {
@@ -36,7 +39,38 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
 
   @Override
   public int getNumberOfPartitions(String topic) {
-    return broker.getPartitionCount(topic);
+    writeDebugFile("getNumberOfPartitions ENTER topic=" + topic + " broker=" + broker.getPubSubBrokerAddress());
+    long t0 = System.nanoTime();
+    String msg;
+    try {
+      int n = broker.getPartitionCount(topic);
+      msg = String.format(
+          "[bench-iter5] getNumberOfPartitions(topic=%s) -> %d on broker=%s (%d ms)",
+          topic,
+          n,
+          broker.getPubSubBrokerAddress(),
+          (System.nanoTime() - t0) / 1_000_000L);
+      LOGGER.info(msg);
+      writeDebugFile(msg);
+      return n;
+    } catch (RuntimeException e) {
+      msg = String.format(
+          "[bench-iter5] getNumberOfPartitions(topic=%s) THREW %s on broker=%s (%d ms)",
+          topic,
+          e.getClass().getSimpleName() + ": " + e.getMessage(),
+          broker.getPubSubBrokerAddress(),
+          (System.nanoTime() - t0) / 1_000_000L);
+      LOGGER.warn(msg);
+      writeDebugFile(msg);
+      throw e;
+    }
+  }
+
+  private static void writeDebugFile(String msg) {
+    try (java.io.FileWriter fw = new java.io.FileWriter("/tmp/aa-phase9-iter5-debug.log", true)) {
+      fw.write(System.currentTimeMillis() + " " + Thread.currentThread().getName() + " " + msg + "\n");
+    } catch (Exception ignored) {
+    }
   }
 
   @Override

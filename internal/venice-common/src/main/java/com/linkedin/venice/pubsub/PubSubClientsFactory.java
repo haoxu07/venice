@@ -112,8 +112,24 @@ public class PubSubClientsFactory {
       className = properties.getStringWithAlternative(preferredConfigKey, alternateConfigKey);
       LOGGER.debug("Creating pub-sub {} adapter factory instance for class: {}", factoryType, className);
     } else {
-      className = defaultClassName;
-      LOGGER.debug("Creating pub-sub {} adapter factory instance with default class: {}", factoryType, className);
+      // Phase 9 (bench): allow JVM-wide override of the default factory class via system property,
+      // so tests/benchmarks that flip the broker factory (e.g. in-memory) can also flip the
+      // matching client adapters without having to thread a Properties bag through every callsite
+      // (notably VeniceSystemProducer.getVeniceWriter, which only sets bootstrap-servers).
+      String sysPropOverride = System.getProperty(preferredConfigKey);
+      if (sysPropOverride == null) {
+        sysPropOverride = System.getProperty(alternateConfigKey);
+      }
+      if (sysPropOverride != null && !sysPropOverride.isEmpty()) {
+        className = sysPropOverride;
+        LOGGER.info(
+            "Creating pub-sub {} adapter factory instance from system property override: {}",
+            factoryType,
+            className);
+      } else {
+        className = defaultClassName;
+        LOGGER.debug("Creating pub-sub {} adapter factory instance with default class: {}", factoryType, className);
+      }
     }
 
     return createInstance(className);

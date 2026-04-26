@@ -50,6 +50,37 @@ public class InMemoryPubSubBrokerFactory implements PubSubBrokerFactory<InMemory
   private static final Logger LOGGER = LogManager.getLogger(InMemoryPubSubBrokerFactory.class);
   public static final String SERVICE_NAME = "InMemoryPubSub";
 
+  // Phase 9 (bench, iter5): broadcast the matching client adapter class names as JVM-wide system
+  // properties so that callsites which build a VeniceWriterFactory without explicit producer/admin
+  // factory configs (notably the Samza VeniceSystemProducer in integration tests, which only sets
+  // KAFKA_BOOTSTRAP_SERVERS / PUBSUB_BROKER_ADDRESS in its writer Properties) still pick up the
+  // in-memory adapter. Without this, the default ApacheKafkaProducerAdapterFactory is used and
+  // dials the in-memory broker URL with the Kafka protocol, which hangs (Bug 2 from iter4).
+  // PubSubClientsFactory.createFactory was extended in iter5 to fall back to System.getProperty
+  // before the hardcoded default class.
+  static {
+    setSystemPropertyIfAbsent(
+        com.linkedin.venice.ConfigKeys.PUB_SUB_PRODUCER_ADAPTER_FACTORY_CLASS,
+        InMemoryProducerAdapterFactory.class.getName());
+    setSystemPropertyIfAbsent(
+        com.linkedin.venice.ConfigKeys.PUB_SUB_CONSUMER_ADAPTER_FACTORY_CLASS,
+        InMemoryConsumerAdapterFactory.class.getName());
+    setSystemPropertyIfAbsent(
+        com.linkedin.venice.ConfigKeys.PUB_SUB_ADMIN_ADAPTER_FACTORY_CLASS,
+        InMemoryAdminAdapterFactory.class.getName());
+    setSystemPropertyIfAbsent(
+        com.linkedin.venice.ConfigKeys.PUB_SUB_SOURCE_OF_TRUTH_ADMIN_ADAPTER_FACTORY_CLASS,
+        InMemoryAdminAdapterFactory.class.getName());
+    LOGGER.info(
+        "Phase 9 iter5: set in-memory client adapter factory system properties (producer/consumer/admin).");
+  }
+
+  private static void setSystemPropertyIfAbsent(String key, String value) {
+    if (System.getProperty(key) == null) {
+      System.setProperty(key, value);
+    }
+  }
+
   // Anchor: a single PubSubClientsFactory instance shared by every broker wrapper this
   // factory produces. The three adapter factories inside it have public no-arg constructors
   // and look the broker up by address at create() time, so they don't need to be re-built

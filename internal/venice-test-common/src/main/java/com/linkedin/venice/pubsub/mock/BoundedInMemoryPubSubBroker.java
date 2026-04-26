@@ -63,6 +63,14 @@ public class BoundedInMemoryPubSubBroker {
           "The topic " + topicName + " already exists in this " + BoundedInMemoryPubSubBroker.class.getSimpleName());
     }
     topics.put(topicName, new BoundedInMemoryPubSubTopic(partitionCount, defaultCapacity));
+    debugLog("createTopic topic=" + topicName + " partitions=" + partitionCount + " broker=" + brokerAddress);
+  }
+
+  private static void debugLog(String msg) {
+    try (java.io.FileWriter fw = new java.io.FileWriter("/tmp/aa-phase9-iter5-debug.log", true)) {
+      fw.write(System.currentTimeMillis() + " " + Thread.currentThread().getName() + " [broker] " + msg + "\n");
+    } catch (Exception ignored) {
+    }
   }
 
   /**
@@ -93,7 +101,12 @@ public class BoundedInMemoryPubSubBroker {
   }
 
   public int getPartitionCount(String topicName) {
-    BoundedInMemoryPubSubTopic topic = getTopic(topicName);
+    BoundedInMemoryPubSubTopic topic = topics.get(topicName);
+    if (topic == null) {
+      debugLog("getPartitionCount MISS topic=" + topicName + " broker=" + brokerAddress + " known=" + topics.keySet());
+      throw new IllegalArgumentException(
+          "The topic " + topicName + " does not exist in this " + BoundedInMemoryPubSubBroker.class.getSimpleName());
+    }
     return topic.getPartitionCount();
   }
 
