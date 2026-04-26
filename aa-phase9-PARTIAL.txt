@@ -1,110 +1,73 @@
-Phase 9 — Stage A: PARTIAL progress
+Phase 9 iter5 — PARTIAL
 
-# Summary
-Critical multi-consumer admin propagation bug found and fixed in
-BoundedInMemoryPubSubTopic. testActiveActiveStoreRestart and
-controllerClientCanGetStoreReplicationMetadataSchema now PASS under the
-in-memory factory. A second, distinct bug remains and blocks the rest of
-the AA test suite.
+Focus test: ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions[0]
 
-# What works after iteration 4 (commit c5a859a2f)
-- `TestActiveActiveIngestion.testActiveActiveStoreRestart` — PASSED in 30.4s
-  (was failing in 45s with "non-deterministic condition not met" before fix)
-- `ActiveActiveReplicationForHybridTest.controllerClientCanGetStoreReplicationMetadataSchema`
-  — PASSED in 22.4s
-- `clients/da-vinci-client SITWithPWiseWithoutBufferAfterLeaderTest` — 318/0/0
-  (criterion 4, unchanged from previous iteration)
-- BUILD SUCCESSFUL on `:internal:venice-test-common:integrationTestClasses`
-- No-diff invariant on InMemoryPubSubBroker.java + InMemoryPubSubTopic.java
-  (verified with `git diff --stat <path>`).
+Bugs fixed this iteration: 1
+  - Bug 2: VeniceSystemProducer's writer factory was constructed without
+    PUB_SUB_PRODUCER_ADAPTER_FACTORY_CLASS in its Properties bag, so it
+    fell through to the hardcoded ApacheKafkaProducerAdapterFactory
+    default, which dialed the in-memory broker URL with the Kafka wire
+    protocol and blocked for 30 s.
+    Fix (commit ebcba6799):
+      - PubSubClientsFactory.createFactory now falls through to
+        System.getProperty before the hardcoded default.
+      - InMemoryPubSubBrokerFactory static initializer sets the four
+        adapter factory class system properties to the in-memory
+        implementations (only when not already set; preserves Apache
+        Kafka behaviour for explicit kafka tests).
 
-# Bug 1 (FIXED) — multi-consumer admin propagation
-Root cause: `BoundedInMemoryPubSubTopic.consume()` short-circuited on
-`target < p.lowWaterMark`, returning `Optional.empty()` even when the entry
-was still physically in the queue. The integration-test path has the parent
-controller self-consuming its admin topic AND the child controller remotely
-consuming the same topic; the MAX-tracking lowWaterMark let the parent's
-reads lock out the child for offsets the child had not yet read.
+Bugs remaining (1+ unresolved): admin-propagation flakiness and/or
+data-not-consumed flakiness in the bounded broker.
 
-Without admin propagation, the child controller never observed ADD_VERSION
-for the user store, never triggered Helix to assign partitions to the
-server, and the user-store push never reached COMPLETED.
+Failure shape that's still recurring (varies between runs):
+  - Sometimes line 215 `sendEmptyPushAndWait did not succeed in 150 s`
+    with `dc-0=NOT_CREATED Offline job hasn't been created yet`
+    (admin-propagation-to-dc-0 timing).
+  - Sometimes line 268 `Servers in dc-0 haven't consumed real-time data
+    from region dc-0 for key dc-0_key_4` (consumer-side timing).
+  - Sometimes line 360 `Da Vinci client failed to start, Store does not
+    exist` (meta-store thin-client lookup; this was the *furthest*
+    progress observed).
 
-Fix (commit c5a859a2f): removed the lowWaterMark short-circuit from
-consume(). The linear walk through the deque naturally returns
-Optional.empty() if the entry was actually evicted; the short-circuit was
-both incorrect (locks out slower peers) and redundant.
+Why this is PARTIAL not FAILED:
 
-# Bug 2 (NOT FIXED) — RT topic partition-count timeout in Samza producer
-Recurring failure pattern (visible in aa-phase9-iter4.log) in
-`testAAReplicationCanConsumeFromAllRegions[0..6]` and
-`testAAReplicationCanResolveConflicts[0..]`:
-```
-com.linkedin.venice.exceptions.VeniceException: Error while constructing
-  VeniceWriter for store name: test-store_<id>_rt_v1
-    at VeniceWriter.<init>(VeniceWriter.java:470)
-    at VeniceSystemProducer.constructVeniceWriter(...)
-    at VeniceSystemProducer.start(...)
-    at IntegrationTestPushUtils.getSamzaProducerForStream(...)
-    at ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions(line 246)
-Caused by: java.util.concurrent.TimeoutException
-    at CompletableFuture.timedGet(CompletableFuture.java:1960)
-```
-Each test fails after ~68 s wall time (30 s producer init timeout + cluster
-setup). The test class's own timeout is 360 s; testBatchPushWithSeparateDrainer
-hits that 360 s timeout instead.
+  Bug 2's fix is solid and confirmed by file-based diagnostic logging.
+  The test now reaches phases of the workload it never reached before
+  (it used to fail at line 246 in 70 s; it now reaches lines 268, 360
+  in 70-172 s). That's substantive progress.
 
-`VeniceWriter.<init>` line 451:
-```java
-this.numberOfPartitions =
-  CompletableFuture.supplyAsync(() -> producerAdapter.getNumberOfPartitions(topicName), threadPoolExecutor)
-                   .get(30, TimeUnit.SECONDS);
-```
-`BoundedMockInMemoryProducerAdapter.getNumberOfPartitions` synchronously calls
-`broker.getPartitionCount(topic)` which throws `IllegalArgumentException` if
-the topic is missing (no lock contention; no I/O). If it threw, we'd see
-`ExecutionException` wrapping IAE — but we see plain TimeoutException, which
-means the supplier never returns at all. Either:
-  (a) RT topic name lookup goes through a path other than the topic-map
-      (e.g. partitionsFor on the consumer adapter, which isn't called here);
-  (b) The threadPoolExecutor in VeniceWriter is exhausted (max 2 threads,
-      core threads can time out — should not be the issue given fresh writer
-      per call); or
-  (c) Something else inside getNumberOfPartitions blocks (worth attaching a
-      jstack at the moment of failure).
+  The remaining flakiness has variable shape between runs, so the
+  iteration loop's "5 same-shape" stop condition does not apply yet.
+  But I'm out of budget to keep chasing it.
 
-Suggested hypothesis to verify next: the RT topic
-`test-store_<id>_rt_v1` is being created by the *parent* controller into the
-*parent* broker only, but the Samza producer for the child region is dialing
-the *child* broker, where the RT topic does not yet exist. The unbounded mock
-broker would have the same `IllegalArgumentException` if asked for a missing
-topic, so the failure mode might be a deeper wiring difference (e.g. the
-SystemProducer's broker-address resolution).
+Stage A pass count after iter5:
+  - testActiveActiveStoreRestart (single test) PASSED in iter3 (30 s).
+  - testAAReplicationCanConsumeFromAllRegions: still failing with
+    variable shape, but progresses much further than iter4.
+  - Other AA tests in the suite: not re-run this iteration.
 
-# Iteration count
-1. Read bounded code + system-out, identified parent vs child PHASE9-DEBUG
-   first-read-OK pattern → admin propagation hypothesis.
-2. Applied consume() short-circuit removal fix.
-3. Targeted `testActiveActiveStoreRestart` smoke run → PASSED.
-4. Broader `TestActiveActiveIngestion` + `ActiveActiveReplicationForHybridTest`
-   run → 2 PASSED (testActiveActiveStoreRestart,
-   controllerClientCanGetStoreReplicationMetadataSchema), many FAILED with
-   the new RT-topic timeout pattern. Run was bounded by harness budget; not
-   all tests completed.
+Stage B (benchmark): not attempted.
 
-# Files
-Commit: c5a859a2f [bench] Phase 9: fix multi-consumer admin propagation in
-                  BoundedInMemoryPubSubTopic
-Modified: internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubTopic.java
-Logs: /home/coder/Projects/venice/aa-phase9-iter3.log (single-test PASSED)
-      /home/coder/Projects/venice/aa-phase9-iter4.log (broader run)
-JUnit XML: /home/coder/Projects/venice/internal/venice-test-common/build/test-results/integrationTest/TEST-com.linkedin.venice.endToEnd.TestActiveActiveIngestion.xml
+Diagnostic logging deliberately left in the code so a follow-up
+subagent doesn't have to re-derive. Writes to
+/tmp/aa-phase9-iter5-debug.log. To remove for prod, search for
+`debugLog(` and `[bench-iter5]` in:
+  - BoundedMockInMemoryProducerAdapter
+  - BoundedInMemoryPubSubBroker
+  - BoundedMockInMemoryConsumerAdapter
 
-# Recommendation for next step
-Master should decide: (a) accept Stage A as partial and move to Stage B
-benchmark verification (the bench likely uses a single in-region producer/
-consumer pair, so Bug 2 may not bite), OR (b) respawn with focused diagnosis
-of Bug 2 (likely a 1-2 hour investigation: instrument
-BoundedMockInMemoryProducerAdapter.getNumberOfPartitions to log what topic
-name is requested + whether it's in the broker's topic map, then trace
-back to which region the Samza producer is dialed at).
+Next agent recommendation: Take the line 360 (DVC `Store does not exist`)
+failure as the focus, since it's the furthest progress and the cleanest
+shape (NativeMetadataRepository.fetchStoreFromRemote can't find the
+store in the meta store via the thin client). Investigate why the
+thin-client meta-store path doesn't see the store. Likely a configuration
+gap on the DVC side — the test instantiates the DVC factory inline and
+its pubsub/router config may not pick up the adapter factory system
+properties correctly.
+
+Artifacts:
+  - aa-phase9-progress.md (chronological, includes iter5 analysis)
+  - aa-phase9-iter5-focus.log (last focus-test gradle log)
+  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events from
+    last run; will get overwritten on each run)
+  - Commit ebcba6799 on branch haoxu07/aa-ingestion-benchmark.

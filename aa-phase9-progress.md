@@ -239,3 +239,118 @@ aa-phase9-PARTIAL.txt with details. Master to decide whether to:
   (b) respawn with focused diagnosis of bug 2.
 
 
+
+## 2026-04-26 — Iteration 5: Bug 2 root cause and fix (commit ebcba6799)
+
+Spent ~1 hour with file-based diagnostic logging
+(/tmp/aa-phase9-iter5-debug.log) to confirm Bug 2's root cause.
+
+Hypothesis from iter4 was: "the Samza producer in dc-0/dc-1 is dialing
+the wrong region's broker." That hypothesis was WRONG.
+
+Actual root cause: `VeniceSystemProducer.getVeniceWriter` constructs a
+`VeniceWriterFactory(properties)` bag that contains only
+`KAFKA_BOOTSTRAP_SERVERS` and `PUBSUB_BROKER_ADDRESS`. It does NOT set
+`PUB_SUB_PRODUCER_ADAPTER_FACTORY_CLASS`. So
+`PubSubClientsFactory.createFactory` falls through to the hardcoded
+default class name `ApacheKafkaProducerAdapterFactory`. That factory
+constructs an Apache Kafka producer pointed at the in-memory broker URL
+(e.g. `localhost:38857`), which has no actual Kafka broker. The
+`ApacheKafkaProducerAdapter.getNumberOfPartitions` then blocks on
+`producer.partitionsFor(topic)` for 30 s before the writer's
+`CompletableFuture.get(30, TimeUnit.SECONDS)` itself times out — the
+plain TimeoutException, not a wrapped IAE, because the supplier never
+returns.
+
+This was confirmed by adding file-based logging (LOGGER.info goes to a
+suppressed stdout in gradle's testLogging). The
+`BoundedMockInMemoryProducerAdapter.getNumberOfPartitions` log line
+NEVER fired in pre-fix runs — consistent with "the supplier ran inside
+ApacheKafkaProducerAdapter, not the bounded one."
+
+Fix:
+  1. `PubSubClientsFactory.createFactory`: when the factory class is
+     absent from the Properties bag, fall back to `System.getProperty`
+     before the hardcoded ApacheKafka default. A small additive change.
+  2. `InMemoryPubSubBrokerFactory` static initializer: set the producer/
+     consumer/admin/source-of-truth-admin factory class system properties
+     to the in-memory implementations. Only applied when the property is
+     not already set, so explicit Apache-Kafka tests are unaffected.
+
+After the fix, file-based logging confirms `getNumberOfPartitions` IS
+called on the bounded broker for the test-store RT topic, and returns
+the correct partition count. The TimeoutException is gone.
+
+### Where the test fails after the iter5 fix
+
+After commit ebcba6799, focus test
+`testAAReplicationCanConsumeFromAllRegions[0]` now progresses beyond
+line 246 (Samza producer init), but the failure point varies between
+runs (45-172 s, three different failure shapes observed):
+
+  - Run A (172 s): line 215 `sendEmptyPushAndWait did not succeed`,
+    `dc-0=NOT_CREATED Offline job hasn't been created yet` —
+    admin-propagation-to-dc-0 is slow.
+  - Run B (70 s): line 268 `Servers in dc-0 haven't consumed real-time
+    data from region dc-0 for key dc-0_key_4` — RT topic data either
+    not produced to dc-0 or not consumed by dc-0 server.
+  - Run C (45 s, longest progress): line 360 `Da Vinci client failed to
+    start, Store does not exist` — meta-store thin-client lookup
+    failed.
+
+Common pattern: in the bounded broker model, the per-region admin
+propagation is now timing-sensitive in a way it wasn't with the
+unbounded broker. The bounded broker's per-partition lock-and-condition
+machinery may be adding micro-pauses that compound into the test's 150 s
+deadlines.
+
+### What I did NOT have time to fully nail down
+
+- Whether the variance is real flakiness (test's 30 s and 150 s
+  `waitForNonDeterministicAssertion` deadlines just barely fit/don't
+  fit) or a deterministic ordering bug.
+- Whether the bounded broker's lock-and-Condition produce-block
+  semantics interact poorly with the parent-controller -> child-
+  controller admin-message-propagation pipeline.
+- The DVC `Store does not exist` is the LATEST-progressing failure;
+  worth investigating first if time permits.
+
+### Diagnostic instrumentation (live in iter5 commit)
+
+These are intentionally left in the code so a follow-up subagent can
+pick up where I left off:
+
+  - `BoundedMockInMemoryProducerAdapter.getNumberOfPartitions`:
+    file-based debugLog of every call, with topic + broker address.
+  - `BoundedInMemoryPubSubBroker.createTopic`: debugLog of every topic
+    creation, with partition count + broker.
+  - `BoundedInMemoryPubSubBroker.getPartitionCount`: debugLog of MISS
+    (when topic is queried but doesn't exist).
+  - `BoundedMockInMemoryConsumerAdapter.subscribe`: debugLog only for
+    `_rt_` topics (scope-limited to keep noise down).
+  - `BoundedMockInMemoryConsumerAdapter.poll`: one-time first-read
+    debugLog per consumer instance, per topic.
+
+All write to `/tmp/aa-phase9-iter5-debug.log`. Logger output is
+intentionally not used because gradle's `showStandardStreams=false`
+suppresses it.
+
+### Next-step recommendation
+
+If a follow-up agent picks up Phase 9, the highest-value next move is:
+
+  1. Take run C (DVC `Store does not exist` at line 360) as the focus
+     failure, since it represents the furthest test progress.
+  2. Investigate why ThinClientMetaStoreBasedRepository.fetchStoreFromRemote
+     can't find the store in the meta store. The meta store is a regular
+     Venice store that the controllers populate. If servers can answer
+     router queries (lines 268, 295, 330 all passed in run C), but DVC's
+     thin client can't, that's a thin-client-specific configuration gap
+     — possibly one of the four adapter factory class system properties
+     (consumer/admin) not being picked up in the right place.
+  3. If the admin-propagation flakiness keeps surfacing (runs A and B),
+     investigate whether the bounded broker's per-partition Condition
+     wake-up is missing wake-ups for a subset of consumers when many
+     producers race to produce. The `notEmpty.signalAll()` after produce
+     should be sufficient but is worth verifying with a pure-Java
+     reproducer.

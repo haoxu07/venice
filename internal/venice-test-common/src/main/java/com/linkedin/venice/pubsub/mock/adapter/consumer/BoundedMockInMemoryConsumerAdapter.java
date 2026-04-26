@@ -95,6 +95,14 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
         pubSubTopicPartition,
         position,
         isInclusive);
+    String topicName = pubSubTopicPartition.getPubSubTopic().getName();
+    if (topicName.contains("_rt_v") || topicName.contains("_rt_")) {
+      // Only log RT subscriptions to keep the debug file scoped (admin/system-store topic
+      // chatter is not in scope for the iter5 diagnosis).
+      debugLog(
+          "subscribe topic=" + topicName + " partition=" + pubSubTopicPartition.getPartitionNumber() + " pos=" + position
+              + " incl=" + isInclusive + " broker=" + broker.getPubSubBrokerAddress());
+    }
 
     long seekOffset;
     if (PubSubSymbolicPosition.EARLIEST.equals(position)) {
@@ -214,6 +222,9 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
                 partition,
                 next,
                 broker.getPubSubBrokerAddress());
+            debugLog(
+                "FIRST-READ topic=" + topicName + " partition=" + partition + " pos=" + next + " broker="
+                    + broker.getPubSubBrokerAddress());
           }
           KafkaMessageEnvelope kafkaMessageEnvelope = message.get().value;
           if (!AdminTopicUtils.isAdminTopic(topicName) && !message.get().key.isControlMessage()
@@ -262,6 +273,13 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
       Thread.sleep(ms);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+    }
+  }
+
+  private static void debugLog(String msg) {
+    try (java.io.FileWriter fw = new java.io.FileWriter("/tmp/aa-phase9-iter5-debug.log", true)) {
+      fw.write(System.currentTimeMillis() + " " + Thread.currentThread().getName() + " [consumer] " + msg + "\n");
+    } catch (Exception ignored) {
     }
   }
 
