@@ -83,6 +83,20 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
       PubSubProducerCallback callback) {
     InMemoryPubSubPosition inMemoryPubSubPosition =
         broker.produce(topic, partition, new InMemoryPubSubMessage(key, value, headers));
+    // [iter6] log meta-store-rt produces so we can verify whether the controller
+    // actually wrote STORE_CLUSTER_CONFIG (metadataType=4) into the meta store RT.
+    if (topic.contains("venice_system_store_meta_store_") && topic.endsWith("_rt")) {
+      try {
+        int msgType = (value != null) ? value.messageType : -1;
+        boolean ctrl = (key != null) && key.isControlMessage();
+        int keyLen = (key != null && key.getKey() != null) ? key.getKey().length : -1;
+        writeDebugFile(
+            "produce meta-store-rt topic=" + topic + " partition=" + partition + " offset="
+                + inMemoryPubSubPosition + " msgType=" + msgType + " isCtrl=" + ctrl + " keyLen=" + keyLen
+                + " broker=" + broker.getPubSubBrokerAddress());
+      } catch (Exception ignored) {
+      }
+    }
     PubSubProduceResult produceResult = new SimplePubSubProduceResultImpl(topic, partition, inMemoryPubSubPosition, -1);
     if (callback != null) {
       callback.onCompletion(produceResult, null);

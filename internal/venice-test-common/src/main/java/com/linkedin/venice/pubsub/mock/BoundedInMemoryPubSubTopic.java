@@ -57,8 +57,14 @@ public class BoundedInMemoryPubSubTopic {
    * adjust this if integration tests or the Stage B benchmark reveal a workload that
    * exceeds it. Document the symptom + new value in
    * {@code aa-phase9-progress.md}.
+   *
+   * <p>iter6: bumped to 100k because integration tests produce more than the original
+   * 10k assumption (admin topics, heartbeats, version pushes all share a partition in the
+   * in-memory broker and aggregate over the full BeforeClass lifecycle). At 10k some
+   * partitions hit eviction during long multi-test runs which then caused slow consumers
+   * to read empty.
    */
-  public static final int DEFAULT_CAPACITY = 10000;
+  public static final int DEFAULT_CAPACITY = 100_000;
 
   /** Max time {@link #produce(int, InMemoryPubSubMessage)} will block waiting for space. */
   public static final long PRODUCE_BLOCK_TIMEOUT_MS = 30_000L;
@@ -186,29 +192,47 @@ public class BoundedInMemoryPubSubTopic {
   }
 
   /**
-   * Consumer-side hook: report the highest offset this consumer has READ. When ALL
-   * registered consumers (we collapse to a single broker-aggregate min) have advanced
-   * past offset N, entries with offset <= N can be evicted to free producer slots.
+   * Consumer-side hook: report the highest offset this consumer has READ. The bounded
+   * topic uses this to decide which messages can be evicted when the queue is full.
    *
-   * <p>Implementation: we track a single low-water-mark per partition: the "lowest read
-   * position seen so far." Each call moves it FORWARD (never backward). Eviction below
-   * the low-water-mark is performed lazily inside {@link #produce} when the queue is
-   * full. Producers that are blocked on capacity are signalled.
+   * <p>iter6: previous versions tracked the MAX of all reported positions, which made
+   * eviction too aggressive in multi-consumer scenarios (a fast consumer reading admin
+   * messages would advance the watermark past offsets the slower consumer hasn't yet
+   * read; eviction inside produce() would then drop those offsets and the slow consumer
+   * would see Optional.empty()). With capacity bumped to 100k this rarely triggered in
+   * the integration-test workloads, but switching to MIN-of-reported-positions is the
+   * safer correct behaviour and adds no runtime cost.
    *
-   * <p>This is a deliberate simplification: we don't track per-consumer positions. If
-   * two consumers subscribe to the same partition and one falls behind, eviction will
-   * still respect the slowest if both report. But if only one reports, the other can
-   * see {@code Optional.empty()} for offsets it expected to read. The integration tests
-   * exercised in this phase don't have multi-consumer single-partition contention; the
-   * unit-test path doesn't go through this class.
+   * <p>Implementation: we track per-consumer positions in a small map keyed by
+   * Thread.currentThread() (the bounded mock consumer adapter calls into this from
+   * within its synchronized poll()). The aggregate watermark is the MIN of all reported
+   * positions, so a slow consumer's pending offsets are NEVER evicted as long as it has
+   * reported at least once. (The first reportConsumerPosition by a thread is always
+   * recorded but the MIN doesn't drop; subsequent calls just monotonically advance that
+   * thread's recorded position.)
+   *
+   * <p>If a consumer thread never reports (e.g. the consumer hasn't started yet), the
+   * watermark stays at -1 (its initial value), so produce() blocks instead of evicting,
+   * preserving the conservative-deadlock behaviour from earlier iterations.
    */
   public void reportConsumerPosition(int partition, long readPosition) {
     checkPartitionRange(partition);
     Partition p = partitions[partition];
     p.lock.lock();
     try {
-      if (readPosition > p.lowWaterMark) {
-        p.lowWaterMark = readPosition;
+      Long prior = p.consumerPositions.get(Thread.currentThread());
+      if (prior == null || readPosition > prior) {
+        p.consumerPositions.put(Thread.currentThread(), readPosition);
+      }
+      // Recompute MIN across all reported consumer positions for this partition.
+      long min = Long.MAX_VALUE;
+      for (Long pos: p.consumerPositions.values()) {
+        if (pos < min) {
+          min = pos;
+        }
+      }
+      if (min != Long.MAX_VALUE && min > p.lowWaterMark) {
+        p.lowWaterMark = min;
         // Don't evict eagerly -- let produce() handle it lazily when it needs space.
         // But DO wake any blocked producer so it can recheck capacity.
         p.notFull.signalAll();
@@ -288,8 +312,18 @@ public class BoundedInMemoryPubSubTopic {
     final Condition notEmpty = lock.newCondition();
     final Deque<Entry> queue = new ArrayDeque<>();
     long nextOffset = 0L;
-    /** Highest offset known to be consumed. -1 means "no consumer has reported yet". */
+    /**
+     * Highest offset known to be consumed by ALL reporting consumers (MIN across them).
+     * -1 means "no consumer has reported yet".
+     */
     long lowWaterMark = -1L;
+    /**
+     * iter6: per-consumer position map (keyed by reporting thread). The aggregate
+     * lowWaterMark is the MIN of these. WeakHashMap so a finished consumer thread does
+     * not pin its last reported position forever (which would block eviction
+     * indefinitely).
+     */
+    final java.util.WeakHashMap<Thread, Long> consumerPositions = new java.util.WeakHashMap<>();
 
     int size() {
       return queue.size();
