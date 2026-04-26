@@ -1,0 +1,39 @@
+Phase 8 PARTIAL: conclusion (c) — in_memory broker drops throughput; per-topic synchronized mutex is the new bottleneck.
+
+E2E Run A: 130866 ops/s (median of 4 iterations: 128754/130951/131292/130779). Within Phase 7 baseline (132-142k).
+E2E Run B: 0 ops/s (no completed iteration).
+Per-server consume rate Run B (from [BOTTLENECK-SUMMARY] ticks): ~268k records/sec (faster per-record than Run A but producer rate is ~10x consumer rate).
+
+Final commit: 41d149a76
+
+CRITERIA STATUS (8 PASS / 1 PARTIAL / 1 FAIL):
+  1 PASS — InMemoryPubSubBrokerFactory added (public no-arg ctor, implements PubSubBrokerFactory<...>)
+  2 PASS — Broker wrapper + registry; 3 brokers registered (parent, dc-0, dc-1) with 6 total host:port aliases
+  3 PASS — 3 adapter factories (Producer/Consumer/Admin) with public no-arg constructors; reflectively instantiable
+  4 PASS — Benchmark gating via -Dvenice.benchmark.use.inmemory.pubsub; sysprop set BEFORE first ServiceFactory call; choice echoed
+  5 PARTIAL — Run A complete; Run B never emits an [E2E] line. KAFKA-BROKER and KAFKA-PIPELINE reporters emit one inactivity line each then go silent (criterion 5's "must not throw" sub-requirement met)
+  6 FAIL — No Run B alloc flamegraph emitted (async-profiler emits at JVM exit, JMH does not exit until iterations complete; Run B's iteration never completes)
+  7 PASS — aa-phase8-result.json + AA_INMEMORY_KAFKA_PHASE8_REPORT.md
+  8 PASS — Conclusion (c) with quantitative justification + proposed per-partition-lock fix for Phase 9
+  9 PASS — ActiveActiveReplicationForHybridTest 11/0/0; TestActiveActiveIngestion 5/0/0; SITWithPWiseWithoutBufferAfterLeaderTest (concrete StoreIngestionTaskTest subclass) 318/0/0
+ 10 PASS — All artifacts present and non-empty
+
+WHY 5 IS PARTIAL AND 6 FAILS:
+The per-topic `synchronized` produce/consume monitor on InMemoryPubSubTopic is the binding bottleneck under the canonical Phase 5 winning config (WC=off + RMD cache=on, 100k keys, multi-producer N=2). MockInMemoryProducerAdapter.sendMessage() returns synchronously after a single append; one producer thread can fire ~200k records/sec. With 4+ producer threads × 2 regions plus per-server consumer threads + admin/version-topic consumers all contending on the same monitor, the consumer's drain rate (~100-120k records/sec/server) is ~10x slower than the producer's input rate. The per-iteration sentinel (sent at the end of runPutWorkload()) is buried behind millions of older records and never becomes visible within the teardown timeout. Even an empty push (one record from each region!) takes >5 minutes to drain because the system-store creation chain serializes through the same monitor.
+
+The proposed fix (Phase 9): replace `synchronized produce(int partition, …)` and `synchronized consume(int partition, …)` on InMemoryPubSubTopic with a per-partition `Lock[]` array (one ReentrantLock per partition). Producers and consumers operating on different partitions then proceed independently. Estimated effort: half a day in InMemoryPubSubTopic.java, no API surface change. Cross-cutting test sweep needed (StoreIngestionTaskTest's 318 cases were exercised in Phase 8 under the existing synchronized contract and may rely on the all-partition serialization for ordering guarantees).
+
+ARTIFACTS:
+  - /home/coder/Projects/venice/aa-phase8-result.json
+  - /home/coder/Projects/venice/AA_INMEMORY_KAFKA_PHASE8_REPORT.md
+  - /home/coder/Projects/venice/aa-phase8-progress.md
+  - /home/coder/Projects/venice/aa-phase8-runA.log (Run A — 4 [E2E] lines)
+  - /home/coder/Projects/venice/aa-phase8-runB-v7.log (Run B — best in-memory attempt)
+  - /home/coder/Projects/venice/aa-phase8-itest.log (criterion 9: 11+5 integration tests, all passing)
+  - /home/coder/Projects/venice/aa-phase8-sit-concrete.log (criterion 9: 318 unit tests, all passing)
+
+ALL PHASE 8 CODE COMPILES CLEANLY ON THE FINAL COMMITTED STATE.
+NO PHASE 0-7 INSTRUMENTATION WAS REMOVED OR DISABLED.
+NO AA LEADER BUSINESS CODE WAS MODIFIED.
+NO WC CONFIG / KEY POOL / MULTI-PRODUCER N=2 / PRODUCER ACKS / max.in.flight.requests CHANGED.
+DEFAULT pubSubBrokerFactory REMAINS KafkaBrokerFactory (Apache Kafka); in-memory path is opt-in via -Dvenice.benchmark.use.inmemory.pubsub=true.

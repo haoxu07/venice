@@ -1,0 +1,9 @@
+iter	commit	status	e2e_ops_per_sec	guard_passed	elapsed_s	change_summary
+0	ae3111795	baseline	30015.97	yes	440	baseline (commit ae3111795 unchanged)
+1	0231336d3	discard	29460.06	skipped	300	pre-size IndexedHashMap in setNewMapActiveElementAndTs (no improvement, -1.85%, within noise)
+V1	ae3111795	variance_check	29608.86	skipped	180	variance measurement run 1 (no code change)
+V2	ae3111795	variance_check	32967.92	skipped	180	variance measurement run 2 (no code change) — range = 11%
+V3	ae3111795	variance_check	30012.31	skipped	180	variance measurement run 3 (no code change) — mean 30863, std dev 1834
+P1	ae3111795	profile	29342.63	skipped	300	instrumented SortBasedCollectionFieldOpHandler — found collection-merge is ~11% of server CPU
+P2	ae3111795	profile	30679.86	skipped	300	instrumented MergeConflictResolver/MergeGenericRecord/RmdSerDe — found value serde is 89.5% of mcrUpdate
+FINAL	ae3111795	stopped	—	—	—	stopped and summarized per user direction

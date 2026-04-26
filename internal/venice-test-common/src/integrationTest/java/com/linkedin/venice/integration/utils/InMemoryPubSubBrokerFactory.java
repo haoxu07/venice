@@ -5,7 +5,7 @@ import static com.linkedin.venice.integration.utils.ProcessWrapper.DEFAULT_HOST_
 import com.linkedin.venice.ConfigKeys;
 import com.linkedin.venice.pubsub.PubSubClientsFactory;
 import com.linkedin.venice.pubsub.PubSubPositionTypeRegistry;
-import com.linkedin.venice.pubsub.mock.InMemoryPubSubBroker;
+import com.linkedin.venice.pubsub.mock.BoundedInMemoryPubSubBroker;
 import com.linkedin.venice.pubsub.mock.InMemoryPubSubPosition;
 import com.linkedin.venice.pubsub.mock.InMemoryPubSubPositionFactory;
 import com.linkedin.venice.utils.SslUtils;
@@ -86,7 +86,7 @@ public class InMemoryPubSubBrokerFactory implements PubSubBrokerFactory<InMemory
       int port = TestUtils.getFreePort();
       int sslPort = TestUtils.getFreePort();
       String address = DEFAULT_HOST_NAME + ":" + port;
-      InMemoryPubSubBroker broker = new InMemoryPubSubBroker(SERVICE_NAME + "-" + configs.getRegionName());
+      BoundedInMemoryPubSubBroker broker = new BoundedInMemoryPubSubBroker(SERVICE_NAME + "-" + configs.getRegionName());
       LOGGER.info(
           "InMemoryPubSubBroker for region:{} url: {} (sslPort={})",
           configs.getRegionName(),
@@ -122,7 +122,7 @@ public class InMemoryPubSubBrokerFactory implements PubSubBrokerFactory<InMemory
   public static class InMemoryPubSubBrokerWrapper extends PubSubBrokerWrapper {
     private static final Logger LOGGER = LogManager.getLogger(InMemoryPubSubBrokerWrapper.class);
 
-    private final InMemoryPubSubBroker broker;
+    private final BoundedInMemoryPubSubBroker broker;
     private final String regionName;
     private final String pubSubClusterName;
     private final String host;
@@ -131,7 +131,7 @@ public class InMemoryPubSubBrokerFactory implements PubSubBrokerFactory<InMemory
     private final VeniceTlsConfiguration tlsConfiguration;
 
     InMemoryPubSubBrokerWrapper(
-        InMemoryPubSubBroker broker,
+        BoundedInMemoryPubSubBroker broker,
         File dataDirectory,
         String regionName,
         String pubSubClusterName,
@@ -211,7 +211,7 @@ public class InMemoryPubSubBrokerFactory implements PubSubBrokerFactory<InMemory
       return pubSubClusterName;
     }
 
-    public InMemoryPubSubBroker getBroker() {
+    public BoundedInMemoryPubSubBroker getBroker() {
       return broker;
     }
 

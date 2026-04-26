@@ -1,0 +1,1020 @@
+{
+  "aa-phase6-run1.log": {
+    "e2e_ops_per_sec": [
+      130946.46,
+      128870.0
+    ],
+    "e2e_median": 129908.23000000001,
+    "e2e_all_iters": [
+      119254.67,
+      124655.97,
+      130946.46,
+      128870.0
+    ],
+    "n_steady_ticks": 12,
+    "leader_substages": {
+      "leader_record_wall_ns": {
+        "calls": 58936880,
+        "total_ns": 253859933314,
+        "avg_ns": 4307.318835235255,
+        "pct_of_wall": 100.0
+      },
+      "rt_poll_wait": {
+        "calls": 1047175,
+        "total_ns": 23395813642621,
+        "avg_ns": 22341837.46042543,
+        "pct_of_wall": 9216.032375492141
+      },
+      "rt_deserialize": {
+        "calls": 58936880,
+        "total_ns": 11949913087,
+        "avg_ns": 202.7578162773462,
+        "pct_of_wall": 4.707285994682399
+      },
+      "rmd_lookup_total": {
+        "calls": 258880,
+        "total_ns": 15324841050,
+        "avg_ns": 59196.697504635355,
+        "pct_of_wall": 6.036730905087202
+      },
+      "rmd_lookup_transient": {
+        "calls": 258880,
+        "total_ns": 92640468,
+        "avg_ns": 357.8510043263288,
+        "pct_of_wall": 0.03649274889133953
+      },
+      "rmd_lookup_rocksdb": {
+        "calls": 258880,
+        "total_ns": 14358094576,
+        "avg_ns": 55462.35543881335,
+        "pct_of_wall": 5.655912056921734
+      },
+      "rmd_deserialize": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "dcr_merge": {
+        "calls": 58592053,
+        "total_ns": 12554201678,
+        "avg_ns": 214.26458086389292,
+        "pct_of_wall": 4.945326154510439
+      },
+      "aa_wc_pool_handoff": {
+        "calls": 58936884,
+        "total_ns": 1867720600637,
+        "avg_ns": 31690.182342130607,
+        "pct_of_wall": 735.7287840798459
+      },
+      "key_lock_wait": {
+        "calls": 7662304,
+        "total_ns": 26711430829,
+        "avg_ns": 3486.083406374897,
+        "pct_of_wall": 10.522113702740386
+      },
+      "value_serialize": {
+        "calls": 58592053,
+        "total_ns": 15337338086,
+        "avg_ns": 261.76481793529234,
+        "pct_of_wall": 6.041653712651538
+      },
+      "value_chunk": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_produce_send": {
+        "calls": 58592057,
+        "total_ns": 560417008424,
+        "avg_ns": 9564.726639039145,
+        "pct_of_wall": 220.75835328090895
+      },
+      "vt_produce_ack_wait": {
+        "calls": 58104777,
+        "total_ns": 155394483709958573,
+        "avg_ns": 2674383961.751692,
+        "pct_of_wall": 61212685.94116848
+      },
+      "transient_map_put": {
+        "calls": 58592053,
+        "total_ns": 26890312593,
+        "avg_ns": 458.9412935061347,
+        "pct_of_wall": 10.59257845141687
+      },
+      "drainer_enqueue": {
+        "calls": 58104972,
+        "total_ns": 271168548045,
+        "avg_ns": 4666.87339673789,
+        "pct_of_wall": 106.8181750877524
+      },
+      "rocksdb_value_write": {
+        "calls": 58093721,
+        "total_ns": 245042089011,
+        "avg_ns": 4218.047747552614,
+        "pct_of_wall": 96.52649231098111
+      },
+      "transient_map_remove": {
+        "calls": 58093720,
+        "total_ns": 28096907906,
+        "avg_ns": 483.64793829694503,
+        "pct_of_wall": 11.067878077178435
+      },
+      "leader_idle": {
+        "calls": 58936864,
+        "total_ns": 3382973020282,
+        "avg_ns": 57399.94955079388,
+        "pct_of_wall": 1332.614003367594
+      },
+      "rt_poll_block_ns": {
+        "calls": 1047175,
+        "total_ns": 23395813642621,
+        "avg_ns": 22341837.46042543,
+        "pct_of_wall": 9216.032375492141
+      },
+      "rt_poll_records_returned": {
+        "calls": 58937572,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_empty_count": {
+        "calls": 456510,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_full_count": {
+        "calls": 588667,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "aa_pool_submit_count": {
+        "calls": 58936884,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_lazy_oldvalue_init": {
+        "calls": 58936880,
+        "total_ns": 4615409980,
+        "avg_ns": 78.31106736562913,
+        "pct_of_wall": 1.8180931192049072
+      },
+      "lo_rmd_cache_decide": {
+        "calls": 58936880,
+        "total_ns": 23876278975,
+        "avg_ns": 405.11610005483834,
+        "pct_of_wall": 9.405296323570434
+      },
+      "lo_write_timestamp": {
+        "calls": 58936880,
+        "total_ns": 5518150907,
+        "avg_ns": 93.6281477234628,
+        "pct_of_wall": 2.173699029604087
+      },
+      "lo_put_dispatch": {
+        "calls": 58592053,
+        "total_ns": 13640120410,
+        "avg_ns": 232.79813066116662,
+        "pct_of_wall": 5.373089101511935
+      },
+      "lo_rmd_cache_remember": {
+        "calls": 258880,
+        "total_ns": 526916144,
+        "avg_ns": 2035.3682941903585,
+        "pct_of_wall": 0.20756175940070704
+      },
+      "lo_result_wrapper_alloc": {
+        "calls": 58592053,
+        "total_ns": 3431494078,
+        "avg_ns": 58.56586179016462,
+        "pct_of_wall": 1.3517273219147885
+      },
+      "lo_sensor_calls": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_post_merge_sensors": {
+        "calls": 58592053,
+        "total_ns": 35145060139,
+        "avg_ns": 599.8263986244004,
+        "pct_of_wall": 13.844272185925846
+      },
+      "lo_internal_remainder": {
+        "calls": 58936880,
+        "total_ns": 76884509766,
+        "avg_ns": 1304.5229025696644,
+        "pct_of_wall": 30.286193162629313
+      },
+      "lo_poll_wait_empty_ns": {
+        "calls": 456510,
+        "total_ns": 23198795494081,
+        "avg_ns": 50817715.91877724,
+        "pct_of_wall": 9138.423378291189
+      },
+      "lo_poll_fetch_nonempty_ns": {
+        "calls": 590665,
+        "total_ns": 197018148540,
+        "avg_ns": 333553.11139139783,
+        "pct_of_wall": 77.60899720095166
+      },
+      "vt_callback_total_body": {
+        "calls": 58104972,
+        "total_ns": 367483295552,
+        "avg_ns": 6324.472466005147,
+        "pct_of_wall": 144.7582888542947
+      },
+      "vt_callback_entry_to_drainer": {
+        "calls": 58104972,
+        "total_ns": 333980689179,
+        "avg_ns": 5747.884865670359,
+        "pct_of_wall": 131.56100878900745
+      },
+      "OTHER": {
+        "calls": 0,
+        "total_ns": 3813492499,
+        "avg_ns": 0.0,
+        "pct_of_wall": 1.5022033801147665
+      }
+    },
+    "named_coverage_pct": 96.78350722211046,
+    "phase6_coverage_pct": 64.45993200376202,
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 422053.30993333337,
+      "consumer_total_consume_rate_avg": 269021.98473333335,
+      "producer_request_latency_avg_ms": 8.827166666666667,
+      "producer_batch_size_avg_bytes": 167871.4044,
+      "producer_records_per_request_avg": 16887.2743,
+      "producer_record_queue_time_avg_ms": 1092.4508333333333,
+      "consumer_fetch_latency_avg_ms": 99.88499999999999,
+      "consumer_fetch_size_avg_bytes": 3883933.3333333335
+    }
+  },
+  "aa-phase6-run2.log": {
+    "e2e_ops_per_sec": [
+      128444.82,
+      136887.39
+    ],
+    "e2e_median": 132666.105,
+    "e2e_all_iters": [
+      137155.16,
+      132003.99,
+      128444.82,
+      136887.39
+    ],
+    "n_steady_ticks": 12,
+    "leader_substages": {
+      "leader_record_wall_ns": {
+        "calls": 59965908,
+        "total_ns": 253160200732,
+        "avg_ns": 4221.73546896013,
+        "pct_of_wall": 100.0
+      },
+      "rt_poll_wait": {
+        "calls": 1054428,
+        "total_ns": 23307670896521,
+        "avg_ns": 22104563.703278933,
+        "pct_of_wall": 9206.688424613363
+      },
+      "rt_deserialize": {
+        "calls": 59965908,
+        "total_ns": 11606560080,
+        "avg_ns": 193.55264461266893,
+        "pct_of_wall": 4.584670120516659
+      },
+      "rmd_lookup_total": {
+        "calls": 259908,
+        "total_ns": 14564421550,
+        "avg_ns": 56036.834379857486,
+        "pct_of_wall": 5.753045505528794
+      },
+      "rmd_lookup_transient": {
+        "calls": 259908,
+        "total_ns": 83769716,
+        "avg_ns": 322.3052618618896,
+        "pct_of_wall": 0.03308960719646456
+      },
+      "rmd_lookup_rocksdb": {
+        "calls": 259908,
+        "total_ns": 13742958779,
+        "avg_ns": 52876.24382089047,
+        "pct_of_wall": 5.428562127563071
+      },
+      "rmd_deserialize": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "dcr_merge": {
+        "calls": 59320010,
+        "total_ns": 13751508566,
+        "avg_ns": 231.81905340204764,
+        "pct_of_wall": 5.431939351540331
+      },
+      "aa_wc_pool_handoff": {
+        "calls": 59965912,
+        "total_ns": 1893205488433,
+        "avg_ns": 31571.36155009199,
+        "pct_of_wall": 747.82903590647
+      },
+      "key_lock_wait": {
+        "calls": 7796039,
+        "total_ns": 26951374499,
+        "avg_ns": 3457.0599889251453,
+        "pct_of_wall": 10.64597611357214
+      },
+      "value_serialize": {
+        "calls": 59320010,
+        "total_ns": 14018645659,
+        "avg_ns": 236.32237518166298,
+        "pct_of_wall": 5.537460318986077
+      },
+      "value_chunk": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_produce_send": {
+        "calls": 59320014,
+        "total_ns": 569357056758,
+        "avg_ns": 9598.060053694526,
+        "pct_of_wall": 224.89990729653897
+      },
+      "vt_produce_ack_wait": {
+        "calls": 59320479,
+        "total_ns": 178117458970430213,
+        "avg_ns": 3002630153.5837264,
+        "pct_of_wall": 70357606.94430347
+      },
+      "transient_map_put": {
+        "calls": 59320010,
+        "total_ns": 27832215952,
+        "avg_ns": 469.18764767571685,
+        "pct_of_wall": 10.993914474520302
+      },
+      "drainer_enqueue": {
+        "calls": 59320671,
+        "total_ns": 271591560032,
+        "avg_ns": 4578.362912179466,
+        "pct_of_wall": 107.2805122000641
+      },
+      "rocksdb_value_write": {
+        "calls": 59320014,
+        "total_ns": 253181169935,
+        "avg_ns": 4268.056476436435,
+        "pct_of_wall": 100.00828297771109
+      },
+      "transient_map_remove": {
+        "calls": 59320014,
+        "total_ns": 28596317106,
+        "avg_ns": 482.06861694267303,
+        "pct_of_wall": 11.295739623888426
+      },
+      "leader_idle": {
+        "calls": 59965892,
+        "total_ns": 3289559548833,
+        "avg_ns": 54857.176957077536,
+        "pct_of_wall": 1299.398380678086
+      },
+      "rt_poll_block_ns": {
+        "calls": 1054428,
+        "total_ns": 23307670896521,
+        "avg_ns": 22104563.703278933,
+        "pct_of_wall": 9206.688424613363
+      },
+      "rt_poll_records_returned": {
+        "calls": 59966603,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_empty_count": {
+        "calls": 453483,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_full_count": {
+        "calls": 598947,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "aa_pool_submit_count": {
+        "calls": 59965912,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_lazy_oldvalue_init": {
+        "calls": 59965908,
+        "total_ns": 4792848752,
+        "avg_ns": 79.92622661529614,
+        "pct_of_wall": 1.8932078336727964
+      },
+      "lo_rmd_cache_decide": {
+        "calls": 59965908,
+        "total_ns": 24618879173,
+        "avg_ns": 410.5479262150087,
+        "pct_of_wall": 9.72462460600669
+      },
+      "lo_write_timestamp": {
+        "calls": 59965908,
+        "total_ns": 5365982547,
+        "avg_ns": 89.48388719470402,
+        "pct_of_wall": 2.1195995782451313
+      },
+      "lo_put_dispatch": {
+        "calls": 59320010,
+        "total_ns": 13366419707,
+        "avg_ns": 225.32733401427276,
+        "pct_of_wall": 5.2798266348152945
+      },
+      "lo_rmd_cache_remember": {
+        "calls": 259908,
+        "total_ns": 477693402,
+        "avg_ns": 1837.9326607876633,
+        "pct_of_wall": 0.1886921406361559
+      },
+      "lo_result_wrapper_alloc": {
+        "calls": 59320010,
+        "total_ns": 4116080272,
+        "avg_ns": 69.38772046734314,
+        "pct_of_wall": 1.6258796841282954
+      },
+      "lo_sensor_calls": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_post_merge_sensors": {
+        "calls": 59320010,
+        "total_ns": 37664693647,
+        "avg_ns": 634.9407838434282,
+        "pct_of_wall": 14.877809994657309
+      },
+      "lo_internal_remainder": {
+        "calls": 59965908,
+        "total_ns": 72868741442,
+        "avg_ns": 1215.1694833337635,
+        "pct_of_wall": 28.783648152949674
+      },
+      "lo_poll_wait_empty_ns": {
+        "calls": 453483,
+        "total_ns": 23122231339150,
+        "avg_ns": 50988088.50419971,
+        "pct_of_wall": 9133.438539033083
+      },
+      "lo_poll_fetch_nonempty_ns": {
+        "calls": 600945,
+        "total_ns": 185439557371,
+        "avg_ns": 308579.9155846209,
+        "pct_of_wall": 73.24988558028112
+      },
+      "vt_callback_total_body": {
+        "calls": 59320671,
+        "total_ns": 374331316798,
+        "avg_ns": 6310.301459637906,
+        "pct_of_wall": 147.86341443704018
+      },
+      "vt_callback_entry_to_drainer": {
+        "calls": 59320671,
+        "total_ns": 337150532585,
+        "avg_ns": 5683.525268704395,
+        "pct_of_wall": 133.17675195790895
+      },
+      "OTHER": {
+        "calls": 0,
+        "total_ns": 3246439741,
+        "avg_ns": 0.0,
+        "pct_of_wall": 1.2823657635019574
+      }
+    },
+    "named_coverage_pct": 96.79431839620351,
+    "phase6_coverage_pct": 64.49328862511135,
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 413168.5142666666,
+      "consumer_total_consume_rate_avg": 252379.65186666665,
+      "producer_request_latency_avg_ms": 12.0907,
+      "producer_batch_size_avg_bytes": 230913.64563333333,
+      "producer_records_per_request_avg": 23223.326133333332,
+      "producer_record_queue_time_avg_ms": 3023.8667666666665,
+      "consumer_fetch_latency_avg_ms": 111.55496666666667,
+      "consumer_fetch_size_avg_bytes": 3891666.6666666665
+    }
+  },
+  "aa-phase6-run3.log": {
+    "e2e_ops_per_sec": [
+      129000.15,
+      140562.36
+    ],
+    "e2e_median": 134781.255,
+    "e2e_all_iters": [
+      124244.03,
+      126387.66,
+      129000.15,
+      140562.36
+    ],
+    "n_steady_ticks": 12,
+    "leader_substages": {
+      "leader_record_wall_ns": {
+        "calls": 59916397,
+        "total_ns": 261462557702,
+        "avg_ns": 4363.78972690898,
+        "pct_of_wall": 100.0
+      },
+      "rt_poll_wait": {
+        "calls": 1053032,
+        "total_ns": 23364243225146,
+        "avg_ns": 22187590.904308703,
+        "pct_of_wall": 8935.980520689016
+      },
+      "rt_deserialize": {
+        "calls": 59916397,
+        "total_ns": 11361315621,
+        "avg_ns": 189.6194729633025,
+        "pct_of_wall": 4.345293536808805
+      },
+      "rmd_lookup_total": {
+        "calls": 259853,
+        "total_ns": 15981984481,
+        "avg_ns": 61503.94446475507,
+        "pct_of_wall": 6.112532754772233
+      },
+      "rmd_lookup_transient": {
+        "calls": 259853,
+        "total_ns": 75504964,
+        "avg_ns": 290.5679903637826,
+        "pct_of_wall": 0.028877926026431754
+      },
+      "rmd_lookup_rocksdb": {
+        "calls": 259853,
+        "total_ns": 14947982842,
+        "avg_ns": 57524.76531731402,
+        "pct_of_wall": 5.7170644138794255
+      },
+      "rmd_deserialize": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "dcr_merge": {
+        "calls": 59752012,
+        "total_ns": 12542276009,
+        "avg_ns": 209.90550090597787,
+        "pct_of_wall": 4.7969682998722005
+      },
+      "aa_wc_pool_handoff": {
+        "calls": 59916401,
+        "total_ns": 1837806666107,
+        "avg_ns": 30672.848092244392,
+        "pct_of_wall": 702.8947786098025
+      },
+      "key_lock_wait": {
+        "calls": 7789610,
+        "total_ns": 25735935378,
+        "avg_ns": 3303.8798319813186,
+        "pct_of_wall": 9.843067246107315
+      },
+      "value_serialize": {
+        "calls": 59752012,
+        "total_ns": 15955862865,
+        "avg_ns": 267.03473792648185,
+        "pct_of_wall": 6.102542178595826
+      },
+      "value_chunk": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_produce_send": {
+        "calls": 59752007,
+        "total_ns": 570860039709,
+        "avg_ns": 9553.822011518374,
+        "pct_of_wall": 218.33338001674161
+      },
+      "vt_produce_ack_wait": {
+        "calls": 58225432,
+        "total_ns": 224098153654759406,
+        "avg_ns": 3848801905.922474,
+        "pct_of_wall": 85709462.80965154
+      },
+      "transient_map_put": {
+        "calls": 59752012,
+        "total_ns": 28074904422,
+        "avg_ns": 469.85705555822955,
+        "pct_of_wall": 10.737638562381909
+      },
+      "drainer_enqueue": {
+        "calls": 58225626,
+        "total_ns": 292960708203,
+        "avg_ns": 5031.473739810028,
+        "pct_of_wall": 112.04690674559215
+      },
+      "rocksdb_value_write": {
+        "calls": 58207722,
+        "total_ns": 241675882146,
+        "avg_ns": 4151.955682890321,
+        "pct_of_wall": 92.43231010592663
+      },
+      "transient_map_remove": {
+        "calls": 58207722,
+        "total_ns": 29119530568,
+        "avg_ns": 500.26920084589466,
+        "pct_of_wall": 11.137170394083258
+      },
+      "leader_idle": {
+        "calls": 59916381,
+        "total_ns": 3365277955681,
+        "avg_ns": 56166.24201119557,
+        "pct_of_wall": 1287.0974663670775
+      },
+      "rt_poll_block_ns": {
+        "calls": 1053032,
+        "total_ns": 23364243225146,
+        "avg_ns": 22187590.904308703,
+        "pct_of_wall": 8935.980520689016
+      },
+      "rt_poll_records_returned": {
+        "calls": 59917156,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_empty_count": {
+        "calls": 452587,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_full_count": {
+        "calls": 598468,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "aa_pool_submit_count": {
+        "calls": 59916401,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_lazy_oldvalue_init": {
+        "calls": 59916397,
+        "total_ns": 4999701108,
+        "avg_ns": 83.4446221457542,
+        "pct_of_wall": 1.912205384947841
+      },
+      "lo_rmd_cache_decide": {
+        "calls": 59916397,
+        "total_ns": 26888802488,
+        "avg_ns": 448.77201958589063,
+        "pct_of_wall": 10.283997343377292
+      },
+      "lo_write_timestamp": {
+        "calls": 59916397,
+        "total_ns": 5195451359,
+        "avg_ns": 86.7116785910875,
+        "pct_of_wall": 1.9870727972153768
+      },
+      "lo_put_dispatch": {
+        "calls": 59752012,
+        "total_ns": 13760971698,
+        "avg_ns": 230.301394671028,
+        "pct_of_wall": 5.263075454835857
+      },
+      "lo_rmd_cache_remember": {
+        "calls": 259853,
+        "total_ns": 458841871,
+        "avg_ns": 1765.7747688115974,
+        "pct_of_wall": 0.17549046985265157
+      },
+      "lo_result_wrapper_alloc": {
+        "calls": 59752012,
+        "total_ns": 3429612770,
+        "avg_ns": 57.39744412288577,
+        "pct_of_wall": 1.3117032129353203
+      },
+      "lo_sensor_calls": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_post_merge_sensors": {
+        "calls": 59752012,
+        "total_ns": 45781766656,
+        "avg_ns": 766.1962354673512,
+        "pct_of_wall": 17.509874858708997
+      },
+      "lo_internal_remainder": {
+        "calls": 59916397,
+        "total_ns": 68828231447,
+        "avg_ns": 1148.73782292016,
+        "pct_of_wall": 26.324316587404635
+      },
+      "lo_poll_wait_empty_ns": {
+        "calls": 452587,
+        "total_ns": 23172254881828,
+        "avg_ns": 51199559.160621054,
+        "pct_of_wall": 8862.551902455725
+      },
+      "lo_poll_fetch_nonempty_ns": {
+        "calls": 600445,
+        "total_ns": 191988343318,
+        "avg_ns": 319743.4291533779,
+        "pct_of_wall": 73.42861823329109
+      },
+      "vt_callback_total_body": {
+        "calls": 58225626,
+        "total_ns": 382941197642,
+        "avg_ns": 6576.849815955607,
+        "pct_of_wall": 146.46119926603578
+      },
+      "vt_callback_entry_to_drainer": {
+        "calls": 58225626,
+        "total_ns": 350467668466,
+        "avg_ns": 6019.130965908378,
+        "pct_of_wall": 134.04124534934095
+      },
+      "OTHER": {
+        "calls": 0,
+        "total_ns": 3273393552,
+        "avg_ns": 0.0,
+        "pct_of_wall": 1.2519549953040794
+      }
+    },
+    "named_coverage_pct": 96.86271144170894,
+    "phase6_coverage_pct": 64.76773610927798,
+    "kafka_pipeline": {
+      "ticks_used": 3,
+      "producer_total_send_rate_avg": 387585.047,
+      "consumer_total_consume_rate_avg": 250857.67913333335,
+      "producer_request_latency_avg_ms": 8.041666666666666,
+      "producer_batch_size_avg_bytes": 152377.0055,
+      "producer_records_per_request_avg": 15441.8822,
+      "producer_record_queue_time_avg_ms": 1183.5463333333332,
+      "consumer_fetch_latency_avg_ms": 106.54133333333334,
+      "consumer_fetch_size_avg_bytes": 3968833.3333333335
+    }
+  },
+  "aa-phase6-off.log": {
+    "e2e_ops_per_sec": [
+      139166.42,
+      129532.8
+    ],
+    "e2e_median": 134349.61000000002,
+    "e2e_all_iters": [
+      139419.05,
+      135650.68,
+      139166.42,
+      129532.8
+    ],
+    "n_steady_ticks": 11,
+    "leader_substages": {
+      "leader_record_wall_ns": {
+        "calls": 59580518,
+        "total_ns": 178228375947,
+        "avg_ns": 2991.386814512086,
+        "pct_of_wall": 100.0
+      },
+      "rt_poll_wait": {
+        "calls": 1009917,
+        "total_ns": 21315736762462,
+        "avg_ns": 21106424.352161612,
+        "pct_of_wall": 11959.788473189414
+      },
+      "rt_deserialize": {
+        "calls": 59580519,
+        "total_ns": 11423011400,
+        "avg_ns": 191.72393244845685,
+        "pct_of_wall": 6.409199062329376
+      },
+      "rmd_lookup_total": {
+        "calls": 259420,
+        "total_ns": 15779926162,
+        "avg_ns": 60827.716297895306,
+        "pct_of_wall": 8.853767576658218
+      },
+      "rmd_lookup_transient": {
+        "calls": 259420,
+        "total_ns": 80087165,
+        "avg_ns": 308.71623236450546,
+        "pct_of_wall": 0.044935137053493446
+      },
+      "rmd_lookup_rocksdb": {
+        "calls": 259420,
+        "total_ns": 14824238499,
+        "avg_ns": 57143.7764975715,
+        "pct_of_wall": 8.317552365179102
+      },
+      "rmd_deserialize": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "dcr_merge": {
+        "calls": 59313523,
+        "total_ns": 11884510371,
+        "avg_ns": 200.36763574134687,
+        "pct_of_wall": 6.6681359283294555
+      },
+      "aa_wc_pool_handoff": {
+        "calls": 59580523,
+        "total_ns": 1617251376208,
+        "avg_ns": 27143.960723674747,
+        "pct_of_wall": 907.4039796496402
+      },
+      "key_lock_wait": {
+        "calls": 7745935,
+        "total_ns": 27191499709,
+        "avg_ns": 3510.421880508938,
+        "pct_of_wall": 15.256549112631745
+      },
+      "value_serialize": {
+        "calls": 59313523,
+        "total_ns": 13862941095,
+        "avg_ns": 233.72311057969023,
+        "pct_of_wall": 7.778189652091338
+      },
+      "value_chunk": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_produce_send": {
+        "calls": 59313498,
+        "total_ns": 583622870217,
+        "avg_ns": 9839.629930728415,
+        "pct_of_wall": 327.4578849276799
+      },
+      "vt_produce_ack_wait": {
+        "calls": 56778191,
+        "total_ns": 183220939431973872,
+        "avg_ns": 3226959792.2197604,
+        "pct_of_wall": 102801216.9546215
+      },
+      "transient_map_put": {
+        "calls": 59313523,
+        "total_ns": 26977820419,
+        "avg_ns": 454.8342275841548,
+        "pct_of_wall": 15.136658388797994
+      },
+      "drainer_enqueue": {
+        "calls": 56778369,
+        "total_ns": 252207067374,
+        "avg_ns": 4441.956889850077,
+        "pct_of_wall": 141.50780762823038
+      },
+      "rocksdb_value_write": {
+        "calls": 56754238,
+        "total_ns": 236010544053,
+        "avg_ns": 4158.465559047767,
+        "pct_of_wall": 132.42029659922545
+      },
+      "transient_map_remove": {
+        "calls": 56754238,
+        "total_ns": 29495229756,
+        "avg_ns": 519.7009209426792,
+        "pct_of_wall": 16.549121092126786
+      },
+      "leader_idle": {
+        "calls": 59580503,
+        "total_ns": 3163033747773,
+        "avg_ns": 53088.40289201654,
+        "pct_of_wall": 1774.7082814206842
+      },
+      "rt_poll_block_ns": {
+        "calls": 1009917,
+        "total_ns": 21315736762462,
+        "avg_ns": 21106424.352161612,
+        "pct_of_wall": 11959.788473189414
+      },
+      "rt_poll_records_returned": {
+        "calls": 59581367,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_empty_count": {
+        "calls": 412857,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "rt_poll_full_count": {
+        "calls": 595092,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "aa_pool_submit_count": {
+        "calls": 59580531,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_lazy_oldvalue_init": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_rmd_cache_decide": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_write_timestamp": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_put_dispatch": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_rmd_cache_remember": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_result_wrapper_alloc": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_sensor_calls": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_post_merge_sensors": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_internal_remainder": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_poll_wait_empty_ns": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "lo_poll_fetch_nonempty_ns": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_callback_total_body": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "vt_callback_entry_to_drainer": {
+        "calls": 0,
+        "total_ns": 0,
+        "avg_ns": 0.0,
+        "pct_of_wall": 0.0
+      },
+      "OTHER": {
+        "calls": 0,
+        "total_ns": 87846487815,
+        "avg_ns": 0.0,
+        "pct_of_wall": 49.28872147784314
+      }
+    },
+    "named_coverage_pct": 44.84595060820638,
+    "phase6_coverage_pct": 0.0,
+    "kafka_pipeline": null
+  }
+}

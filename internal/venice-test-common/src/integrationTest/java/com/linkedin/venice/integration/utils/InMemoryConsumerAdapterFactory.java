@@ -3,33 +3,29 @@ package com.linkedin.venice.integration.utils;
 import com.linkedin.venice.pubsub.PubSubConsumerAdapterContext;
 import com.linkedin.venice.pubsub.PubSubConsumerAdapterFactory;
 import com.linkedin.venice.pubsub.api.PubSubConsumerAdapter;
-import com.linkedin.venice.pubsub.mock.InMemoryPubSubBroker;
-import com.linkedin.venice.pubsub.mock.adapter.consumer.MockInMemoryConsumerAdapter;
-import com.linkedin.venice.pubsub.mock.adapter.consumer.poll.RandomPollStrategy;
+import com.linkedin.venice.pubsub.mock.BoundedInMemoryPubSubBroker;
+import com.linkedin.venice.pubsub.mock.adapter.consumer.BoundedMockInMemoryConsumerAdapter;
 import java.io.IOException;
 
 
 /**
- * Phase 8: in-memory analogue of
+ * Phase 8 in-memory analogue of
  * {@link com.linkedin.venice.pubsub.adapter.kafka.consumer.ApacheKafkaConsumerAdapterFactory}.
+ *
+ * <p>Phase 9 update: wires a {@link BoundedMockInMemoryConsumerAdapter} that polls the
+ * bounded broker directly. After every successful read, the consumer adapter calls
+ * {@code broker.reportConsumerPosition(...)} so the bounded topic can advance the
+ * per-partition low-water-mark and free producer slots. This is the missing piece of
+ * back-pressure that the Phase 8 unbounded path lacked.
  *
  * <p>Has a public no-arg constructor (required for reflective instantiation by Venice's
  * {@code PubSubClientsFactory.createInstance}) and looks the broker up by address from
- * {@link PubSubConsumerAdapterContext#getPubSubBrokerAddress()} at create() time. Wraps a
- * {@link MockInMemoryConsumerAdapter} that polls the in-memory broker directly using
- * the {@link RandomPollStrategy} (matching the unit-test path used by
- * {@code StoreIngestionTaskTest}). The internal delegate is a {@link NoOpPubSubConsumerAdapter}
- * since the integration cluster doesn't need Mockito-style call verification.
+ * {@link PubSubConsumerAdapterContext#getPubSubBrokerAddress()} at create() time.
  *
- * <p>Note: {@link com.linkedin.venice.pubsub.mock.adapter.consumer.poll.AbstractPollStrategy}
- * defaults to a {@code maxMessagePerPoll} of 3, which is fine for unit-test paths with
- * 10-100 messages but is the binding throughput cap of the in-memory benchmark path
- * (Phase 8 produces millions of records; at 3 records per poll the consumer cannot
- * possibly drain). We override it to 500 here -- still within the synchronized poll
- * window per partition, but enough that the consumer keeps up with the producer's
- * synchronized produce path. Apache Kafka's default {@code max.poll.records} is 500,
- * so this matches the production-path behaviour as closely as the in-memory mock
- * supports.
+ * <p>Default {@code maxMessagesPerPoll} is 500 -- matches Apache Kafka's default
+ * {@code max.poll.records}. Phase 8 raised this from the unit-test default of 3 to keep
+ * up with benchmark throughput; the bounded path keeps the same value because the
+ * back-pressure mechanism caps in-flight backlog, not per-poll batch size.
  */
 public class InMemoryConsumerAdapterFactory extends PubSubConsumerAdapterFactory<PubSubConsumerAdapter> {
   private static final String NAME = "InMemoryConsumerAdapter";
@@ -42,14 +38,12 @@ public class InMemoryConsumerAdapterFactory extends PubSubConsumerAdapterFactory
   @Override
   public PubSubConsumerAdapter create(PubSubConsumerAdapterContext context) {
     String brokerAddress = context.getPubSubBrokerAddress();
-    InMemoryPubSubBroker broker = InMemoryPubSubBrokerRegistry.lookup(brokerAddress);
-    MockInMemoryConsumerAdapter consumer = new MockInMemoryConsumerAdapter(
-        broker,
-        new RandomPollStrategy(BENCHMARK_MAX_MESSAGES_PER_POLL),
-        new NoOpPubSubConsumerAdapter());
+    BoundedInMemoryPubSubBroker broker = InMemoryPubSubBrokerRegistry.lookup(brokerAddress);
+    BoundedMockInMemoryConsumerAdapter consumer =
+        new BoundedMockInMemoryConsumerAdapter(broker, BENCHMARK_MAX_MESSAGES_PER_POLL);
     // Wire the same admin adapter the InMemoryAdminAdapterFactory uses, so partitionsFor()
     // resolves topics created via the controller's admin path.
-    consumer.setMockInMemoryAdminAdapter(InMemoryPubSubBrokerRegistry.lookupOrCreateAdmin(brokerAddress));
+    consumer.setBoundedMockInMemoryAdminAdapter(InMemoryPubSubBrokerRegistry.lookupOrCreateAdmin(brokerAddress));
     return consumer;
   }
 

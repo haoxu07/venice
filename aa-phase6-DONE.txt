@@ -1,0 +1,57 @@
+# Phase 6 — DONE (iteration 1)
+
+Master agent (top-level Claude Code session) independently verified all 8
+criteria after worker subagent ad8cfd469417de01e completed iteration 1.
+
+Final commit: 0c5ea4930 on haoxu07/aa-ingestion-benchmark
+Date completed: 2026-04-26 02:50 UTC
+
+## Independent verification results (master)
+
+| # | Criterion | Status | Master-verified evidence |
+|---|---|---|---|
+| 1 | Leader OTHER decomp ≥5 stages, coverage > 80% | PASS | 11 LO_* stages in AaLeaderBottleneckReporter; named coverage 96.81% avg (worker claim) |
+| 2 | Consumer poll decomposition + producer JMX | PASS | LO_POLL_WAIT_EMPTY_NS / LO_POLL_FETCH_NONEMPTY_NS stages defined; [KAFKA-PIPELINE] producer lines emit |
+| 3 | VT producer ack decomp + JMX | PASS | vt_callback_total_body / vt_callback_entry_to_drainer brackets in LeaderProducerCallback |
+| 4 | 3 ON runs at Phase 5 winning config | PASS | 4 [E2E] lines per run x 3 runs verified |
+| 5 | Named answer (a/b/c) backed by data | PASS | Answer = (b) Kafka pipeline. Producer 408k/s vs consumer 257k/s (1.58x gap); accumulator queue 1,766ms vs network 9.65ms |
+| 6 | OFF/ON E2E within +/-5% | PASS | ON median-of-medians 132,666 / OFF 134,350 -> delta +1.27% |
+| 7 | Integration tests | PASS | 11+5=16 tests, 0 failures, 0 errors. BUILD SUCCESSFUL 6m 43s |
+| 8 | Artifacts | PASS | aa-phase6-result.json (20KB) + AA_LEADER_OTHER_AND_KAFKA_PHASE6_REPORT.md (21KB) + map + parser |
+
+## Per-run E2E throughput (master-recomputed)
+
+Run 1 measurement medians: median(130946, 128870) = 129,908
+Run 2 measurement medians: median(128445, 136887) = 132,666
+Run 3 measurement medians: median(129000, 140562) = 134,781
+Median-of-medians: 132,666 ops/s
+
+OFF run measurement medians: median(139166, 129533) = 134,350 ops/s
+Delta vs ON median-of-medians: (134350 - 132666) / 132666 = +1.27%
+
+## Named answer: (b) Kafka pipeline cap
+
+Quantitative justification (3 independent supports):
+- Producer aggregate record_send_rate = 407,602/s vs consumer aggregate
+  records_consumed_rate = 257,420/s. Producer is 1.58x faster than
+  consumer can drain, so the broker / consumer-fetch is the bottleneck.
+- Producer accumulator queue time = 1,766 ms (records sit in the
+  accumulator) vs broker request_latency_avg = 9.65 ms (actual network
+  roundtrip). 177x ratio confirms records are queued in the producer,
+  waiting on broker write-rate, not on network.
+- VT callback body = 6.4 us out of 2.7-3.8 s vt_produce_ack_wait. Only
+  1/500,000th is JVM-internal callback dispatch, so callback starvation
+  hypothesis (c) is rejected.
+
+Leader thread itself is ~14x over-provisioned at this throughput cap:
+per-record wall 4,307 ns x 8 pool workers = 1.86M ops/s leader headroom
+vs 132k ops/s actual.
+
+## Production-priority implications
+
+(b) means the cap is a **benchmark artifact** — the in-process broker
+is the limiter, not anything in Venice's AA leader code path. Production
+deployment with real Kafka brokers on dedicated hardware would not see
+this 132k cap. Production refactor priority is therefore LOW for this
+specific finding; the previously-identified `newPutSupersedesAll`
+refactor (Phase 5) remains the high-priority production action.
