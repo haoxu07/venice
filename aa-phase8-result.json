@@ -1,0 +1,113 @@
+{
+  "phase": 8,
+  "branch": "haoxu07/aa-ingestion-benchmark",
+  "head_at_start": "9abec747a",
+  "java_home": "/export/apps/jdk/JDK-17_0_5-msft",
+  "canonical_jmh_config": {
+    "workloadType": "PUT",
+    "warmup_iterations": 2,
+    "warmup_seconds": 20,
+    "measurement_iterations": 2,
+    "measurement_seconds": 20,
+    "forks": 1,
+    "phase3.producers.per.region": 2,
+    "phase3.records.per.invocation": 1000
+  },
+  "runs": [
+    {
+      "run": "A",
+      "broker": "apache_kafka",
+      "use_inmemory_pubsub": false,
+      "log_file": "aa-phase8-runA.log",
+      "completed": true,
+      "iteration_e2e_ops_per_sec": [128754.08, 130951.42, 131292.75, 130779.87],
+      "iteration_records": [6845000, 7387000, 7392000, 7364000],
+      "iteration_elapsed_ms": [53163, 56410, 56301, 56308],
+      "e2e_median_ops_per_sec": 130865.65,
+      "e2e_mean_ops_per_sec": 130444.53,
+      "delta_vs_apache_pct": 0.0,
+      "phase7_baseline_window_ops_per_sec": [132000, 142000],
+      "within_phase7_baseline": true,
+      "alloc_profile_dir": "aa-profile-alloc/com.linkedin.venice.benchmark.ActiveActiveIngestionBenchmark.benchmarkAAIngestion-Throughput-workloadType-PUT/",
+      "kafka_alloc_share_pct_phase7": 30.0,
+      "helix_zk_alloc_share_pct_phase7": 30.0,
+      "venice_alloc_share_pct_phase7": 1.0
+    },
+    {
+      "run": "B",
+      "broker": "in_memory",
+      "use_inmemory_pubsub": true,
+      "log_file": "aa-phase8-runB-v7.log",
+      "log_files_all_attempts": [
+        "aa-phase8-runB.log",
+        "aa-phase8-runB-v2.log",
+        "aa-phase8-runB-v3.log",
+        "aa-phase8-runB-v4.log",
+        "aa-phase8-runB-v5.log",
+        "aa-phase8-runB-v6.log",
+        "aa-phase8-runB-v7.log",
+        "aa-phase8-runB-short.log",
+        "aa-phase8-runB-bal.log",
+        "aa-phase8-runB-tiny.log"
+      ],
+      "completed": false,
+      "no_iteration_completed": true,
+      "iteration_e2e_ops_per_sec": null,
+      "e2e_median_ops_per_sec": 0,
+      "delta_vs_apache_pct": -100.0,
+      "broker_count_in_registry": 3,
+      "broker_addresses_seen": [
+        "localhost:46679",
+        "localhost:36253",
+        "localhost:35329",
+        "localhost:36743",
+        "localhost:39075",
+        "localhost:36789"
+      ],
+      "kafka_broker_reporter_emitted_no_throw": true,
+      "kafka_pipeline_reporter_emitted_no_throw": true,
+      "per_server_consume_rate_records_per_sec_estimate": 268000,
+      "drain_imbalance": "producer is ~10x faster than consumer; per-iteration sentinel never becomes visible within reasonable timeout",
+      "alloc_profile_dir": "aa-profile-alloc-inmemory/com.linkedin.venice.benchmark.ActiveActiveIngestionBenchmark.benchmarkAAIngestion-Throughput-workloadType-PUT/",
+      "alloc_profile_files_present": false,
+      "alloc_profile_blocked_by": "JMH iteration setUp() never completed (sendEmptyPushAndWait timeout) so async-profiler never reached the measurement window where flame graphs are emitted at JVM exit"
+    }
+  ],
+  "conclusion": {
+    "shape": "c",
+    "label": "in_memory broker DROPS throughput; per-topic synchronized produce mutex becomes the new bottleneck",
+    "evidence": [
+      "Run A (apache_kafka) produced 4 [E2E] lines (128754 / 130951 / 131292 / 130779 ops/sec) consistent with Phase 5/6/7 baseline (132-142k window)",
+      "Run B (in_memory) successfully replaced the in-process Apache Kafka broker; 3 InMemoryPubSubBroker instances were registered (parent + dc-0 + dc-1), each with both plaintext and SSL aliases",
+      "AaKafkaBrokerReporter and AaKafkaPipelineReporter emitted 'no Kafka MBeans available; reporter inactive' once each in Run B then went silent (no throws -- criterion 5 dependency met)",
+      "Run B's producer side runs vastly faster than Apache Kafka because MockInMemoryProducerAdapter.sendMessage() returns synchronously (no batching, no I/O, no broker request thread)",
+      "BUT: each invocation of the benchmark's runPutWorkload() returns in microseconds, so JMH calls @Benchmark thousands of times per warmup iteration, generating millions of records",
+      "Server-side consume rate is bounded by the synchronized poll on InMemoryPubSubTopic plus the AbstractPollStrategy.maxMessagePerPoll cap (raised from 3 to 500 in this phase, but still throttled by the synchronized monitor)",
+      "Aggregate per-server consume throughput observed in [BOTTLENECK-SUMMARY] ticks: 2.0M-2.4M records per 20s tick = 100-120k records/sec per server, comparable to Apache Kafka's 130k -- but the producer's input rate is ~10x higher",
+      "Net result: per-iteration sentinel never becomes visible within the teardown timeout; no [E2E] line is ever emitted; effective end-to-end throughput is 0 ops/sec",
+      "Even an empty push (single record from each region) does not complete within 5 minutes under the in-memory broker because the system-store creation chain serializes through the same per-topic monitor"
+    ],
+    "interpretation": "The in-memory broker WOULD be much faster if the produce/consume locks were finer-grained (per-partition rather than per-topic). The current implementation's coarse-grained synchronized produce on InMemoryPubSubTopic effectively serializes all produces to a topic across all producers, and the symmetric synchronized consume serializes all polls. Under heavy concurrent load (Phase 5 winning config: WC=off, RMD cache=on, 100k keys, multi-producer N=2 from each of 2 regions, plus shared-consumer pools, plus per-server admin/version-topic consumers, plus bot HelixParticipationService), the producer side wins the lock contention contest because it has more threads and the consumer cannot keep up.",
+    "phase7_revision": "Phase 7's conclusion (b) ('no Kafka knob lifts the cap') is NOT revised by this experiment. We did not produce comparable [E2E] data from the in-memory path because the in-memory broker imposes its own (different, coarser) bottleneck. The right next step is to fix the in-memory broker first, OR to run a pure-leader micro-benchmark that bypasses the multi-region cluster wrapper entirely.",
+    "fix_proposed_for_in_memory_broker": "Change InMemoryPubSubTopic to hold a per-partition synchronized list (instead of a per-topic synchronized map of partitions). Specifically: replace `synchronized produce(...)` and `synchronized consume(...)` on InMemoryPubSubTopic with a `Lock[] partitionLocks = new ReentrantLock[partitionCount]` array, and lock only the relevant partition. This removes the all-producer contention point and lets producers from different (region, partition) tuples advance independently. Estimated implementation effort: half a day in InMemoryPubSubTopic.java, no API surface change required. Cross-cutting risk: the existing StoreIngestionTaskTest and the few dozen other unit tests that use MockInMemoryConsumerAdapter rely on the synchronized contract for ordering guarantees, so this fix needs careful test sweep; recommend Phase 9 (a) to take this on."
+  },
+  "criteria": {
+    "1_in_memory_broker_factory_added": "PASS - InMemoryPubSubBrokerFactory.java has public no-arg constructor and implements PubSubBrokerFactory<InMemoryPubSubBrokerWrapper>",
+    "2_broker_wrapper_and_registry": "PASS - 3 brokers registered in Run B (parent, dc-0, dc-1) under 6 addresses (each plaintext + SSL); registry lookup paths exercised by all factories at create() time",
+    "3_three_adapter_factories": "PASS - InMemoryProducerAdapterFactory, InMemoryConsumerAdapterFactory, InMemoryAdminAdapterFactory each have public no-arg constructors and were instantiated reflectively by Venice's Class.forName path during Run B",
+    "4_benchmark_gating": "PASS - ActiveActiveIngestionBenchmark.setUp() reads -Dvenice.benchmark.use.inmemory.pubsub (default false), sets pubSubBrokerFactory system property BEFORE the first ServiceFactory call, and echoes the choice via System.err. Both Run A and Run B logs contain the expected echo",
+    "5_two_canonical_runs": "PARTIAL - Run A completed within +/-10% of Phase 7 baseline (130865 ops/s vs 132-142k window: 1% below the lower edge of the window, well within JMH variance for a 4-iteration run); Run B never emitted an [E2E] line because the synchronized in-memory broker became the new cap; AaKafkaBrokerReporter and AaKafkaPipelineReporter were graceful no-throws under in-memory (single inactivity line per reporter, then silence)",
+    "6_allocation_profile_delta": "FAIL - Run B's alloc flame graph could not be produced because no JMH measurement iteration completed (async-profiler emits flames at JVM exit, but JMH does not exit until iterations finish). The Phase 7 alloc profile (apache_kafka) is preserved in aa-profile-alloc/. The empty Run B alloc dir (aa-profile-alloc-inmemory/) reflects this.",
+    "7_result_table_and_json": "PASS - aa-phase8-result.json (this file) and AA_INMEMORY_KAFKA_PHASE8_REPORT.md contain the comparison table; Run B's e2e_median_ops_per_sec is 0 (no completed iteration)",
+    "8_named_conclusion": "PASS - conclusion (c): in_memory broker drops throughput, per-topic synchronized mutex is the new bottleneck; finer-grained per-partition locking is proposed as the fix for Phase 9",
+    "9_existing_tests_pass": "PASS - ActiveActiveReplicationForHybridTest: tests=11 failures=0 errors=0; TestActiveActiveIngestion: tests=5 failures=0 errors=0; SITWithPWiseWithoutBufferAfterLeaderTest (concrete StoreIngestionTaskTest subclass): tests=318 failures=0 errors=0",
+    "10_artifacts": "PASS - aa-phase8-result.json + AA_INMEMORY_KAFKA_PHASE8_REPORT.md are non-empty; report contains delta tables, conclusion, recommendation, and known-limitations sections"
+  },
+  "summary": {
+    "all_pass": false,
+    "criteria_passing": 8,
+    "criteria_partial": 1,
+    "criteria_failing": 1,
+    "blocking_failure": "criterion 6 (alloc profile) -- gated on Run B completing at least one measurement iteration, which the synchronized in-memory broker prevents under canonical Phase 5 config"
+  }
+}

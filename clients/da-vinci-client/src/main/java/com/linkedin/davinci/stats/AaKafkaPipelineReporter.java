@@ -83,12 +83,36 @@ public final class AaKafkaPipelineReporter {
     }
   }
 
+  // Phase 8: when running with the in-memory pubsub broker no Apache Kafka client MBeans
+  // exist. Latch this on the first tick and stop emitting [KAFKA-PIPELINE] lines for the
+  // remainder of the run. Wrapped at the per-call level (try/catch around the whole body
+  // already exists) so the reporter never throws.
+  private static volatile Boolean MBEANS_AVAILABLE = null;
+
   private static synchronized void reportOnce() {
     tickNumber++;
     int producerCount = 0;
     int consumerCount = 0;
     try {
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+
+      // First-tick gate: detect whether any Kafka producer or consumer client MBeans exist.
+      // If none, declare the reporter inactive (in-memory broker mode) and return.
+      if (MBEANS_AVAILABLE == null) {
+        Set<ObjectName> probeProducers =
+            mbs.queryNames(new ObjectName("kafka.producer:type=producer-metrics,*"), null);
+        Set<ObjectName> probeConsumers = mbs.queryNames(
+            new ObjectName("kafka.consumer:type=consumer-fetch-manager-metrics,*"),
+            null);
+        MBEANS_AVAILABLE = !probeProducers.isEmpty() || !probeConsumers.isEmpty();
+        if (!MBEANS_AVAILABLE) {
+          System.err.println(
+              "[KAFKA-PIPELINE] no Kafka client MBeans available; reporter inactive (in-memory broker mode).");
+          return;
+        }
+      } else if (!MBEANS_AVAILABLE) {
+        return;
+      }
 
       // Producers: kafka.producer:type=producer-metrics,client-id=*
       ObjectName producerPattern = new ObjectName("kafka.producer:type=producer-metrics,*");

@@ -140,10 +140,32 @@ public final class AaKafkaBrokerReporter {
     }
   }
 
+  // Phase 8: when running with the in-memory pubsub broker (`venice.benchmark.use.inmemory.pubsub=true`)
+  // no Apache Kafka broker MBeans exist in the JVM. Detect that situation once at the first
+  // tick and skip emission for the remainder of the run, so the log stays clean and the
+  // reporter is a true no-op rather than spamming -1 lines. Wrapped in try/catch (also
+  // already at the per-call level below) so the reporter never throws.
+  private static volatile Boolean MBEANS_AVAILABLE = null;
+
   private static synchronized void reportOnce() {
     tickNumber++;
     try {
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+
+      // First-tick gate: if no Kafka broker MBeans exist, declare the reporter inactive
+      // and stop emitting [KAFKA-BROKER] lines. Required so the in-memory pubsub run
+      // (criterion 5) does not throw or spam -1 lines.
+      if (MBEANS_AVAILABLE == null) {
+        int brokers = countBrokers(mbs);
+        MBEANS_AVAILABLE = brokers > 0;
+        if (!MBEANS_AVAILABLE) {
+          System.err.println(
+              "[KAFKA-BROKER] no Kafka broker MBeans available; reporter inactive (in-memory broker mode).");
+          return;
+        }
+      } else if (!MBEANS_AVAILABLE) {
+        return;
+      }
 
       double handlerIdle = avgAttr(
           mbs,

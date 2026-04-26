@@ -199,6 +199,28 @@ public class ActiveActiveIngestionBenchmark {
   public void setUp() throws Exception {
     Utils.thisIsLocalhost();
 
+    // [Phase 8] Optionally swap the in-process Apache Kafka broker for Venice's in-memory
+    // pubsub broker (the same one used by StoreIngestionTaskTest). Gated on a benchmark
+    // sysprop so the default integration-test behaviour is unchanged. We MUST set the
+    // `pubSubBrokerFactory` system property BEFORE the first call to any ServiceFactory
+    // method, because ServiceFactory's static initializer reads the property exactly
+    // once and hard-binds the chosen factory class. The cluster wrapper, controllers,
+    // servers, routers, and Samza producers all use the resolved factory's clients,
+    // so flipping this single property routes the entire integration cluster onto the
+    // in-memory path -- no other wiring needed.
+    boolean useInMemoryPubSub = Boolean.getBoolean("venice.benchmark.use.inmemory.pubsub");
+    if (useInMemoryPubSub) {
+      System.setProperty(
+          "pubSubBrokerFactory",
+          "com.linkedin.venice.integration.utils.InMemoryPubSubBrokerFactory");
+      System.err.println(
+          "[ActiveActiveIngestionBenchmark] Phase8: pubSubBrokerFactory="
+              + "com.linkedin.venice.integration.utils.InMemoryPubSubBrokerFactory (in-memory mode)");
+    } else {
+      System.err.println(
+          "[ActiveActiveIngestionBenchmark] Phase8: pubSubBrokerFactory=default (Apache Kafka mode)");
+    }
+
     // Build multi-region cluster: 2 regions, 1 cluster each, 1 server per region
     Properties parentControllerProps = new Properties();
     parentControllerProps.put(DEFAULT_MAX_NUMBER_OF_PARTITIONS, "10");
@@ -263,9 +285,15 @@ public class ActiveActiveIngestionBenchmark {
         .setPartitionCount(2);
     assertCommand(parentControllerClient.updateStore(storeName, storeParams));
 
-    // Empty push to create version 1
+    // Empty push to create version 1. Phase 8: when running with the in-memory pubsub
+    // broker, system-store creation on each region takes longer than the 60s default
+    // because the broker's per-topic synchronized produce serializes the entire control
+    // plane (admin topic, system stores, etc.) onto a single monitor. Bump the deadline
+    // to 5 minutes for in-memory mode -- still fail-fast on Apache Kafka mode.
+    long emptyPushTimeoutMs = useInMemoryPubSub ? 300_000L : 60_000L;
     assertCommand(
-        parentControllerClient.sendEmptyPushAndWait(storeName, Utils.getUniqueString("empty-push"), 1L, 60_000L));
+        parentControllerClient
+            .sendEmptyPushAndWait(storeName, Utils.getUniqueString("empty-push"), 1L, emptyPushTimeoutMs));
 
     // Wait for version to be ready in both DCs
     ControllerClient dc0Client =
@@ -301,6 +329,28 @@ public class ActiveActiveIngestionBenchmark {
       phase7ProducerOpts.add(new Pair<>("kafka.compression.type", VENICE_KAFKA_COMPRESSION_TYPE));
       System.err
           .println("[ActiveActiveIngestionBenchmark] Phase7: kafka.compression.type=" + VENICE_KAFKA_COMPRESSION_TYPE);
+    }
+    // [Phase 8] When the in-memory pubsub broker is active, IntegrationTestPushUtils'
+    // multi-region Samza producer config does not auto-inject the producer/consumer/admin
+    // adapter factory class names (the single-region path picks them up from
+    // PubSubBrokerWrapper.getBrokerDetailsForClients(), but the private multi-region
+    // helper omits that step). VeniceWriterFactory falls back to ApacheKafkaProducerAdapterFactory
+    // by default, which then tries to open a TCP connection to the in-memory broker URL
+    // and times out. Inject the in-memory factory class names explicitly here so the Samza
+    // path uses the in-memory producer/consumer/admin adapters (looking the broker up by
+    // address from the registry, just like the cluster wrappers do).
+    if (useInMemoryPubSub) {
+      phase7ProducerOpts.add(new Pair<>(
+          "pubsub.producer.adapter.factory.class",
+          "com.linkedin.venice.integration.utils.InMemoryProducerAdapterFactory"));
+      phase7ProducerOpts.add(new Pair<>(
+          "pubsub.consumer.adapter.factory.class",
+          "com.linkedin.venice.integration.utils.InMemoryConsumerAdapterFactory"));
+      phase7ProducerOpts.add(new Pair<>(
+          "pubsub.admin.adapter.factory.class",
+          "com.linkedin.venice.integration.utils.InMemoryAdminAdapterFactory"));
+      System.err.println(
+          "[ActiveActiveIngestionBenchmark] Phase8: Samza producer using InMemory{Producer,Consumer,Admin}AdapterFactory");
     }
     @SuppressWarnings({ "unchecked", "rawtypes" })
     Pair<String, String>[] phase7ProducerOptsArr = phase7ProducerOpts.toArray(new Pair[0]);
