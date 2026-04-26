@@ -354,3 +354,31 @@ If a follow-up agent picks up Phase 9, the highest-value next move is:
      producers race to produce. The `notEmpty.signalAll()` after produce
      should be sufficient but is worth verifying with a pure-Java
      reproducer.
+
+## 2026-04-26 — iter6 progress
+
+iter6 ran 3 focus-test runs:
+  - Run 1: [0]=line360, [2]=line360, [4]=line360, [6]=line360 (all Shape B)
+  - Run 2: [0]=line215 (Shape A, dc-0 NOT_CREATED + dc-1 ERROR), [2]=line360
+  - Run 3 (after iter6 commit): [0]=line215 (Shape A, dc-0 NOT_CREATED +
+      dc-1 3/3 completed), [2]=line360
+
+iter6 added produce-side instrumentation for meta-store-rt topics. The log
+confirms each child controller writes ~7 PUTs into its local
+meta_store_<store>_rt within 1 s of store creation. Server reaches pos=9 on
+the meta-store-rt within 9 s. So the data IS in the broker and IS being read
+by the server, yet the thin-client query 45 s later returns null for
+`STORE_CLUSTER_CONFIG`.
+
+iter6 commit (069e2e560):
+  - DEFAULT_CAPACITY 10k -> 100k for bounded queues
+  - reportConsumerPosition switched from MAX-of-positions to MIN-of-positions
+    via per-thread WeakHashMap
+
+Neither change alters the failure shapes — both Shape A and Shape B still
+recur. So the root cause is upstream of those (likely admin consumer /
+ingestion task / metadata-repository refresh, NOT the bounded queue's
+eviction policy).
+
+iter6 ran out of budget at this point. Wrote PARTIAL.txt with a concrete
+3-step recommendation for iter7 focused on Shape B (line 360 DVC).
