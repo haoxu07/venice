@@ -253,7 +253,11 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
             copy.schemaId = originalPut.schemaId;
             copy.replicationMetadataVersionId = originalPut.replicationMetadataVersionId;
             copy.putValue = ByteUtils.enlargeByteBufferForIntHeader(originalPut.putValue);
-            copy.replicationMetadataPayload = originalPut.replicationMetadataPayload;
+            // [iter10 / Fix A] Symmetric enlarge for RMD: iter9 enlarged putValue but left
+            // replicationMetadataPayload alone, so the merge path's prependIntHeader fast-path
+            // would still trip "Start position < 4" once the AA leader read back an RMD-only
+            // buffer. Mirror the putValue handling here.
+            copy.replicationMetadataPayload = ByteUtils.enlargeByteBufferForIntHeader(originalPut.replicationMetadataPayload);
             KafkaMessageEnvelope detached = new KafkaMessageEnvelope();
             detached.messageType = kafkaMessageEnvelope.messageType;
             detached.producerMetadata = kafkaMessageEnvelope.producerMetadata;
