@@ -63,8 +63,17 @@ public class BoundedInMemoryPubSubTopic {
    * in-memory broker and aggregate over the full BeforeClass lifecycle). At 10k some
    * partitions hit eviction during long multi-test runs which then caused slow consumers
    * to read empty.
+   *
+   * <p>iter10: bumped to 2_000_000 (2 million) because the JMH AA ingestion benchmark
+   * (Stage B) writes ~200k records per region per measurement iteration and the leader's
+   * VT producer was blocking after 100k records (lowWaterMark advanced only to 0..10
+   * before the 30s produce-block timeout fired). With 2 producers/region × 200k records ×
+   * 2 iterations = 800k records to RT, plus the AA leader fanouts the merged result back
+   * into the version topic. 2M is large enough to absorb the entire workload while still
+   * detecting any genuine producer-vs-consumer deadlock as a runaway memory growth (the
+   * 30s timeout still fires if nothing is consuming at all).
    */
-  public static final int DEFAULT_CAPACITY = 100_000;
+  public static final int DEFAULT_CAPACITY = 2_000_000;
 
   /** Max time {@link #produce(int, InMemoryPubSubMessage)} will block waiting for space. */
   public static final long PRODUCE_BLOCK_TIMEOUT_MS = 30_000L;
