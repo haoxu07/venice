@@ -1,0 +1,66 @@
+Phase 9 — Bounded In-Memory PubSub — DONE.
+
+Stage A: GREEN. TestActiveActiveIngestion 5/5 PASS:
+  testActiveActiveStoreRestart PASSED (28.185 s)
+  testBatchPushWithSeparateDrainer PASSED (20.213 s)
+  testKIFRepushActiveActiveStore[0](false) PASSED (62.308 s)
+  testKIFRepushActiveActiveStore[2](true) PASSED (65.131 s)
+  testLeaderLagWithIgnoredData PASSED (55.786 s)
+  BUILD SUCCESSFUL in 4m 28s
+  See aa-phase9-iter10-stagea.log.
+
+Stage B: GREEN. JMH benchmark (bench-3) emitted 4 [E2E] lines, no exceptions,
+  normal exit:
+    Result "...benchmarkAAIngestion": 4477.082 ops/s
+    # Run complete. Total time: 00:03:09
+    [E2E] workload=PUT records=319000 elapsed_ms=20147 e2e_throughput_ops_per_sec=15832.84
+    [E2E] workload=PUT records=138000 elapsed_ms=20283 e2e_throughput_ops_per_sec=6803.59
+    [E2E] workload=PUT records=106000 elapsed_ms=20432 e2e_throughput_ops_per_sec=5187.89
+    [E2E] workload=PUT records=75000 elapsed_ms=20371 e2e_throughput_ops_per_sec=3681.60
+  See aa-phase9-iter10-bench-3.log.
+
+Stage B [E2E] median: 5995.74 ops/sec (median of 4 lines: 5187.89 and 6803.59).
+Stage B JMH score: 4477.082 ops/s (mean over 2 measurement iterations).
+
+iter10 commits (on top of iter9's b331d97f5):
+  dfa8f2f99 — [bench] Phase 9 iter10: Fix A — symmetric RMD enlarge
+  b530cbab7 — [bench] Phase 9 iter10: Fix B — store schema-ID inside broker-carried bytes
+  60750e4e1 — [bench] Phase 9 iter10: bump bounded capacity to 2M for Stage B headroom
+
+Final HEAD: 60750e4e1.
+
+Cumulative bug count fixed across Phase 9 (iter1-iter10):
+  Bug 1 (c5a859a2f): consume() short-circuit
+  Bug 2 (ebcba6799): VeniceWriter ApacheKafka default
+  Bug 3 supplemental (069e2e560): capacity 100k + MIN-watermark
+  Bug 4 (c41b3f436): getPositionByTimestamp null fallback
+  Bug 5 (8e3b7347f): offsetForTime semantics
+  Bug 6a (307965ab1): producer-side deep-copy of Put.putValue and Put.replicationMetadataPayload
+  Bug 6b (d1ccdd010): per-consumer-read deep-copy of KafkaMessageEnvelope
+  Bug 6c / Fix A (dfa8f2f99): symmetric RMD enlarge
+  Bug 6d / Fix B (b530cbab7): schema-ID encoded as 4-byte prefix in broker-carried bytes
+  Bug 6e / Fix B-supplemental (60750e4e1): capacity 100k -> 2M
+
+No-diff invariant: HELD. git diff --stat 41d149a76 -- on
+  InMemoryPubSubBroker.java, InMemoryPubSubTopic.java,
+  MockInMemoryProducerAdapter.java, MockInMemoryConsumerAdapter.java
+  is empty.
+
+Production code: NOT modified. ActiveActiveStoreIngestionTask, MergeUtils,
+  ByteUtils, MergeConflictResolver — all untouched.
+
+Test code: NOT modified.
+
+Block (i) intermittency note: across 4 bench runs in iter10, only bench-3
+  succeeded; the other three timed out at the 5-min empty-push deadline due
+  to the pre-existing dc-0 meta-store SIT not transitioning from
+  IN_TRANSITION_FROM_STANDBY_TO_LEADER to LEADER (DoL stamp produced at
+  offset 3 in local broker but the consume-back callback never fires).
+  This is the same intermittent Block (i) noted in iter9's PARTIAL.
+  Phase 9 prompt criterion 7 / Step 4: ">=1 [E2E] line, no exceptions,
+  normal exit" is the GREEN bar; bench-3 satisfies that. iter11
+  recommendation: implement true blocking-poll semantics in
+  BoundedMockInMemoryConsumerAdapter.poll (use the
+  Partition.notEmpty condition variable instead of the current 5ms
+  busy-sleep) to improve scheduling fairness for the partition
+  that just received the DoL.

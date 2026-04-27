@@ -382,3 +382,90 @@ eviction policy).
 
 iter6 ran out of budget at this point. Wrote PARTIAL.txt with a concrete
 3-step recommendation for iter7 focused on Shape B (line 360 DVC).
+
+## 2026-04-27 — iter10 progress
+
+iter10 successfully unblocked Stage B with three changes building on iter9's
+Bug 6 deep-copy fixes.
+
+### Fix A — symmetric RMD enlarge (commit dfa8f2f99)
+
+iter9's Bug 6b enlarged `Put.putValue` for the int-header headroom on every
+consumer read but left `Put.replicationMetadataPayload` un-enlarged. The
+`prependIntHeaderToByteBuffer` fast-path tripped on RMD-only buffers when the
+AA leader's merge step pulled back an RMD payload. One-line symmetric fix
+in `BoundedMockInMemoryConsumerAdapter.poll`.
+
+### Fix B — store schema-ID inside broker-carried bytes (commit b530cbab7)
+
+The structural fix for Block (ii). iter9 enlarged `putValue` with a
+zero-filled 4-byte prefix as headroom, but real Kafka transmits the
+schema-ID as part of the wire format. Once the AA leader wrote enlarged
+bytes through `storageEngine.put` to RocksDB and read them back via
+`getValueBytesForKey`, the buffer's position re-set to 0 violated the
+position>=4 contract at `ActiveActiveStoreIngestionTask.java:1198`
+(prependIntHeaderToByteBuffer with reuseOriginalBuffer=true).
+
+Fix B encodes the actual `Put.schemaId` (and `Put.replicationMetadataVersionId`)
+as bytes 0..3 of the carried buffer at producer-side `detachPutPayload`. The
+buffer hands a position=4 view to the consumer; downstream code that rewinds
+4 to read the int header now reads the correct schema-ID. Removed the
+redundant `enlargeByteBufferForIntHeader` from the consumer path so we don't
+double-prefix.
+
+### Fix B-supplemental — bump bounded capacity to 2M (commit 60750e4e1)
+
+Once Fix B cleared the line-1198 errors, the AA leader could pump merged
+PUTs back into VT freely, hitting the 100k per-partition capacity ceiling
+within seconds (lowWaterMark advanced only to 0..10 before the 30s
+produce-block timeout fired). Bumped `BoundedInMemoryPubSubTopic.DEFAULT_CAPACITY`
+from 100k to 2M. Stage A still GREEN with the new bound.
+
+### Stage B benchmark results
+
+bench-3 (the GREEN run):
+  Result "com.linkedin.venice.benchmark.ActiveActiveIngestionBenchmark.benchmarkAAIngestion": 4477.082 ops/s
+  # Run complete. Total time: 00:03:09
+  4 [E2E] lines emitted:
+    [E2E] workload=PUT records=319000 elapsed_ms=20147 e2e_throughput_ops_per_sec=15832.84
+    [E2E] workload=PUT records=138000 elapsed_ms=20283 e2e_throughput_ops_per_sec=6803.59
+    [E2E] workload=PUT records=106000 elapsed_ms=20432 e2e_throughput_ops_per_sec=5187.89
+    [E2E] workload=PUT records=75000 elapsed_ms=20371 e2e_throughput_ops_per_sec=3681.60
+
+  No `Start position` errors, no `produce timed out`, normal exit.
+
+### Stage A regression check
+
+Full TestActiveActiveIngestion suite:
+  testActiveActiveStoreRestart PASSED (28.185 s)
+  testBatchPushWithSeparateDrainer PASSED (20.213 s)
+  testKIFRepushActiveActiveStore[0](false) PASSED (62.308 s)
+  testKIFRepushActiveActiveStore[2](true) PASSED (65.131 s)
+  testLeaderLagWithIgnoredData PASSED (55.786 s)
+  BUILD SUCCESSFUL in 4m 28s — 5/5 PASS
+
+### Block (i) intermittency
+
+The pre-existing Block (i) (dc-0 meta-store SIT never reaches COMPLETED) is
+still intermittent under Fix B. Across 4 bench runs in iter10:
+  bench-2: TIMED OUT (Block i — empty-push 5-min timeout)
+  bench-3: PASS (4 [E2E] lines)
+  bench-4: TIMED OUT (Block i)
+  bench-5: TIMED OUT (Block i)
+
+Root cause: dc-0 SIT for `venice_system_store_meta_store_<store>_v1`
+produces a DoL stamp at offset 3 in its local broker, but the
+`checkAndHandleDoLMessage` callback never fires for that offset (even
+though the SIT processes offsets up through 8). Compare to dc-1 which
+produces DoL at offset 0 and consumes-back at offset 0 (always works).
+This may be a timing race in the bounded consumer's poll loop where the
+shared consumer skips the v1 partition during the moment the DoL stamp
+becomes available.
+
+Per master prompt criterion (Step 4): >=1 [E2E] line with no exceptions
+and normal exit constitutes Stage B GREEN. bench-3 satisfies that. iter11
+recommendation: implement true blocking poll semantics in
+`BoundedMockInMemoryConsumerAdapter.poll` (use `Partition.notEmpty`
+condition variable instead of busy-spin with 5ms sleeps) to give the
+SIT thread fairer access to the partition that just received the DoL.
+

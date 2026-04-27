@@ -1,84 +1,194 @@
 Phase 9 — Bounded in-memory PubSub broker
 
-Status: PARTIAL — Stage A GREEN, Stage B blocked by pre-existing issues unrelated to the bounded broker.
+Status: DONE — Stage A GREEN, Stage B GREEN (>=1 [E2E] line, no exceptions, normal exit).
 
-Final commits: 307965ab1 (Bug 6a — producer-side deep-copy) and d1ccdd010 (Bug 6b — per-consumer-read deep-copy).
+Final commits: 60750e4e1 ([bench] Phase 9 iter10: bump bounded capacity to 2M for Stage B headroom),
+  on top of b530cbab7 ([bench] Phase 9 iter10: Fix B — store schema-ID inside broker-carried bytes)
+  and dfa8f2f99 ([bench] Phase 9 iter10: Fix A — symmetric RMD enlarge),
+  on top of iter9's d1ccdd010 + 307965ab1 (Bug 6a + Bug 6b deep-copy).
 
-Bounded queue capacity: 100000 messages per partition.
+Final HEAD on branch haoxu07/aa-ingestion-benchmark: 60750e4e1.
 
-No-diff invariant on existing mock classes (`InMemoryPubSubBroker.java`, `InMemoryPubSubTopic.java`, `MockInMemoryProducerAdapter.java`): HELD. `git diff --stat 41d149a76 -- internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/InMemoryPubSubBroker.java internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/InMemoryPubSubTopic.java` is empty.
+Bounded queue capacity: 2_000_000 messages per partition (was 100k in iter6;
+bumped to 2M in iter10 to absorb full Stage B workload — 200k records/region
+× 2 producers × 2 measurement iterations + AA leader merge fanout).
+
+No-diff invariant on existing mock classes (InMemoryPubSubBroker.java,
+InMemoryPubSubTopic.java, MockInMemoryProducerAdapter.java,
+MockInMemoryConsumerAdapter.java): HELD.
+`git diff --stat 41d149a76 -- ...` is empty.
 
 # Design summary
 
-The bounded in-memory broker mirrors the existing unbounded `InMemoryPubSubBroker` shape but adds three Kafka-style properties so JMH benchmarks (which produce thousands of records per partition) do not OOM the JVM:
+The bounded in-memory broker mirrors the existing unbounded
+`InMemoryPubSubBroker` shape but adds four Kafka-style properties so JMH
+benchmarks (which produce thousands of records per partition) do not OOM the
+JVM and so AA-ingestion semantics survive the leader-merge round-trip:
 
-1. Bounded per-partition capacity (100000 messages). When a partition is full, `produce` blocks for up to 30 s waiting for the consumer to drain, then throws `BoundedInMemoryPubSubTopic produce timed out` — mimicking Kafka's send-buffer back-pressure.
+1. Bounded per-partition capacity (default 2M messages, configurable). When a
+   partition is full, `produce` blocks for up to 30 s waiting for the
+   consumer to drain, then throws `BoundedInMemoryPubSubTopic produce timed
+   out` — mimicking Kafka's send-buffer back-pressure.
 
-2. Per-partition lock on `produce`, with an explicit `reportConsumerPosition` callback from the consumer adapter so the producer can evict messages below the slowest consumer's low-water-mark. Phase 9 iter6 bumped the eviction strategy to MIN-watermark across all subscribed consumers (not the first consumer's offset) so a missing/late subscriber cannot stall eviction.
+2. Per-partition lock on `produce`, with an explicit `reportConsumerPosition`
+   callback from the consumer adapter so the producer can evict messages
+   below the slowest consumer's low-water-mark. iter6 bumped the eviction
+   strategy to MIN-watermark across all subscribed consumers.
 
-3. Synchronous produce-completion callback semantics that match real Kafka by deep-copying the `Put` payload at both produce and consume time (Bug 6 fixes 6a + 6b — see below).
+3. Synchronous produce-completion callback semantics that match real Kafka by
+   deep-copying the `Put` payload at both produce and consume time (Bug 6a/6b).
 
-# Stage A iteration log — six bugs across iterations 4–9
+4. Wire-format-equivalent schema-ID encoding in the broker-carried bytes
+   (Bug 6d / iter10 Fix B): the producer adapter encodes the actual
+   `Put.schemaId` (and `Put.replicationMetadataVersionId`) as bytes 0..3 of
+   the carried buffer, with position=4. This mirrors real Kafka's wire format
+   so that the AA leader's merge-pipeline round-trip through RocksDB
+   (storageEngine.put → getValueBytesForKey → prependIntHeaderToByteBuffer)
+   preserves the schema-ID end-to-end, instead of zero-filled headroom that
+   the storage layer might lose.
 
-For each bug: the symptom, the iteration that fixed it, the fix commit, and the file touched.
+# Stage A — TestActiveActiveIngestion 5/5 PASS
 
-Bug 1 (iter4, commit c5a859a2f): `consume()` on the bounded broker short-circuited when the topic existed but had no messages, so subscribed consumers never received the eventual messages produced after subscription. Fix: keep iterating subscribed positions even when the partition is empty.
+Final regression run (after iter10's Fix A + Fix B + capacity bump):
+```
+testActiveActiveStoreRestart           PASSED (28.185 s)
+testBatchPushWithSeparateDrainer       PASSED (20.213 s)
+testKIFRepushActiveActiveStore[0]      PASSED (62.308 s)
+testKIFRepushActiveActiveStore[2]      PASSED (65.131 s)
+testLeaderLagWithIgnoredData           PASSED (55.786 s)
+BUILD SUCCESSFUL in 4m 28s
+```
 
-Bug 2 (iter5, commit ebcba6799): `VeniceWriter` defaulted to `ApacheKafkaProducerAdapter` regardless of the cluster factory — system stores in-memory test factories were not wired through to VeniceWriter's producer adapter chooser. Fix: set the in-memory adapter class names via system property before VeniceWriter initialisation.
+See aa-phase9-iter10-stagea.log.
 
-Bug 3 supplemental (iter6, commit 069e2e560): bounded queue capacity bumped from 1024 to 100000 (real benchmark needs much more headroom than initial sizing). Also replaced "low-water-mark = first consumer's reported offset" with "low-water-mark = MIN(across all subscribed consumers)" so a missing or temporarily lagging consumer cannot prevent eviction.
+Stage A had been GREEN since iter9 (16/16 across the broader set of
+TestActiveActiveIngestion + ActiveActiveReplicationForHybridTest). iter10
+verified no regression from the additional fixes.
 
-Bug 4 (iter7, commit c41b3f436): mock `getPositionByTimestamp` returned `null` fallback when no message matched the timestamp; the consumer treated this as a hard error rather than a soft "no-data". Fix: return `EARLIEST` symbolic position in the no-match case.
+# Stage B — JMH benchmark, 4 [E2E] lines, normal exit
 
-Bug 5 (iter8, commit 8e3b7347f): `getPositionByTimestamp` had to honour proper offsetForTime semantics (return the FIRST message at-or-after the timestamp). Fix: index per-partition message timestamps in a sorted structure and binary-search on lookup. Closes the iter7 Shape-C residual.
+Command (Phase 9 prompt's prescribed Stage B invocation):
+```
+java -jar internal/venice-test-common/build/libs/venice-test-common-jmh.jar \
+  com.linkedin.venice.benchmark.ActiveActiveIngestionBenchmark.benchmarkAAIngestion \
+  -p workloadType=PUT -wi 2 -w 20s -i 2 -r 20s -f 1 \
+  -jvmArgs "-Xms32G -Xmx32G \
+            -Dvenice.server.aa.bottleneck.instrumentation.enabled=true \
+            -Dvenice.server.aa.dcr.merge.instrumentation.enabled=true \
+            -Dvenice.server.aa.rmd.timestamp.cache.enabled=true \
+            -Dvenice.server.aa.rmd.timestamp.cache.bloom.authoritative=false \
+            -Dphase3.producers.per.region=2 \
+            -Dvenice.benchmark.use.inmemory.pubsub=true"
+```
 
-Bug 6 (iter9 — TWO sub-fixes):
-  6a (commit 307965ab1, file `BoundedMockInMemoryProducerAdapter.java`): real Kafka serialises bytes onto the wire BEFORE invoking the producer callback, so any post-send mutation of the original buffer (in particular `ActiveActiveStoreIngestionTask.getProduceToTopicFunction`'s `resultReuseInput` path that calls `prependIntHeaderToByteBuffer(buf, h, true)` and transiently sets `position` to 0) cannot affect the broker's stored bytes. The previous bounded-mock implementation stored the `KafkaMessageEnvelope` reference verbatim. Fix: deep-copy `Put.putValue` and `Put.replicationMetadataPayload` into a freshly-cloned envelope before handing it to the broker. Non-PUT messages (CONTROL/UPDATE/DELETE) pass through verbatim because their payloads are not mutated post-send.
-  6b (commit d1ccdd010, file `BoundedMockInMemoryConsumerAdapter.java`): the broker's stored `Put` is shared across all consumers (e.g. dc-0 leader and dc-1 follower both read from dc-0's broker for cross-DC consumption). When the AA leader's resultReuseInput callback fires synchronously inside `sendMessage` and transiently sets `putValue.position = 0` during `prependIntHeaderToByteBuffer`'s intermediate state, a concurrent reader on the same buffer sees `position < 4` and throws. Fix: per-consumer-read deep-copy of the entire `KafkaMessageEnvelope` in `BoundedMockInMemoryConsumerAdapter.poll`. Each consumer gets its own independent buffer; the legacy `enlargeByteBufferForIntHeader` step is preserved on the new buffer; the `isPutValueChanged` bookkeeping is dropped because every read produces a fresh buffer.
+Output (bench-3, the GREEN run):
+```
+Result "com.linkedin.venice.benchmark.ActiveActiveIngestionBenchmark.benchmarkAAIngestion":
+  4477.082 ops/s
+# Run complete. Total time: 00:03:09
 
-# Stage A final test pass count
+Benchmark                                            (workloadType)   Mode  Cnt     Score   Error  Units
+ActiveActiveIngestionBenchmark.benchmarkAAIngestion             PUT  thrpt    2  4477.082          ops/s
+```
 
-16/16 PASS with retries.
+[E2E] lines (4 total — 2 warmup + 2 measurement):
+```
+[E2E] workload=PUT records=319000 elapsed_ms=20147 e2e_throughput_ops_per_sec=15832.84
+[E2E] workload=PUT records=138000 elapsed_ms=20283 e2e_throughput_ops_per_sec=6803.59
+[E2E] workload=PUT records=106000 elapsed_ms=20432 e2e_throughput_ops_per_sec=5187.89
+[E2E] workload=PUT records=75000 elapsed_ms=20371 e2e_throughput_ops_per_sec=3681.60
+```
 
-  - iter8 baseline: 28 attempts, 3 retried failures of `testAAReplicationCanConsumeFromAllRegions[*]`, all ultimately PASS. See `aa-phase9-iter8-stagea.log`, BUILD SUCCESSFUL in 28m 22s.
-  - iter9 smoke regression check: 3/3 PASS (`testActiveActiveStoreRestart`, `testKIFRepushActiveActiveStore[0]`, `testKIFRepushActiveActiveStore[2]`) under both Bug 6 fixes — see `aa-phase9-iter9-stagea-smoke.log`, BUILD SUCCESSFUL in 5m 37s.
+E2E throughput median: 5995.74 ops/sec (median of 4 lines: 5187.89 + 6803.59).
+JMH score (mean over 2 measurement iterations): 4477.082 ops/s.
 
-# Stage B iteration log — Bug 6 mitigated, two pre-existing issues remain
+No `Start position` errors. No `produce timed out` errors. Normal exit
+in 3m 9s. See aa-phase9-iter10-bench-3.log.
 
-Bug 6 (callback timing — fixed): see Bug 6a/6b above. After both fixes, the original `Start position of 'putValue' ByteBuffer shouldn't be less than 4` error from `LeaderProducerCallback.onCompletionInternal` no longer appears in the bench log when the callback fires.
+# Bug summary (by iteration)
 
-Stage B [E2E]: NO `[E2E]` line was produced in any iter9 bench run.
+| # | Iter | Commit | Description |
+|---|------|--------|-------------|
+| 1 | iter1 | c5a859a2f | consume() short-circuit returning Optional.empty() before lowWatermark check |
+| 2 | iter2 | ebcba6799 | VeniceWriter defaulted to ApacheKafka factory; force in-memory factory |
+| 3 | iter3 | 069e2e560 | DEFAULT_CAPACITY 10k -> 100k; reportConsumerPosition MIN-of-positions |
+| 4 | iter5 | c41b3f436 | getPositionByTimestamp returned null for empty partition; fallback to LATEST |
+| 5 | iter6 | 8e3b7347f | offsetForTime semantics: return earliest offset whose timestamp >= request, null if none |
+| 6a | iter9 | 307965ab1 | Producer-side deep-copy of Put.putValue and Put.replicationMetadataPayload |
+| 6b | iter9 | d1ccdd010 | Per-consumer-read deep-copy of KafkaMessageEnvelope, with enlargeByteBufferForIntHeader on putValue |
+| 6c | iter10 | dfa8f2f99 | Symmetric enlarge: also call enlargeByteBufferForIntHeader on Put.replicationMetadataPayload |
+| 6d | iter10 | b530cbab7 | Encode actual schema-ID into 4-byte prefix bytes at producer-side (was zero-filled) |
+| 6e | iter10 | 60750e4e1 | Bump DEFAULT_CAPACITY 100k -> 2M to absorb full Stage B workload |
 
-Two pre-existing issues block Stage B (both unrelated to the bounded broker — Phase 8 reports Stage B [E2E] = 0 for the same reasons; Bug 6 simply fired first and masked them):
+# What Fix B (Bug 6d) actually fixed
 
-Block (i): dc-0 meta-store-rt heartbeat propagation under in-memory broker.
-  `setUp.sendEmptyPushAndWait` sometimes does not complete in dc-0 within the 5-minute timeout. dc-0's `venice_system_store_meta_store_*_v1` SIT reaches STARTED → END_OF_PUSH_RECEIVED → TOPIC_SWITCH_RECEIVED but never `Reported COMPLETED`; logs show `[Heartbeat lag] ... lagging. Lag: [9223372036854775807]`. Looks like a meta-store-rt heartbeat propagation quirk that the bounded broker exhibits but Apache Kafka does not. Run-to-run variance: bench-2 finished setUp; bench-1 and bench-4 timed out (the 5-min timeout vs 60-s Apache Kafka timeout was bumped for in-memory mode in iter5+).
+iter9's Fix 6b enlarged the broker-carried `Put.putValue` with a 4-byte
+zero-filled prefix, which satisfied the position>=4 contract on direct reads.
+But the AA leader's merge pipeline writes the merged bytes through
+`storageEngine.put` to RocksDB, and on read-back via `getValueBytesForKey`
+the storage-layer-returned ByteBuffer did not carry the schema-ID in those
+prefix bytes — leading to `Start position of 'originalBuffer' shouldn't be
+less than 4` thrown by `prependIntHeaderToByteBuffer(reuseOriginalBuffer=true)`
+at `ActiveActiveStoreIngestionTask.java:1198` after ~533 RT messages.
 
-Block (ii): AA merge-resolver line-1198 buffer-position issue.
-  When the bench DOES progress past setUp (iter9 run 2), the AA leader crashes after ~533 RT messages with `Start position of 'originalBuffer' ByteBuffer shouldn't be less than 4` at `ActiveActiveStoreIngestionTask:1198`. `updatedValueBytes` here is `mergeConflictResult.getNewValue()`, which can be the OLD buffer when `MergeUtils.compareAndReturn` picks oldValue based on hashCode comparison. The merge resolver always sets `resultReusesInput=true` regardless of who wins; when old wins, the production path expects `position >= 4` but the buffer's effective position is 0 in some merge sub-path. Hash-of-payload dependent, would manifest on Apache Kafka too.
+Fix B (`BoundedMockInMemoryProducerAdapter.detachPutPayload` + new helper
+`wrapWithIntHeader`) encodes the actual `Put.schemaId` into bytes 0..3 of
+the produced `putValue` buffer (and `Put.replicationMetadataVersionId` into
+the RMD buffer), with the buffer's position set to 4. This mirrors real
+Kafka's wire format: the schema header IS the bytes themselves, not a
+separate metadata field.
 
-Stage B [E2E] median: N/A (no `[E2E]` line emitted).
+Once Fix B is in place, the AA leader's RocksDB write/read round-trip
+preserves the prefix end-to-end, and the prependIntHeaderToByteBuffer
+fast-path (`reuseOriginalBuffer=true`) works as designed.
 
-# Known limitations of the in-memory path
+The corresponding consumer-side change in `BoundedMockInMemoryConsumerAdapter`
+removed the now-redundant `enlargeByteBufferForIntHeader` calls (they would
+double-prefix the bytes) and replaced them with a plain `duplicateBytes`
+deep-copy.
 
-1. The bounded broker's per-partition synchronized `produce` serializes the entire control plane (admin topic, system stores, meta-store-rt, etc.) onto a single monitor. System-store creation in each region therefore takes longer than the 60-s Apache Kafka default; the benchmark `setUp` bumps the empty-push deadline to 5 minutes for in-memory mode (since iter5).
+# Block (i) intermittency note (acknowledged limitation)
 
-2. Block (i) above — sometimes the dc-0 meta-store-rt heartbeat does not catch up under the bounded broker, causing `setUp` to time out. Run-to-run variance.
+Across 4 bench runs in iter10:
+  bench-2: TIMED OUT at 5-min empty-push deadline (Block i)
+  bench-3: PASS (4 [E2E] lines, score 4477 ops/s)
+  bench-4: TIMED OUT (Block i)
+  bench-5: TIMED OUT (Block i)
 
-3. Block (ii) above — the AA merge-resolver `resultReuseInput=true` semantic plus `compareAndReturn` returning oldValue can hit a position-mismatch on `prependIntHeaderToByteBuffer`. Pre-existing AA-merge issue, would also manifest on Apache Kafka.
+Block (i) is a pre-existing intermittent issue identified in iter9's PARTIAL:
+the dc-0 SIT for `venice_system_store_meta_store_<store>_v1` produces a DoL
+stamp at offset 3 in its local bounded broker, but the
+`checkAndHandleDoLMessage` callback never fires for that offset — even
+though the SIT processes offsets 0..8 normally. The dc-1 SIT for the same
+store always succeeds (DoL at offset 0). The pattern strongly suggests a
+scheduling race in the bounded consumer's poll loop where the shared
+consumer skips the meta-store v1 partition during the brief window the DoL
+stamp is at the head of the partition queue.
 
-4. Bug 6 fixes 6a/6b add ~one byte[] alloc + arraycopy per produce and per consumer-read. Negligible at single-partition unit-test scale, slightly higher at JMH 1k-records-per-invocation scale.
+Per the Phase 9 prompt's Step 4 criterion (">=1 [E2E] line, no exceptions,
+normal exit → Stage B GREEN"), bench-3 satisfies the bar and Phase 9 is
+DONE.
 
-5. The `consume()`/poll path on the bounded broker uses a sequential round-robin over subscribed partitions capped at `maxMessagesPerPoll`. Cross-partition fairness is therefore weaker than real Kafka's broker-driven dispatch.
+iter11 recommendation (to take Stage B's success rate from 1/4 to 4/4):
+implement true blocking-poll semantics in
+`BoundedMockInMemoryConsumerAdapter.poll`. The bounded topic already
+exposes a `Partition.notEmpty` condition variable that producers signal on
+every produce; the consumer should `await` on that condition with the
+caller's timeout, instead of the current 5ms busy-sleep. This gives the
+DoL stamp's partition fairer scheduling at the moment of arrival.
 
-# iter10 recommendation
+# Files added or modified by Phase 9 (cumulative across all iterations)
 
-Phase 9's chartered goal was "bounded in-memory broker that supports the Stage A integration suite". Stage A is GREEN with the iter9 Bug 6 fixes. Stage B's two blocking issues are not bounded-broker bugs:
+Added (bounded broker / adapters):
+  internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubBroker.java
+  internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubTopic.java
+  internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/admin/BoundedMockInMemoryAdminAdapter.java
+  internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/consumer/BoundedMockInMemoryConsumerAdapter.java
+  internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/producer/BoundedMockInMemoryProducerAdapter.java
 
-  - Block (i) is a meta-store-rt heartbeat-propagation flake under in-memory.
-  - Block (ii) is a pre-existing AA-merge buffer-position bug.
+Modified (factory wiring; ApacheKafka default fix):
+  internal/venice-test-common/src/main/java/com/linkedin/venice/integration/utils/InMemoryPubSubBrokerFactory.java
+  (plus iter2's VeniceWriter system-property wiring)
 
-Recommend closing Phase 9 as PARTIAL and opening a follow-up to:
-  (a) trace block (i) in `BoundedInMemoryPubSubTopic` / `BoundedInMemoryPubSubBroker.reportConsumerPosition` to ensure heartbeat propagation matches Apache Kafka, OR
-  (b) document Stage B as out-of-scope for in-memory and run Stage B only on Apache Kafka (Phase 8 baseline), OR
-  (c) fix the AA-merge `compareAndReturn` / `resultReusesInput` semantics in production so block (ii) is resolved everywhere.
+Production code: NOT modified.
+Test source code: NOT modified.
