@@ -20,7 +20,6 @@ import com.linkedin.venice.pubsub.mock.BoundedInMemoryPubSubBroker;
 import com.linkedin.venice.pubsub.mock.InMemoryPubSubMessage;
 import com.linkedin.venice.pubsub.mock.InMemoryPubSubPosition;
 import com.linkedin.venice.pubsub.mock.adapter.admin.BoundedMockInMemoryAdminAdapter;
-import com.linkedin.venice.utils.ByteUtils;
 import com.linkedin.venice.utils.concurrent.VeniceConcurrentHashMap;
 import java.nio.ByteBuffer;
 import java.time.Duration;
@@ -237,27 +236,26 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
           KafkaMessageEnvelope kafkaMessageEnvelope = message.get().value;
           if (!AdminTopicUtils.isAdminTopic(topicName) && !message.get().key.isControlMessage()
               && MessageType.valueOf(kafkaMessageEnvelope) == MessageType.PUT) {
-            // [iter9 / Bug 6] Per-consumer-read deep-copy of the PUT envelope. Real Kafka
-            // serialises bytes onto the wire and each consumer deserialises into its own
-            // independent buffer; the in-memory broker stores a single Put reference shared
-            // across consumers, so post-send mutation by the AA leader's resultReuseInput
-            // callback (which transiently sets putValue.position to 0 inside
-            // prependIntHeaderToByteBuffer) races with the follower's read of the same
+            // [iter9 / Bug 6 + iter10 / Fix B] Per-consumer-read deep-copy of the PUT
+            // envelope. Real Kafka serialises bytes onto the wire and each consumer
+            // deserialises into its own independent buffer; the in-memory broker stores a
+            // single Put reference shared across consumers, so post-send mutation by the AA
+            // leader's resultReuseInput callback races with the follower's read of the same
             // buffer. Mirror Kafka semantics by handing each consumer its own envelope.
             //
-            // Also pad putValue for the int header so the deserializer downstream has the
-            // 4-byte schema header slot — same as the legacy enlargeByteBufferForIntHeader
-            // step that the unbounded mock performs.
+            // Note: as of iter10/Fix B, the producer side
+            // (BoundedMockInMemoryProducerAdapter.detachPutPayload) already encodes the
+            // schema-ID (and RMD version-ID) as a 4-byte prefix INSIDE the carried bytes —
+            // matching real Kafka's wire format. Therefore we do NOT call
+            // enlargeByteBufferForIntHeader here; doing so would double-prefix the bytes.
+            // We still deep-copy so post-read mutation by one consumer cannot corrupt
+            // another consumer's view of the same broker entry.
             Put originalPut = (Put) kafkaMessageEnvelope.payloadUnion;
             Put copy = new Put();
             copy.schemaId = originalPut.schemaId;
             copy.replicationMetadataVersionId = originalPut.replicationMetadataVersionId;
-            copy.putValue = ByteUtils.enlargeByteBufferForIntHeader(originalPut.putValue);
-            // [iter10 / Fix A] Symmetric enlarge for RMD: iter9 enlarged putValue but left
-            // replicationMetadataPayload alone, so the merge path's prependIntHeader fast-path
-            // would still trip "Start position < 4" once the AA leader read back an RMD-only
-            // buffer. Mirror the putValue handling here.
-            copy.replicationMetadataPayload = ByteUtils.enlargeByteBufferForIntHeader(originalPut.replicationMetadataPayload);
+            copy.putValue = duplicateBytes(originalPut.putValue);
+            copy.replicationMetadataPayload = duplicateBytes(originalPut.replicationMetadataPayload);
             KafkaMessageEnvelope detached = new KafkaMessageEnvelope();
             detached.messageType = kafkaMessageEnvelope.messageType;
             detached.producerMetadata = kafkaMessageEnvelope.producerMetadata;
@@ -298,6 +296,33 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
     } while (System.currentTimeMillis() < deadlineMs);
 
     return records;
+  }
+
+  /**
+   * Deep-copy a ByteBuffer (including any header bytes [0, position)) so that the consumer
+   * receives an independent buffer. The returned buffer's position/limit match the source.
+   * Returns null if source is null.
+   */
+  private static ByteBuffer duplicateBytes(ByteBuffer src) {
+    if (src == null) {
+      return null;
+    }
+    int position = src.position();
+    int limit = src.limit();
+    int capacity = limit;
+    byte[] bytes = new byte[capacity];
+    if (src.hasArray()) {
+      System.arraycopy(src.array(), src.arrayOffset(), bytes, 0, capacity);
+    } else {
+      ByteBuffer dup = src.duplicate();
+      dup.position(0);
+      dup.limit(capacity);
+      dup.get(bytes, 0, capacity);
+    }
+    ByteBuffer copy = ByteBuffer.wrap(bytes);
+    copy.position(position);
+    copy.limit(limit);
+    return copy;
   }
 
   private static void sleepQuietly(long ms) {

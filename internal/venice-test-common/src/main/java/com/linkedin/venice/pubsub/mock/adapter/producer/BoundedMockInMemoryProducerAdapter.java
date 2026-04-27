@@ -93,11 +93,25 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
   }
 
   /**
-   * [iter9 / Bug 6] Return a {@link KafkaMessageEnvelope} whose {@link Put#putValue} (and the
-   * RMD payload) is deep-copied so subsequent mutation by the producer callback cannot affect
-   * the bytes the broker has handed to the consumer. Mirrors Kafka's network-serialisation
-   * boundary. Non-PUT messages (CONTROL, UPDATE, DELETE) are passed through verbatim because
-   * their payloads are not mutated post-send.
+   * [iter9 / Bug 6 + iter10 / Fix B] Return a {@link KafkaMessageEnvelope} whose {@link Put#putValue}
+   * (and the RMD payload) is rebuilt so that the schema-ID (or RMD version-ID) is encoded
+   * as a 4-byte prefix INSIDE the carried bytes, with the buffer's position set to 4 (just
+   * past the prefix). This mirrors what the real Kafka wire format + deserialiser produces:
+   * the value bytes start with the schema header, and the deserialised buffer has position=4
+   * so {@code getIntHeaderFromByteBuffer} (which rewinds 4 to read the prefix) works.
+   *
+   * <p>iter9 deep-copied the buffers but left the headroom zero-filled and only enlarged on
+   * the consume path. The structural problem was: when the AA leader writes the (enlarged)
+   * value to RocksDB via {@code storageEngine.put}, the bytes stored have a zero-filled
+   * 4-byte prefix; on read-back via {@code getValueBytesForKey}, the buffer's position can
+   * be reset to 0 by the storage layer, which violates the {@code position >= 4} contract
+   * at {@code ActiveActiveStoreIngestionTask:1198} (line: {@code prependIntHeaderToByteBuffer}
+   * with {@code reuseOriginalBuffer=true}). Encoding the real schema-ID into the prefix is
+   * the structural fix: the prefix is part of the bytes themselves, and any caller that
+   * uses {@code getIntHeaderFromByteBuffer} reads the correct value.
+   *
+   * <p>Non-PUT messages (CONTROL, UPDATE, DELETE) are passed through verbatim because their
+   * payloads are not mutated post-send and are not subject to the int-header contract.
    */
   private static KafkaMessageEnvelope detachPutPayload(KafkaMessageEnvelope value) {
     if (value == null || value.payloadUnion == null) {
@@ -110,8 +124,9 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
     Put copy = new Put();
     copy.schemaId = originalPut.schemaId;
     copy.replicationMetadataVersionId = originalPut.replicationMetadataVersionId;
-    copy.putValue = cloneByteBuffer(originalPut.putValue);
-    copy.replicationMetadataPayload = cloneByteBuffer(originalPut.replicationMetadataPayload);
+    copy.putValue = wrapWithIntHeader(originalPut.putValue, originalPut.schemaId);
+    copy.replicationMetadataPayload =
+        wrapWithIntHeader(originalPut.replicationMetadataPayload, originalPut.replicationMetadataVersionId);
 
     KafkaMessageEnvelope detached = new KafkaMessageEnvelope();
     detached.messageType = value.messageType;
@@ -121,29 +136,34 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
     return detached;
   }
 
-  private static ByteBuffer cloneByteBuffer(ByteBuffer src) {
+  /**
+   * Allocate a fresh ByteBuffer of size {@code 4 + remaining}, write {@code header} as
+   * bytes 0..3, copy the source's [position, position+remaining) bytes to [4..N), and
+   * return the buffer with position=4 and limit=N. Caller's source buffer is untouched.
+   *
+   * <p>Returns null if source is null. If source is empty (remaining=0), still emits a
+   * 4-byte header buffer with position=4 and limit=4 (downstream code may still rewind to
+   * read the prefix).
+   */
+  private static ByteBuffer wrapWithIntHeader(ByteBuffer src, int header) {
     if (src == null) {
       return null;
     }
-    int position = src.position();
+    int srcPos = src.position();
     int remaining = src.remaining();
-    byte[] bytes = new byte[position + remaining];
-    if (src.hasArray()) {
-      // Capture the live region [arrayOffset, arrayOffset+position+remaining) so the cloned
-      // buffer's [0, position) header bytes are intact and [position, position+remaining)
-      // payload bytes are intact. Position-aware semantics let downstream code rewind by 4
-      // to read the schema-id header just like Kafka would after deserialisation.
-      System.arraycopy(src.array(), src.arrayOffset(), bytes, 0, position + remaining);
-    } else {
-      // Slow path: fall back to absolute reads. Should not happen for Venice's heap buffers.
-      ByteBuffer dup = src.duplicate();
-      dup.position(0);
-      dup.get(bytes, 0, position + remaining);
+    ByteBuffer wrapped = ByteBuffer.allocate(4 + remaining);
+    wrapped.putInt(header);
+    if (remaining > 0) {
+      if (src.hasArray()) {
+        wrapped.put(src.array(), src.arrayOffset() + srcPos, remaining);
+      } else {
+        ByteBuffer dup = src.duplicate();
+        wrapped.put(dup);
+      }
     }
-    ByteBuffer copy = ByteBuffer.wrap(bytes);
-    copy.position(position);
-    copy.limit(position + remaining);
-    return copy;
+    wrapped.position(4);
+    wrapped.limit(4 + remaining);
+    return wrapped;
   }
 
   @Override
