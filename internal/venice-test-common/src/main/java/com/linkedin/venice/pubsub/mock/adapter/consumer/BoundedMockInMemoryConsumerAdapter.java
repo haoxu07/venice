@@ -236,13 +236,33 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
           }
           KafkaMessageEnvelope kafkaMessageEnvelope = message.get().value;
           if (!AdminTopicUtils.isAdminTopic(topicName) && !message.get().key.isControlMessage()
-              && MessageType.valueOf(kafkaMessageEnvelope) == MessageType.PUT
-              && !message.get().isPutValueChanged()) {
-            // Mirror the existing AbstractPollStrategy behaviour: pad putValue's
-            // ByteBuffer for the int header so the deserializer downstream has room.
-            Put put = (Put) kafkaMessageEnvelope.payloadUnion;
-            put.putValue = ByteUtils.enlargeByteBufferForIntHeader(put.putValue);
-            message.get().putValueChanged();
+              && MessageType.valueOf(kafkaMessageEnvelope) == MessageType.PUT) {
+            // [iter9 / Bug 6] Per-consumer-read deep-copy of the PUT envelope. Real Kafka
+            // serialises bytes onto the wire and each consumer deserialises into its own
+            // independent buffer; the in-memory broker stores a single Put reference shared
+            // across consumers, so post-send mutation by the AA leader's resultReuseInput
+            // callback (which transiently sets putValue.position to 0 inside
+            // prependIntHeaderToByteBuffer) races with the follower's read of the same
+            // buffer. Mirror Kafka semantics by handing each consumer its own envelope.
+            //
+            // Also pad putValue for the int header so the deserializer downstream has the
+            // 4-byte schema header slot — same as the legacy enlargeByteBufferForIntHeader
+            // step that the unbounded mock performs.
+            Put originalPut = (Put) kafkaMessageEnvelope.payloadUnion;
+            Put copy = new Put();
+            copy.schemaId = originalPut.schemaId;
+            copy.replicationMetadataVersionId = originalPut.replicationMetadataVersionId;
+            copy.putValue = ByteUtils.enlargeByteBufferForIntHeader(originalPut.putValue);
+            copy.replicationMetadataPayload = originalPut.replicationMetadataPayload;
+            KafkaMessageEnvelope detached = new KafkaMessageEnvelope();
+            detached.messageType = kafkaMessageEnvelope.messageType;
+            detached.producerMetadata = kafkaMessageEnvelope.producerMetadata;
+            detached.payloadUnion = copy;
+            detached.leaderMetadataFooter = kafkaMessageEnvelope.leaderMetadataFooter;
+            kafkaMessageEnvelope = detached;
+            // No mutation of the source InMemoryPubSubMessage — every consumer gets a fresh
+            // envelope on every read. We intentionally do not call message.putValueChanged()
+            // because each read produces a new buffer.
           }
 
           DefaultPubSubMessage record = new ImmutablePubSubMessage(
