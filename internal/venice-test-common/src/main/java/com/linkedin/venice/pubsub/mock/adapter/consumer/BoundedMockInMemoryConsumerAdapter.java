@@ -326,23 +326,28 @@ public class BoundedMockInMemoryConsumerAdapter implements PubSubConsumerAdapter
 
   @Override
   public synchronized PubSubPosition getPositionByTimestamp(PubSubTopicPartition pubSubTopicPartition, long timestamp) {
-    // iter7 Shape B fix: real Kafka returns the offset of the earliest message whose
+    // iter8 Shape C fix: real Kafka returns the offset of the earliest message whose
     // timestamp is >= the requested timestamp, or null if no such message exists (in
-    // which case TopicMetadataFetcher.getPositionForTime falls back to LATEST). For the
-    // bounded in-memory broker we don't track per-message timestamps, but the only
-    // caller that drives critical correctness is
-    // LeaderFollowerStoreIngestionTask.getRewindStartPositionForRealTimeTopic, which
-    // uses this to figure out where to begin consuming RT for a hybrid store on a fresh
-    // version. The "right" answer for that case in tests is EARLIEST (offset 0): the RT
-    // is fresh and all messages are typically newer than the requested rewind time. If
-    // we returned null the wrapper would fall back to LATEST and the leader would skip
-    // the controller's STORE_CLUSTER_CONFIG / STORE_PROPERTIES writes that landed
-    // before the version's StartOfPush -- producing the Shape B
-    // MissingKeyInStoreMetadataException in tests like
-    // ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions.
-    // Returning beginningPosition (offset 0) restores correct behavior without needing
-    // a full per-message-timestamp index.
-    return InMemoryPubSubPosition.of(0);
+    // which case TopicMetadataFetcher.getPositionForTime falls back to LATEST). The
+    // bounded broker now uses the producer-supplied
+    // value.producerMetadata.messageTimestamp on each stored entry to compute the
+    // correct answer, matching real-Kafka semantics.
+    //
+    // Why this matters:
+    // - iter7 (Shape B / meta-store): controller writes STORE_CLUSTER_CONFIG /
+    //   STORE_PROPERTIES with messageTimestamp = now-X seconds; leader's hybrid
+    //   meta-store version asks for rewindStartTimestamp = versionCreated - 360s,
+    //   which is BEFORE those messages -> offsetForTime returns 0 -> leader reads
+    //   from offset 0. (Same result iter7's hardcoded EARLIEST achieved.)
+    // - iter8 (Shape C / KIF Repush TTL): test sets REWIND_TIME_IN_SECONDS_OVERRIDE=0
+    //   so controller's TopicSwitch carries rewindStartTimestamp = now; leader's
+    //   getRewindStartPositionForRealTimeTopic asks the broker for that timestamp;
+    //   all RT records were produced BEFORE now -> offsetForTime returns null ->
+    //   leader falls back to LATEST and v4 does NOT re-consume the past-timestamped
+    //   records that KIF Repush had already TTL-filtered out.
+    Long offset = broker
+        .offsetForTime(pubSubTopicPartition.getPubSubTopic().getName(), pubSubTopicPartition.getPartitionNumber(), timestamp);
+    return offset == null ? null : InMemoryPubSubPosition.of(offset);
   }
 
   @Override

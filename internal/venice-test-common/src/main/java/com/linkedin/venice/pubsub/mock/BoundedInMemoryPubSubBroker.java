@@ -142,6 +142,20 @@ public class BoundedInMemoryPubSubBroker {
     return topic.endPosition(partition);
   }
 
+  /**
+   * Return the offset of the earliest message whose
+   * {@code value.producerMetadata.messageTimestamp >= timestamp}, or null if no such
+   * message exists. Matches real-Kafka {@code offsetForTime} semantics. Returns null
+   * (rather than throwing) if the topic does not exist.
+   */
+  public Long offsetForTime(String topicName, int partition, long timestamp) {
+    BoundedInMemoryPubSubTopic topic = topics.get(topicName);
+    if (topic == null) {
+      return null;
+    }
+    return topic.offsetForTime(partition, timestamp);
+  }
+
   public int getPort() {
     return port;
   }

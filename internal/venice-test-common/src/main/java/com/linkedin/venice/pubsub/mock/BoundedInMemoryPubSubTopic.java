@@ -265,6 +265,47 @@ public class BoundedInMemoryPubSubTopic {
     return InMemoryPubSubPosition.of(getEndOffsets(partition));
   }
 
+  /**
+   * Find the offset of the earliest message in the given partition whose
+   * {@code value.producerMetadata.messageTimestamp} is &gt;= {@code timestamp}.
+   *
+   * <p>Mirrors real-Kafka {@code offsetForTime(t)} semantics: returns null if no
+   * message with timestamp &gt;= t exists (caller should fall back to LATEST in that
+   * case, matching the {@code TopicMetadataFetcher.getPositionForTime} contract).
+   *
+   * <p>iter8: previously {@link com.linkedin.venice.pubsub.mock.adapter.consumer.BoundedMockInMemoryConsumerAdapter#getPositionByTimestamp}
+   * unconditionally returned offset 0 (iter7's fix for Shape B / meta-store). That broke
+   * Shape C: with REWIND_TIME_IN_SECONDS_OVERRIDE=0, the controller's TopicSwitch carries
+   * {@code rewindStartTimestamp = now}, the leader calls
+   * {@code getRewindStartPositionForRealTimeTopic(now)}, the bounded broker returned 0,
+   * and v4 leader re-consumed the RT records (including the past-timestamped PUTs that
+   * KIF Repush had already TTL-filtered out). Returning the correct timestamp-based
+   * offset here makes both meta-store (rewindStart in the past, all records newer ->
+   * offset 0) AND TTL repush (rewindStart = now, all records older -> null -> LATEST)
+   * behave like real Kafka.
+   */
+  public Long offsetForTime(int partition, long timestamp) {
+    checkPartitionRange(partition);
+    Partition p = partitions[partition];
+    p.lock.lock();
+    try {
+      for (Entry e: p.queue) {
+        long ts = -1L;
+        try {
+          ts = e.message.value.producerMetadata.messageTimestamp;
+        } catch (Throwable ignored) {
+          // Defensive: if the stored envelope is malformed for any reason, just skip it.
+        }
+        if (ts >= timestamp) {
+          return e.offset;
+        }
+      }
+      return null;
+    } finally {
+      p.lock.unlock();
+    }
+  }
+
   /** Test-only inspection: current size of the partition queue. */
   public int sizeFor(int partition) {
     checkPartitionRange(partition);
