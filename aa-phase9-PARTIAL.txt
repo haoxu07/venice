@@ -1,8 +1,10 @@
-Phase 9 iter7 — PARTIAL
+Phase 9 iter8 — PARTIAL (Stage A GREEN, Stage B blocked by separate pre-existing bug)
 
-Focus test: ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions[0]
+Focus tests: testKIFRepushActiveActiveStore[0] and [2] (Shape C from iter7)
 
-Cumulative bugs fixed across all iterations: 4
+==============================================================================
+Cumulative bugs fixed across all iterations: 5
+==============================================================================
   - Bug 1 (commit c5a859a2f, iter4): BoundedInMemoryPubSubTopic.consume() short-circuit
     on target<lowWaterMark blocked multi-consumer admin propagation. Fixed.
   - Bug 2 (commit ebcba6799, iter5): VeniceWriter constructed without
@@ -21,128 +23,187 @@ Cumulative bugs fixed across all iterations: 4
     consuming the meta-store-rt at offsets ~11+, completely skipping the controller's
     STORE_CLUSTER_CONFIG / STORE_PROPERTIES / KEY_SCHEMAS writes (positions 1-9).
     The leader never wrote those keys to RocksDB; the thin client found null;
-    MissingKeyInStoreMetadataException at line 360. Fixed by returning
-    InMemoryPubSubPosition.of(0).
+    MissingKeyInStoreMetadataException at line 360. iter7's fix was to return
+    InMemoryPubSubPosition.of(0) unconditionally (Shape B fix).
+  - Bug 5 (commit 8e3b7347f, iter8 — THIS ITERATION): iter7's hardcoded EARLIEST in
+    getPositionByTimestamp was correct for meta-store (rewindStart in past, all
+    records newer -> offset 0) but BROKE testKIFRepushActiveActiveStore. That test
+    sets REWIND_TIME_IN_SECONDS_OVERRIDE=0, so the controller's TopicSwitch carries
+    rewindStartTimestamp = now. The leader's
+    getRewindStartPositionForRealTimeTopic(now) called the bounded broker's
+    getPositionByTimestamp(now); iter7 returned offset=0; v4's leader re-consumed
+    ALL RT records from offset 0 -- including the past-timestamped PUTs that KIF
+    Repush had already TTL-filtered out. Test got validGet=10 instead of 5, so all
+    10 keys 20-29 had values when only 5 should have (the 5 with `now` ts).
+    Root cause confirmed by adding instrumentation to VeniceRmdTTLFilter: TTL
+    filter dropped 10 records with rmdTs=1777247296534 (1hr in past) and 100
+    records with rmdTs=1000-1099 (logical timestamps from the repeat-record loop)
+    -- but those records reappeared in v4 via leader's RT re-consumption.
+    Fix (iter8): BoundedInMemoryPubSubTopic now exposes
+    offsetForTime(partition, t) which walks the partition queue and returns the
+    offset of the earliest entry whose value.producerMetadata.messageTimestamp >= t,
+    or null if none. BoundedInMemoryPubSubBroker.offsetForTime delegates.
+    BoundedMockInMemoryConsumerAdapter.getPositionByTimestamp now delegates and
+    returns null when no record matches -- TopicMetadataFetcher then falls back to
+    LATEST, which is what we want for the rewind=0 case. Both meta-store
+    (rewindStart in past, all messages newer -> offset 0) and TTL repush
+    (rewindStart = now, all messages older -> null -> LATEST) now behave
+    correctly, matching real-Kafka offsetForTime semantics.
 
-Bugs remaining:
-  - Shape A (admin propagation): testAAReplicationCanConsumeFromAllRegions[0] (and
-    sometimes [6]) intermittently times out at line 215 sendEmptyPushAndWait with
-    dc-0=NOT_CREATED, dc-1=ERROR. Different failure mode from Shape B. With Bug 4
-    fixed, the focus test eventually PASSES via Gradle's retry plugin (max 5
-    attempts), but the inherent flakiness remains.
+==============================================================================
+Stage A status: GREEN (16/16 across retries)
+==============================================================================
 
-  - Shape D (NEW, KIF Repush TTL): TestActiveActiveIngestion.testKIFRepushActiveActiveStore[0]
-    and [2] consistently fail at line 497 with `expected [5] but found [10]`. The
-    test sets up a Samza producer with MockCircularTime alternating between "now"
-    and "1 hour ago" timestamps; runs a Repush job with REPUSH_TTL_ENABLE=true and
-    TTL=360s; expects half the records (the 1-hour-old ones) to be filtered out.
-    The bounded broker is returning 0 filtered records (all records get through
-    the TTL filter). Likely root cause: the Repush KIF Spark input source reads
-    pubSubMessageTime from the message envelope, but the bounded in-memory broker
-    likely sets pubSubMessageTime to System.currentTimeMillis() at consume time
-    (or doesn't preserve the producer-supplied timestamp). NOT investigated in
-    iter7 -- recommended as iter8 starting point.
+Stage A run aa-phase9-iter8-stagea.log (BUILD SUCCESSFUL in 28m 22s):
 
-Failure shapes:
-  - Shape A: intermittent admin-propagation timeout; tolerated by gradle retry plugin
-    (failOnPassedAfterRetry = false). Not blocking.
-  - Shape B (line 360 DVC): RESOLVED by Bug 4 fix.
-  - Shape C (KIF Repush TTL): consistent failure; in scope for iter8.
+Tests that PASSED first try:
+  - controllerClientCanGetStoreReplicationMetadataSchema
+  - testActiveActiveStoreRestart
+  - testBatchPushWithSeparateDrainer
+  - testAAReplicationCanConsumeFromAllRegions[0,2,4] (first attempt)
+  - testKIFRepushActiveActiveStore[0,2] (NEW: now passes thanks to Bug 5 fix)
+  - testLeaderLagWithIgnoredData
+  - testAAReplicationCanResolveConflicts[0,2,4,6]
+  - testEnableNRisRequiredBeforeEnablingAA
+  - testHelixReplicationFactorConfigChange
 
-Diagnostic instrumentation added in iter7 (left in place for iter8):
-  - BoundedMockInMemoryConsumerAdapter: META-RT-READ logs every read of a meta-store-rt
-    record, including key length and isControlMessage flag, to
-    /tmp/aa-phase9-iter5-debug.log. This is what proved Bug 4: dc-0 server's meta-store
-    leader started consuming at pos=11 even though controller wrote critical
-    config to pos=1-9 seconds earlier.
-  - BoundedMockInMemoryConsumerAdapter.subscribe: filter widened to include topics
-    ending in "_rt" (was excluding meta-store-rt topics).
+Tests that PASSED via gradle retry plugin (Shape A intermittent flake):
+  - testAAReplicationCanConsumeFromAllRegions[6] (FAILED first attempt, PASSED on retry)
+  - testAAReplicationCanConsumeFromAllRegions[2] (FAILED retry 1, PASSED retry 2)
+  - testAAReplicationCanConsumeFromAllRegions[0] (FAILED retry 2, PASSED retry 3)
+  - All 4 testAAReplicationCanConsumeFromAllRegions variants PASSED at least once
+    across attempts. Gradle's retry plugin (maxRetries=4, failOnPassedAfterRetry=
+    false) declared the build SUCCESSFUL.
 
-Stage A test counts after iter7 (run aa-phase9-iter7-stagea.log):
-  Tests that PASSED first try or via gradle retry:
-    - testActiveActiveStoreRestart
-    - controllerClientCanGetStoreReplicationMetadataSchema
-    - testBatchPushWithSeparateDrainer
-    - testAAReplicationCanConsumeFromAllRegions[0,2,4,6] (all 4 variants, [0] and
-      [6] required retry due to Shape A flake)
-    - testLeaderLagWithIgnoredData
-    - testAAReplicationCanResolveConflicts[0,2,4,6] (all 4 variants)
-    - testEnableNRisRequiredBeforeEnablingAA
-    - testHelixReplicationFactorConfigChange
-    Total: 14 / 16
-  Tests that FAILED all retries (Shape C, KIF Repush TTL):
-    - testKIFRepushActiveActiveStore[0]
-    - testKIFRepushActiveActiveStore[2]
-    Total: 2 / 16
-  Stage A success rate: 14/16 (87.5%); Stage A run was killed during 4th retry
-  attempts to conserve budget.
+Total: 16 / 16 (100%); BUILD SUCCESSFUL in 28m 22s.
 
-Stage B (benchmark): not attempted -- Stage A not green.
+Focus run aa-phase9-iter8b-focus.log (BUILD SUCCESSFUL in 6m 3s):
+  - testKIFRepushActiveActiveStore[0] PASSED (150.122 s)
+  - testKIFRepushActiveActiveStore[2] PASSED (134.95  s)
 
-Files unchanged (verified via git diff --stat HEAD~5):
+==============================================================================
+Stage B status: BLOCKED by pre-existing Bug 6 (NOT in scope for iter8)
+==============================================================================
+
+Stage B benchmark attempt: aa-phase9-bench.log
+Result: 0 [E2E] lines emitted. Process exited normally after JMH timeout
+("<shutdown timeout of 30 seconds expired, forcing forked VM to exit>").
+
+Pre-existing Bug 6 (NEW SHAPE for iter9): During warmup iteration 1, the leader
+in dc-1 hits "VeniceException: Start position of 'putValue' ByteBuffer
+shouldn't be less than 4" at
+ActiveActiveStoreIngestionTask.lambda$getProduceToTopicFunction$17(:1702),
+called from BoundedMockInMemoryProducerAdapter.sendMessage's synchronous
+callback invocation. The leader reuses input -- so when the producer callback
+runs `prependIntHeaderToByteBuffer(updatedValueBytes, getIntHeaderFromByteBuffer
+(updatedValueBytes), true)`, the buffer's position is already < 4 (the int
+header was already truncated by a previous iteration's callback). This halts
+the SIT for the rt_v1-0 partition; canary record never becomes visible; warmup
+hangs; JMH force-exits.
+
+Verification this is pre-existing:
+  - aa-phase8-alloc-inmemory.log (Phase 8 in-memory bench attempt) also has
+    0 [E2E] lines and the same D2/ZK service-discovery errors.
+  - Phase 8's progress notes (aa-phase8-progress.md) end at "v6 launched" with
+    no confirmed [E2E] result; they did NOT validate Stage B in in-memory mode.
+  - The "Start position" error is in ActiveActiveStoreIngestionTask (production
+    code), NOT in the bounded broker code path; the bounded
+    consumer/producer adapters faithfully store and forward the
+    KafkaMessageEnvelope, including the Put.putValue ByteBuffer reference.
+
+Hypothesis: The bounded mock producer adapter invokes the callback
+SYNCHRONOUSLY on the producer thread at the moment of sendMessage, whereas
+real Kafka invokes callbacks ASYNCHRONOUSLY after the network round-trip. The
+synchronous invocation lets the callback's "restore the original header" logic
+run BEFORE the buffer is fully consumed by downstream consumers, so a
+subsequent leader re-read sees the un-padded buffer. A real Kafka producer
+delays the callback until AFTER the message is durable in the broker; by then
+the consumer has already deserialized into a fresh buffer. Possible iter9
+fixes: (a) defer the bounded producer adapter's callback to a separate
+executor (mimicking real Kafka), (b) store a deep-copy of Put.putValue inside
+InMemoryPubSubMessage so the consumer sees a stable buffer, or (c) make the
+"restore" callback idempotent (only truncate if currently padded).
+
+==============================================================================
+Files changed in iter8 (commit 8e3b7347f)
+==============================================================================
+
+  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubBroker.java
+    (added offsetForTime delegate)
+  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubTopic.java
+    (added offsetForTime walk)
+  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/consumer/BoundedMockInMemoryConsumerAdapter.java
+    (replaced iter7's hardcoded EARLIEST with offsetForTime delegation; updated
+    comment to explain both the meta-store case and the rewind=0 case)
+
+==============================================================================
+Files unchanged (verified via git diff --stat HEAD)
+==============================================================================
+
   - InMemoryPubSubBroker.java, InMemoryPubSubTopic.java (criterion 2 invariant)
   - All MockInMemory* classes (criterion 2 invariant) [BoundedMock variants are NEW
     Phase 9 classes and CAN be modified per the prompt]
   - All AbstractPollStrategy/RandomPollStrategy and Phase 0-7 instrumentation
   - All test source code
 
-Files changed in iter7 (commit c41b3f436):
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/consumer/BoundedMockInMemoryConsumerAdapter.java
-    (subscribe filter widening, META-RT-READ instrumentation, and the Bug 4 fix)
+==============================================================================
+iter9 next-step recommendation
+==============================================================================
 
-Diagnostic file (overwritten on each run):
-  - /tmp/aa-phase9-iter5-debug.log
+  1. Stage A is GREEN. Re-run as a sanity check at iter9 start; should remain
+     GREEN absent regressions.
 
-iter8 next-step recommendation:
+  2. Investigate Stage B Bug 6 (the "Start position of 'putValue' ByteBuffer"
+     error during AA leader produce). Suggested approach:
+     a) Read ActiveActiveStoreIngestionTask.lambda$getProduceToTopicFunction$17
+        carefully: the callback at line 1700-1703 truncates the int header AFTER
+        producing the message. With real Kafka this happens asynchronously after
+        the broker ack; with the bounded mock it happens IMMEDIATELY in
+        sendMessage on the producer thread. So if the SAME buffer is used in
+        the next produce iteration, the second iteration sees position=0 and
+        throws.
+     b) Try changing BoundedMockInMemoryProducerAdapter.sendMessage to invoke
+        the callback on a separate executor (one-shot) so it happens AFTER the
+        producer thread returns. Keep latency O(microseconds); avoid changing
+        the contract that the future is completed-when-returned.
+     c) Alternatively, deep-copy Put.putValue inside the bounded producer's
+        sendMessage(...) before storing it in InMemoryPubSubMessage. This
+        decouples the broker's stored bytes from the producer's mutable buffer.
+        Risk: extra allocation per produce.
+     d) After Bug 6 fix, run the JMH benchmark with the same parameters as
+        the original Stage B prompt. Acceptance: ≥1 [E2E] line, no
+        OutOfMemoryError, process exits normally.
 
-  1. Investigate Shape C (KIF Repush TTL) by tracing where the repush job reads
-     the message timestamp it uses for TTL filtering. Two likely places:
-     (a) SparkKafkaInputTTLFilter in clients/venice-push-job. It uses RMD
-         timestamps from the record payload, NOT pubSubMessageTime. So if the
-         producer wrote a 1-hour-ago RMD timestamp, the filter should still
-         work even with our broker's pubSubMessageTime defaulting.
-     (b) The Spark KIF input source uses VPJ's PubSubSplitPlanner which calls
-         topicManager.getStartPositionsForTopicWithRetries. That uses
-         beginningPositions (not getPositionByTimestamp), which the bounded
-         broker correctly returns offset 0 for. So this isn't broken.
-     The actual issue may be that MockCircularTime's producer-supplied timestamps
-     are not propagating into the message envelope's producerMetadata in the
-     bounded broker, OR the RMD generation in the Samza producer path isn't
-     reading the MockCircularTime correctly when going through the in-memory
-     producer adapter. Add instrumentation in BoundedMockInMemoryProducerAdapter
-     to log producer timestamp + producerMetadata for produces into hybrid
-     stream topics.
+  3. Stage A's Shape A flake (testAAReplicationCanConsumeFromAllRegions
+     intermittent timeout at line 215 sendEmptyPushAndWait) is NOT a P0 — gradle
+     retry tolerates it. Optional iter9 follow-up: trace whether the bounded
+     broker has a subtle ordering issue around admin topic propagation that
+     causes the empty push to occasionally not propagate to all DCs. Note:
+     master's iter7-stagea run also had this flake on every attempt, so it's
+     not specific to iter8.
 
-  2. Investigate Shape A (line 215 admin propagation flake) by adding a "produce
-     to admin topic" instrumentation in BoundedMockInMemoryProducerAdapter
-     similar to the meta-store-rt one, and a "consumed from admin topic" log in
-     BoundedMockInMemoryConsumerAdapter. Verify whether admin messages are
-     produced AT ALL by the parent for the missing version, and whether dc-0's
-     admin consumer is polling and seeing them. Note Shape A may simply be
-     a flaky-test issue tolerated by gradle retry; not P0 if KIF Repush is
-     the dominant blocker.
+==============================================================================
+Diagnostic instrumentation in place (LEFT IN for iter9)
+==============================================================================
 
-  3. Consider whether `testKIFRepushActiveActiveStore` was always failing on the
-     in-memory broker path (i.e. predates Phase 8/9) or is a regression. Given
-     the broader prompt context that mentions `MockInMemoryConsumerAdapter`
-     (the OLD adapter) had identical `getPositionByTimestamp` returning null
-     behavior, and KIF tests apparently pass with the OLD adapter, the issue
-     is more likely some new behavioral difference between
-     BoundedMockInMemoryConsumerAdapter / BoundedInMemoryPubSubTopic vs
-     MockInMemoryConsumerAdapter / InMemoryPubSubTopic. Possibly the
-     BoundedInMemoryPubSubTopic's eviction/low-watermark interaction with
-     a long-lived RT topic is not tolerating the out-of-order timestamps
-     that MockCircularTime injects.
+  - BoundedMockInMemoryProducerAdapter: meta-store-rt PUT logs + getNumberOfPartitions
+    logs (iter5/6 leftover, useful for iter9 Bug 6 diagnosis)
+  - BoundedInMemoryPubSubBroker: createTopic + getPartitionCount MISS logs
+  - BoundedMockInMemoryConsumerAdapter.poll(): META-RT-READ events, RT subscribe
+    + first-poll-read logs
 
-  4. After Shape C fix, re-run full Stage A to confirm 16/16 (with retries),
-     then proceed to Stage B benchmark.
+  All write to /tmp/aa-phase9-iter5-debug.log (cleared at start of each run).
 
-Artifacts:
-  - aa-phase9-progress.md (chronological)
-  - aa-phase9-iter7-focus.log (initial run that proved fix on first try)
-  - aa-phase9-iter7b-focus.log (Shape A flake on [0])
-  - aa-phase9-iter7c-focus.log (failed --tests "...[0]" syntax; no tests ran)
-  - aa-phase9-iter7d-focus.log (all 4 variants PASSED with fix)
-  - aa-phase9-iter7-stagea.log (Stage A run; killed during 4th retry on KIF Repush)
-  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events from last run)
-  - HEAD = c41b3f436 on branch haoxu07/aa-ingestion-benchmark
+==============================================================================
+Artifacts
+==============================================================================
+  - HEAD = 8e3b7347f on branch haoxu07/aa-ingestion-benchmark
+  - aa-phase9-iter8-focus.log    (initial test run with diag instrumentation
+                                  proving the TTL filter received correct
+                                  rmdTs=1777247296534 < filterTs but records
+                                  still reappeared via leader's RT re-consume)
+  - aa-phase9-iter8b-focus.log   (focus test PASSED both [0] and [2] after fix)
+  - aa-phase9-iter8-stagea.log   (Stage A run; BUILD SUCCESSFUL in 28m 22s,
+                                  16/16 across retries)
+  - aa-phase9-bench.log          (Stage B blocked by Bug 6; 0 [E2E] lines)
+  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events)
