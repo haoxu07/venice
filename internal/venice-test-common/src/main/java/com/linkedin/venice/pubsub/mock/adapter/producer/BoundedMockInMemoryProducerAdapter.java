@@ -13,6 +13,9 @@ import com.linkedin.venice.pubsub.mock.InMemoryPubSubPosition;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMap;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMaps;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -31,6 +34,27 @@ import org.apache.logging.log4j.Logger;
  */
 public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter {
   private static final Logger LOGGER = LogManager.getLogger(BoundedMockInMemoryProducerAdapter.class);
+  private static final AtomicLong CALLBACK_THREAD_ID = new AtomicLong(0);
+
+  /**
+   * [iter9 / Bug 6] Real Kafka producers fire {@link PubSubProducerCallback#onCompletion} asynchronously
+   * after the network round-trip. The previous implementation invoked the callback synchronously on the
+   * producer thread inside {@link #sendMessage}, which broke the
+   * {@link com.linkedin.davinci.kafka.consumer.ActiveActiveStoreIngestionTask#getProduceToTopicFunction}
+   * resultReuseInput contract: the callback truncates the int header on {@code Put.putValue}, but the
+   * consumer side still needs to read the same buffer (whose reference is stored verbatim in the bounded
+   * broker). With sync callbacks the buffer was mutated before the consumer read, leading to
+   * {@code "Start position of 'putValue' ByteBuffer shouldn't be less than 4"}.
+   *
+   * <p>Switching the callback to a single-thread executor mirrors Kafka's async semantics and keeps the
+   * latency overhead at O(microseconds) per produce.
+   */
+  private static final ExecutorService CALLBACK_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+    Thread t = new Thread(r, "BoundedMockInMemoryProducerAdapter-callback-" + CALLBACK_THREAD_ID.incrementAndGet());
+    t.setDaemon(true);
+    return t;
+  });
+
   private final BoundedInMemoryPubSubBroker broker;
 
   public BoundedMockInMemoryProducerAdapter(BoundedInMemoryPubSubBroker broker) {
@@ -98,8 +122,20 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
       }
     }
     PubSubProduceResult produceResult = new SimplePubSubProduceResultImpl(topic, partition, inMemoryPubSubPosition, -1);
+    // [iter9 / Bug 6] Fire the callback asynchronously so it cannot mutate buffers (e.g. Put.putValue
+    // header truncation in ActiveActiveStoreIngestionTask#getProduceToTopicFunction's resultReuseInput
+    // path) before the broker / consumer have finished reading them. This mirrors real Kafka's async
+    // callback semantics. The returned future is still completed eagerly so callers that block on it
+    // (e.g. SegmentedKafkaConsumer end-of-push wait) are not slowed down.
     if (callback != null) {
-      callback.onCompletion(produceResult, null);
+      final PubSubProducerCallback cb = callback;
+      CALLBACK_EXECUTOR.execute(() -> {
+        try {
+          cb.onCompletion(produceResult, null);
+        } catch (Throwable t) {
+          LOGGER.warn("BoundedMockInMemoryProducerAdapter async callback threw", t);
+        }
+      });
     }
     return CompletableFuture.completedFuture(produceResult);
   }
