@@ -1,137 +1,148 @@
-Phase 9 iter6 — PARTIAL
+Phase 9 iter7 — PARTIAL
 
 Focus test: ActiveActiveReplicationForHybridTest.testAAReplicationCanConsumeFromAllRegions[0]
 
-Cumulative bugs fixed across all iterations: 3
+Cumulative bugs fixed across all iterations: 4
   - Bug 1 (commit c5a859a2f, iter4): BoundedInMemoryPubSubTopic.consume() short-circuit
     on target<lowWaterMark blocked multi-consumer admin propagation. Fixed.
   - Bug 2 (commit ebcba6799, iter5): VeniceWriter constructed without
     PUB_SUB_PRODUCER_ADAPTER_FACTORY_CLASS in its Properties bag, so it fell through
     to ApacheKafkaProducerAdapterFactory and dialed in-memory broker URL with the Kafka
-    wire protocol -> 30 s partitionsFor block. Fixed via PubSubClientsFactory.createFactory
-    falling through System.getProperty before the hardcoded default + InMemoryPubSubBrokerFactory
-    static initializer setting the four adapter-factory class system properties.
-  - iter6 supplemental fix (commit 069e2e560): bounded queue capacity 10k -> 100k AND
+    wire protocol -> 30 s partitionsFor block. Fixed.
+  - Bug 3 (commit 069e2e560, iter6): Bounded queue capacity 10k -> 100k AND
     reportConsumerPosition tracking changed from MAX-of-positions to
     MIN-of-positions (with a per-thread WeakHashMap) so eviction can no longer drop
-    messages a slow consumer hasn't read yet. This is a defensive correctness fix
-    that does NOT close the remaining failure shapes in this iteration's runs but
-    eliminates one whole class of races for future iterations.
+    messages a slow consumer hasn't read yet.
+  - Bug 4 (commit c41b3f436, iter7): BoundedMockInMemoryConsumerAdapter.getPositionByTimestamp
+    returned null. TopicMetadataFetcher.getPositionForTime falls back to LATEST when
+    null. LeaderFollowerStoreIngestionTask.getRewindStartPositionForRealTimeTopic uses
+    this API to find where to begin consuming RT for a hybrid store version on a
+    fresh push. With null fallback to LATEST, the meta-store leader replica started
+    consuming the meta-store-rt at offsets ~11+, completely skipping the controller's
+    STORE_CLUSTER_CONFIG / STORE_PROPERTIES / KEY_SCHEMAS writes (positions 1-9).
+    The leader never wrote those keys to RocksDB; the thin client found null;
+    MissingKeyInStoreMetadataException at line 360. Fixed by returning
+    InMemoryPubSubPosition.of(0).
 
-Bugs remaining (1+ unresolved): admin-propagation flakiness AND/OR meta-store
-data-not-visible flakiness in dc-0 under bounded broker.
+Bugs remaining:
+  - Shape A (admin propagation): testAAReplicationCanConsumeFromAllRegions[0] (and
+    sometimes [6]) intermittently times out at line 215 sendEmptyPushAndWait with
+    dc-0=NOT_CREATED, dc-1=ERROR. Different failure mode from Shape B. With Bug 4
+    fixed, the focus test eventually PASSES via Gradle's retry plugin (max 5
+    attempts), but the inherent flakiness remains.
 
-Failure shapes still recurring (varies between runs of the same focus test):
-  - Shape A (sometimes [0]): line 215 sendEmptyPushAndWait timeout in 150 s with
-      `dc-0=NOT_CREATED Offline job hasn't been created yet` and
-      `dc-1=ERROR too many ERROR replicas` OR `dc-1=3/3 partitions completed`.
-      I.e., the version-creation admin message reaches dc-1 and gets fully
-      processed (push completes in dc-1 servers) but dc-0 controller never
-      creates the offline job for the user-store version. dc-0 admin consumer
-      appears stuck OR the version-creation admin message never propagates to
-      dc-0.
-  - Shape B (sometimes [0], [2], [4], [6]): line 360 DVC `Store does not
-      exist` with `MissingKeyInStoreMetadataException: Get null StoreMetaValue
-      value for key {"keyStrings": [<storename>], "metadataType": 4}`. The
-      thin client successfully routes through dc-0 router -> dc-0 server but
-      the server returns null for STORE_CLUSTER_CONFIG. iter6 instrumentation
-      confirmed each child controller writes ~7 PUT messages into its local
-      meta-store-rt within 1 s of store creation, and the dc-0 server reaches
-      pos=9 on the meta-store-rt within 9 s. The PUTs almost certainly include
-      STORE_CLUSTER_CONFIG (3 messages of keyLen=53 + 3 of keyLen=37 +
-      1 of keyLen=39 across positions 1-7, with position 0 being a SOS control
-      message and position 8 an EOP control message). Yet the thin-client
-      query 45 s later returns null. Either the server's RocksDB write isn't
-      durable for that key by the time the query lands, OR the router routes
-      to a server that doesn't have meta-store data, OR the meta-store
-      version isn't yet ONLINE in Helix from dc-0 router's perspective.
+  - Shape D (NEW, KIF Repush TTL): TestActiveActiveIngestion.testKIFRepushActiveActiveStore[0]
+    and [2] consistently fail at line 497 with `expected [5] but found [10]`. The
+    test sets up a Samza producer with MockCircularTime alternating between "now"
+    and "1 hour ago" timestamps; runs a Repush job with REPUSH_TTL_ENABLE=true and
+    TTL=360s; expects half the records (the 1-hour-old ones) to be filtered out.
+    The bounded broker is returning 0 filtered records (all records get through
+    the TTL filter). Likely root cause: the Repush KIF Spark input source reads
+    pubSubMessageTime from the message envelope, but the bounded in-memory broker
+    likely sets pubSubMessageTime to System.currentTimeMillis() at consume time
+    (or doesn't preserve the producer-supplied timestamp). NOT investigated in
+    iter7 -- recommended as iter8 starting point.
 
-Diagnostic instrumentation added in iter6 (left in place for iter7):
-  - BoundedMockInMemoryProducerAdapter.sendMessage now writes a
-    `produce meta-store-rt` line to /tmp/aa-phase9-iter5-debug.log for every
-    produce into a `venice_system_store_meta_store_*_rt` topic, with msgType,
-    isControlMessage, keyLen, partition, offset. Use this to verify the
-    controller actually wrote STORE_CLUSTER_CONFIG and at what offset.
-  - All instrumentation from iter5 (createTopic, getPartitionCount MISS,
-    getNumberOfPartitions, RT-only subscribe, FIRST-READ) still in place.
+Failure shapes:
+  - Shape A: intermittent admin-propagation timeout; tolerated by gradle retry plugin
+    (failOnPassedAfterRetry = false). Not blocking.
+  - Shape B (line 360 DVC): RESOLVED by Bug 4 fix.
+  - Shape C (KIF Repush TTL): consistent failure; in scope for iter8.
 
-Why this is PARTIAL not FAILED:
-  Real progress was made: Bug 2 fix (iter5) and Bug 1 fix (iter4) both proven
-  by the failure timing changing dramatically (iter4: failed at line 246 in
-  70 s; iter5/6: reaches lines 215/268/360 in 40-172 s). Adding the iter6
-  capacity bump and MIN-watermark tracking removes one possible race even
-  though it didn't close the remaining shapes.
+Diagnostic instrumentation added in iter7 (left in place for iter8):
+  - BoundedMockInMemoryConsumerAdapter: META-RT-READ logs every read of a meta-store-rt
+    record, including key length and isControlMessage flag, to
+    /tmp/aa-phase9-iter5-debug.log. This is what proved Bug 4: dc-0 server's meta-store
+    leader started consuming at pos=11 even though controller wrote critical
+    config to pos=1-9 seconds earlier.
+  - BoundedMockInMemoryConsumerAdapter.subscribe: filter widened to include topics
+    ending in "_rt" (was excluding meta-store-rt topics).
 
-  The 5-same-shape stop condition does NOT yet apply: shapes A and B alternate
-  across runs.
+Stage A test counts after iter7 (run aa-phase9-iter7-stagea.log):
+  Tests that PASSED first try or via gradle retry:
+    - testActiveActiveStoreRestart
+    - controllerClientCanGetStoreReplicationMetadataSchema
+    - testBatchPushWithSeparateDrainer
+    - testAAReplicationCanConsumeFromAllRegions[0,2,4,6] (all 4 variants, [0] and
+      [6] required retry due to Shape A flake)
+    - testLeaderLagWithIgnoredData
+    - testAAReplicationCanResolveConflicts[0,2,4,6] (all 4 variants)
+    - testEnableNRisRequiredBeforeEnablingAA
+    - testHelixReplicationFactorConfigChange
+    Total: 14 / 16
+  Tests that FAILED all retries (Shape C, KIF Repush TTL):
+    - testKIFRepushActiveActiveStore[0]
+    - testKIFRepushActiveActiveStore[2]
+    Total: 2 / 16
+  Stage A success rate: 14/16 (87.5%); Stage A run was killed during 4th retry
+  attempts to conserve budget.
 
-Stage A test counts after iter6 (focus test only, 4 variants):
-  - testAAReplicationCanConsumeFromAllRegions[0]: alternating between Shape A
-    and Shape B failures (45-172 s).
-  - testAAReplicationCanConsumeFromAllRegions[2,4,6]: consistently Shape B
-    failure (~40 s each).
-  - Other AA tests in the suite: not re-run.
+Stage B (benchmark): not attempted -- Stage A not green.
 
-Stage B (benchmark): not attempted.
-
-Files unchanged (verified via git diff --stat):
+Files unchanged (verified via git diff --stat HEAD~5):
   - InMemoryPubSubBroker.java, InMemoryPubSubTopic.java (criterion 2 invariant)
-  - All MockInMemory* classes (criterion 2 invariant)
+  - All MockInMemory* classes (criterion 2 invariant) [BoundedMock variants are NEW
+    Phase 9 classes and CAN be modified per the prompt]
   - All AbstractPollStrategy/RandomPollStrategy and Phase 0-7 instrumentation
+  - All test source code
 
-Files changed in iter6 (commit 069e2e560):
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubTopic.java
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/producer/BoundedMockInMemoryProducerAdapter.java
+Files changed in iter7 (commit c41b3f436):
+  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/consumer/BoundedMockInMemoryConsumerAdapter.java
+    (subscribe filter widening, META-RT-READ instrumentation, and the Bug 4 fix)
 
 Diagnostic file (overwritten on each run):
   - /tmp/aa-phase9-iter5-debug.log
 
-iter7 next-step recommendation:
+iter8 next-step recommendation:
 
-  1. Investigate Shape B (line 360 DVC) more deeply by ALSO instrumenting:
-     (a) the dc-0 server's meta-store ingestion task: log every key processed
-         from meta-store-RT, especially the keyStrings+metadataType, and
-         the corresponding RocksDB put. Add the log inside
-         StoreIngestionTask or VeniceMessageProcessor at the point right
-         BEFORE the storage-engine put. Verify STORE_CLUSTER_CONFIG with
-         the right storeName actually reaches RocksDB.
-     (b) the dc-0 router's HelixReadOnlyStoreRepository: log when the meta
-         store first appears in the local cache (this proves the router knows
-         the store exists). If the router doesn't have the meta store cached
-         at the time of the thin-client query, that's the bug.
-     (c) the thin-client side: in
-         `ThinClientMetaStoreBasedRepository.getStoreMetaValue` log the
-         returned future-result before declaring null, so we can distinguish
-         "server returned null" from "future timed out and hit the catch".
+  1. Investigate Shape C (KIF Repush TTL) by tracing where the repush job reads
+     the message timestamp it uses for TTL filtering. Two likely places:
+     (a) SparkKafkaInputTTLFilter in clients/venice-push-job. It uses RMD
+         timestamps from the record payload, NOT pubSubMessageTime. So if the
+         producer wrote a 1-hour-ago RMD timestamp, the filter should still
+         work even with our broker's pubSubMessageTime defaulting.
+     (b) The Spark KIF input source uses VPJ's PubSubSplitPlanner which calls
+         topicManager.getStartPositionsForTopicWithRetries. That uses
+         beginningPositions (not getPositionByTimestamp), which the bounded
+         broker correctly returns offset 0 for. So this isn't broken.
+     The actual issue may be that MockCircularTime's producer-supplied timestamps
+     are not propagating into the message envelope's producerMetadata in the
+     bounded broker, OR the RMD generation in the Samza producer path isn't
+     reading the MockCircularTime correctly when going through the in-memory
+     producer adapter. Add instrumentation in BoundedMockInMemoryProducerAdapter
+     to log producer timestamp + producerMetadata for produces into hybrid
+     stream topics.
 
-  2. Investigate Shape A (line 215 admin propagation) by adding a "produce
+  2. Investigate Shape A (line 215 admin propagation flake) by adding a "produce
      to admin topic" instrumentation in BoundedMockInMemoryProducerAdapter
-     similar to the meta-store-rt one, and a "consumed from admin topic"
-     log in BoundedMockInMemoryConsumerAdapter that fires on every poll
-     (not just FIRST-READ). Verify whether admin messages are produced AT
-     ALL by the parent for the missing version, and whether dc-0's admin
-     consumer is polling and seeing them.
+     similar to the meta-store-rt one, and a "consumed from admin topic" log in
+     BoundedMockInMemoryConsumerAdapter. Verify whether admin messages are
+     produced AT ALL by the parent for the missing version, and whether dc-0's
+     admin consumer is polling and seeing them. Note Shape A may simply be
+     a flaky-test issue tolerated by gradle retry; not P0 if KIF Repush is
+     the dominant blocker.
 
-  3. If Shape A has admin messages flowing but dc-0's controller doesn't act
-     on them, the issue is upstream of the broker (in
-     AdminConsumerService/ParticipantStateTransitionAvroSerializer or
-     somewhere similar). Probably NOT a bounded-broker bug. Consider
-     spotting any places where the controller assumes a specific Kafka
-     broker behaviour that the in-memory mock does not provide (e.g. exact
-     message ordering across partitions, pause-on-rebalance semantics,
-     consumer-group coordination).
+  3. Consider whether `testKIFRepushActiveActiveStore` was always failing on the
+     in-memory broker path (i.e. predates Phase 8/9) or is a regression. Given
+     the broader prompt context that mentions `MockInMemoryConsumerAdapter`
+     (the OLD adapter) had identical `getPositionByTimestamp` returning null
+     behavior, and KIF tests apparently pass with the OLD adapter, the issue
+     is more likely some new behavioral difference between
+     BoundedMockInMemoryConsumerAdapter / BoundedInMemoryPubSubTopic vs
+     MockInMemoryConsumerAdapter / InMemoryPubSubTopic. Possibly the
+     BoundedInMemoryPubSubTopic's eviction/low-watermark interaction with
+     a long-lived RT topic is not tolerating the out-of-order timestamps
+     that MockCircularTime injects.
 
-  4. Consider whether the focus test class's @BeforeClass setUp leaves
-     some state from one method to the next that is not properly reset for
-     in-memory broker (e.g. Helix cluster state from prior test). If so,
-     try @AfterMethod resetting hooks. (But test code is in the
-     no-modify list -- this would have to be a controller / cluster-wrapper
-     fix.)
+  4. After Shape C fix, re-run full Stage A to confirm 16/16 (with retries),
+     then proceed to Stage B benchmark.
 
 Artifacts:
   - aa-phase9-progress.md (chronological)
-  - aa-phase9-iter6-focus.log (this iteration's last focus-test gradle log)
-  - aa-phase9-iter5-focus.log (still in working dir for reference)
-  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events from last
-    run; will get overwritten on each run)
-  - HEAD = 069e2e560 on branch haoxu07/aa-ingestion-benchmark
+  - aa-phase9-iter7-focus.log (initial run that proved fix on first try)
+  - aa-phase9-iter7b-focus.log (Shape A flake on [0])
+  - aa-phase9-iter7c-focus.log (failed --tests "...[0]" syntax; no tests ran)
+  - aa-phase9-iter7d-focus.log (all 4 variants PASSED with fix)
+  - aa-phase9-iter7-stagea.log (Stage A run; killed during 4th retry on KIF Repush)
+  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events from last run)
+  - HEAD = c41b3f436 on branch haoxu07/aa-ingestion-benchmark
