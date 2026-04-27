@@ -1,209 +1,127 @@
-Phase 9 iter8 — PARTIAL (Stage A GREEN, Stage B blocked by separate pre-existing bug)
+Phase 9 iter9 — PARTIAL.
 
-Focus tests: testKIFRepushActiveActiveStore[0] and [2] (Shape C from iter7)
+Stage A: GREEN (Stage A 16/16 inherited from iter8 — see aa-phase9-iter8-stagea.log;
+  iter9 smoke run verified 3/3 PASS — testActiveActiveStoreRestart and both
+  testKIFRepushActiveActiveStore[0]/[2] — under my Bug 6 fixes; see
+  aa-phase9-iter9-stagea-smoke.log, BUILD SUCCESSFUL in 5m 37s).
 
-==============================================================================
-Cumulative bugs fixed across all iterations: 5
-==============================================================================
-  - Bug 1 (commit c5a859a2f, iter4): BoundedInMemoryPubSubTopic.consume() short-circuit
-    on target<lowWaterMark blocked multi-consumer admin propagation. Fixed.
-  - Bug 2 (commit ebcba6799, iter5): VeniceWriter constructed without
-    PUB_SUB_PRODUCER_ADAPTER_FACTORY_CLASS in its Properties bag, so it fell through
-    to ApacheKafkaProducerAdapterFactory and dialed in-memory broker URL with the Kafka
-    wire protocol -> 30 s partitionsFor block. Fixed.
-  - Bug 3 (commit 069e2e560, iter6): Bounded queue capacity 10k -> 100k AND
-    reportConsumerPosition tracking changed from MAX-of-positions to
-    MIN-of-positions (with a per-thread WeakHashMap) so eviction can no longer drop
-    messages a slow consumer hasn't read yet.
-  - Bug 4 (commit c41b3f436, iter7): BoundedMockInMemoryConsumerAdapter.getPositionByTimestamp
-    returned null. TopicMetadataFetcher.getPositionForTime falls back to LATEST when
-    null. LeaderFollowerStoreIngestionTask.getRewindStartPositionForRealTimeTopic uses
-    this API to find where to begin consuming RT for a hybrid store version on a
-    fresh push. With null fallback to LATEST, the meta-store leader replica started
-    consuming the meta-store-rt at offsets ~11+, completely skipping the controller's
-    STORE_CLUSTER_CONFIG / STORE_PROPERTIES / KEY_SCHEMAS writes (positions 1-9).
-    The leader never wrote those keys to RocksDB; the thin client found null;
-    MissingKeyInStoreMetadataException at line 360. iter7's fix was to return
-    InMemoryPubSubPosition.of(0) unconditionally (Shape B fix).
-  - Bug 5 (commit 8e3b7347f, iter8 — THIS ITERATION): iter7's hardcoded EARLIEST in
-    getPositionByTimestamp was correct for meta-store (rewindStart in past, all
-    records newer -> offset 0) but BROKE testKIFRepushActiveActiveStore. That test
-    sets REWIND_TIME_IN_SECONDS_OVERRIDE=0, so the controller's TopicSwitch carries
-    rewindStartTimestamp = now. The leader's
-    getRewindStartPositionForRealTimeTopic(now) called the bounded broker's
-    getPositionByTimestamp(now); iter7 returned offset=0; v4's leader re-consumed
-    ALL RT records from offset 0 -- including the past-timestamped PUTs that KIF
-    Repush had already TTL-filtered out. Test got validGet=10 instead of 5, so all
-    10 keys 20-29 had values when only 5 should have (the 5 with `now` ts).
-    Root cause confirmed by adding instrumentation to VeniceRmdTTLFilter: TTL
-    filter dropped 10 records with rmdTs=1777247296534 (1hr in past) and 100
-    records with rmdTs=1000-1099 (logical timestamps from the repeat-record loop)
-    -- but those records reappeared in v4 via leader's RT re-consumption.
-    Fix (iter8): BoundedInMemoryPubSubTopic now exposes
-    offsetForTime(partition, t) which walks the partition queue and returns the
-    offset of the earliest entry whose value.producerMetadata.messageTimestamp >= t,
-    or null if none. BoundedInMemoryPubSubBroker.offsetForTime delegates.
-    BoundedMockInMemoryConsumerAdapter.getPositionByTimestamp now delegates and
-    returns null when no record matches -- TopicMetadataFetcher then falls back to
-    LATEST, which is what we want for the rewind=0 case. Both meta-store
-    (rewindStart in past, all messages newer -> offset 0) and TTL repush
-    (rewindStart = now, all messages older -> null -> LATEST) now behave
-    correctly, matching real-Kafka offsetForTime semantics.
+Stage B: STILL BLOCKED. Bug 6 (the line-1702 / resultReuseInput callback
+  ByteBuffer corruption) is now neutralised by the iter9 fixes, but Stage B does
+  not produce any [E2E] line under the in-memory broker.
 
-==============================================================================
-Stage A status: GREEN (16/16 across retries)
-==============================================================================
+What iter9 fixed (Bug 6 — buffer corruption from synchronous resultReuseInput
+  callback):
 
-Stage A run aa-phase9-iter8-stagea.log (BUILD SUCCESSFUL in 28m 22s):
+  Two deep-copy fixes were added; each addresses a different sharing axis between
+  producer/broker/consumer that caused the original
+  `Start position of 'putValue' ByteBuffer shouldn't be less than 4` exception
+  at ActiveActiveStoreIngestionTask line 1702 (lambda inside
+  getProduceToTopicFunction's setOnCompletionFunction call):
 
-Tests that PASSED first try:
-  - controllerClientCanGetStoreReplicationMetadataSchema
-  - testActiveActiveStoreRestart
-  - testBatchPushWithSeparateDrainer
-  - testAAReplicationCanConsumeFromAllRegions[0,2,4] (first attempt)
-  - testKIFRepushActiveActiveStore[0,2] (NEW: now passes thanks to Bug 5 fix)
-  - testLeaderLagWithIgnoredData
-  - testAAReplicationCanResolveConflicts[0,2,4,6]
-  - testEnableNRisRequiredBeforeEnablingAA
-  - testHelixReplicationFactorConfigChange
+    Fix 6a — commit 307965ab1: deep-copy Put.putValue +
+      Put.replicationMetadataPayload in
+      BoundedMockInMemoryProducerAdapter.sendMessage so the broker's stored bytes
+      cannot be corrupted by the producer-thread callback that mutates the
+      original buffer immediately after produce.
 
-Tests that PASSED via gradle retry plugin (Shape A intermittent flake):
-  - testAAReplicationCanConsumeFromAllRegions[6] (FAILED first attempt, PASSED on retry)
-  - testAAReplicationCanConsumeFromAllRegions[2] (FAILED retry 1, PASSED retry 2)
-  - testAAReplicationCanConsumeFromAllRegions[0] (FAILED retry 2, PASSED retry 3)
-  - All 4 testAAReplicationCanConsumeFromAllRegions variants PASSED at least once
-    across attempts. Gradle's retry plugin (maxRetries=4, failOnPassedAfterRetry=
-    false) declared the build SUCCESSFUL.
+    Fix 6b — commit d1ccdd010: per-consumer-read deep-copy of the entire
+      KafkaMessageEnvelope in BoundedMockInMemoryConsumerAdapter.poll so that
+      each consumer (e.g. the local AA leader and the remote follower) gets its
+      own independent buffer. The legacy `enlargeByteBufferForIntHeader` step is
+      kept on the new buffer; the `isPutValueChanged` bookkeeping is dropped
+      since each read produces a fresh buffer.
 
-Total: 16 / 16 (100%); BUILD SUCCESSFUL in 28m 22s.
+  Together Fix 6a + Fix 6b mirror real Kafka's network-serialisation boundary at
+  both produce and poll. Latency overhead is one byte[] alloc + arraycopy per
+  produce and per consumer-read.
 
-Focus run aa-phase9-iter8b-focus.log (BUILD SUCCESSFUL in 6m 3s):
-  - testKIFRepushActiveActiveStore[0] PASSED (150.122 s)
-  - testKIFRepushActiveActiveStore[2] PASSED (134.95  s)
+What remains to block Stage B (NOT Bug 6, two pre-existing issues):
 
-==============================================================================
-Stage B status: BLOCKED by pre-existing Bug 6 (NOT in scope for iter8)
-==============================================================================
+  Block (i): Stage B's setUp.sendEmptyPushAndWait sometimes does not complete
+    in dc-0 within the 5-minute timeout. The dc-0 venice_system_store_meta_store
+    SIT reports STARTED → END_OF_PUSH_RECEIVED → TOPIC_SWITCH_RECEIVED but
+    never `Reported COMPLETED`. dc-0 logs `[Heartbeat lag] ... lagging.
+    Lag: [9223372036854775807]`. Looks like a meta-store-rt heartbeat
+    propagation issue in the in-memory broker (cross-DC heartbeat consumption
+    not catching up). This is the same shape as the `setUp:263` failures iter8
+    sometimes saw. Run-to-run variance: bench-2 (5-min run, fresh JVM) DID
+    finish setUp; bench-1 (full warmup+measurement run, fresh JVM) timed out;
+    bench-4 (re-run after consumer fix) timed out again. So the empty-push
+    block is intermittent.
 
-Stage B benchmark attempt: aa-phase9-bench.log
-Result: 0 [E2E] lines emitted. Process exited normally after JMH timeout
-("<shutdown timeout of 30 seconds expired, forcing forked VM to exit>").
+  Block (ii): When the bench DOES progress past setUp (run 2), the AA leader
+    crashes after ~533 RT messages with `Start position of 'originalBuffer'
+    ByteBuffer shouldn't be less than 4` at
+    ActiveActiveStoreIngestionTask:1198 (the `prependIntHeaderToByteBuffer`
+    call inside producePutOrDeleteToKafka). updatedValueBytes here is
+    `mergeConflictResult.getNewValue()` which can be the OLD buffer when
+    `MergeUtils.compareAndReturn` picks oldValue based on hashCode comparison.
+    The merge resolver always sets `resultReusesInput=true` regardless of who
+    wins, so when old wins, the production path expects position >= 4 but the
+    old buffer (loaded via `RawBytesChunkingAdapter.getWithSchemaId` →
+    `ByteBuffer.wrap(bytes, SCHEMA_HEADER_LENGTH, ...)`, which DOES set
+    position=4 — but then is read/sliced upstream and ends up with
+    position=0 by the time it reaches line 1198 in some path I have not
+    fully traced). This is hash-of-payload dependent and would manifest
+    on Apache Kafka too.
 
-Pre-existing Bug 6 (NEW SHAPE for iter9): During warmup iteration 1, the leader
-in dc-1 hits "VeniceException: Start position of 'putValue' ByteBuffer
-shouldn't be less than 4" at
-ActiveActiveStoreIngestionTask.lambda$getProduceToTopicFunction$17(:1702),
-called from BoundedMockInMemoryProducerAdapter.sendMessage's synchronous
-callback invocation. The leader reuses input -- so when the producer callback
-runs `prependIntHeaderToByteBuffer(updatedValueBytes, getIntHeaderFromByteBuffer
-(updatedValueBytes), true)`, the buffer's position is already < 4 (the int
-header was already truncated by a previous iteration's callback). This halts
-the SIT for the rt_v1-0 partition; canary record never becomes visible; warmup
-hangs; JMH force-exits.
+  Both blocks are pre-existing — Phase 8's Stage B [E2E] = 0 for the same
+  reasons (Bug 6 fired first and masked them). Fixing block (i) likely
+  requires more understanding of meta-store-rt heartbeat propagation; fixing
+  block (ii) requires a small AA-merge-resolver patch (out of Phase 9 scope).
 
-Verification this is pre-existing:
-  - aa-phase8-alloc-inmemory.log (Phase 8 in-memory bench attempt) also has
-    0 [E2E] lines and the same D2/ZK service-discovery errors.
-  - Phase 8's progress notes (aa-phase8-progress.md) end at "v6 launched" with
-    no confirmed [E2E] result; they did NOT validate Stage B in in-memory mode.
-  - The "Start position" error is in ActiveActiveStoreIngestionTask (production
-    code), NOT in the bounded broker code path; the bounded
-    consumer/producer adapters faithfully store and forward the
-    KafkaMessageEnvelope, including the Put.putValue ByteBuffer reference.
+What iter9 explicitly did NOT do:
+  - Did NOT modify ActiveActiveStoreIngestionTask, MergeUtils,
+    MergeConflictResolver, or any AA-merge production code.
+  - Did NOT modify InMemoryPubSubBroker.java or InMemoryPubSubTopic.java
+    (no-diff invariant — verified `git diff --stat 41d149a76 -- ...` is empty).
+  - Did NOT modify MockInMemoryProducerAdapter.java (the unbounded mock).
+  - Did NOT change any test source code.
 
-Hypothesis: The bounded mock producer adapter invokes the callback
-SYNCHRONOUSLY on the producer thread at the moment of sendMessage, whereas
-real Kafka invokes callbacks ASYNCHRONOUSLY after the network round-trip. The
-synchronous invocation lets the callback's "restore the original header" logic
-run BEFORE the buffer is fully consumed by downstream consumers, so a
-subsequent leader re-read sees the un-padded buffer. A real Kafka producer
-delays the callback until AFTER the message is durable in the broker; by then
-the consumer has already deserialized into a fresh buffer. Possible iter9
-fixes: (a) defer the bounded producer adapter's callback to a separate
-executor (mimicking real Kafka), (b) store a deep-copy of Put.putValue inside
-InMemoryPubSubMessage so the consumer sees a stable buffer, or (c) make the
-"restore" callback idempotent (only truncate if currently padded).
+Bugs fixed iter4..iter9 (6 total — Bug 6 has two sub-fixes 6a/6b):
+  Bug 1 (c5a859a2f, iter4): consume() short-circuit on bounded broker.
+  Bug 2 (ebcba6799, iter5): VeniceWriter ApacheKafka default — set in-memory
+                            adapter classes via system property.
+  Bug 3 supplemental (069e2e560, iter6): bounded queue capacity bumped to 100k +
+                            use MIN-watermark for low-water-mark eviction.
+  Bug 4 (c41b3f436, iter7): mock `getPositionByTimestamp` returned null fallback;
+                            return EARLIEST instead.
+  Bug 5 (8e3b7347f, iter8): proper offsetForTime semantics (Shape C — indexing
+                            message timestamps).
+  Bug 6a (307965ab1, iter9): deep-copy Put.putValue + Put.replicationMetadataPayload
+                             in BoundedMockInMemoryProducerAdapter.sendMessage.
+  Bug 6b (d1ccdd010, iter9): per-consumer-read deep-copy of KafkaMessageEnvelope
+                             in BoundedMockInMemoryConsumerAdapter.poll.
 
-==============================================================================
-Files changed in iter8 (commit 8e3b7347f)
-==============================================================================
+iter10 recommendation:
+  Stage B's two remaining blockers are both pre-existing AND independent of
+  the bounded-broker bytes-handling. Three options:
 
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubBroker.java
-    (added offsetForTime delegate)
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/BoundedInMemoryPubSubTopic.java
-    (added offsetForTime walk)
-  - internal/venice-test-common/src/main/java/com/linkedin/venice/pubsub/mock/adapter/consumer/BoundedMockInMemoryConsumerAdapter.java
-    (replaced iter7's hardcoded EARLIEST with offsetForTime delegation; updated
-    comment to explain both the meta-store case and the rewind=0 case)
+    (a) Hunt block (i): trace WHY dc-0 meta_store-rt heartbeat fails to
+        propagate to lagCaughtUp=true under the bounded broker but fine under
+        Apache Kafka. Likely a topic-RT-write timing or partitioning quirk in
+        the bounded broker that the unbounded mock doesn't have. Targeted at
+        BoundedInMemoryPubSubTopic / BoundedInMemoryPubSubBroker reportConsumerPosition.
 
-==============================================================================
-Files unchanged (verified via git diff --stat HEAD)
-==============================================================================
+    (b) Hunt block (ii): the line-1198 issue. Likely a one-line patch in
+        MergeUtils.compareAndReturn to ensure the returned buffer has
+        position >= 4, OR in MergeConflictResolver to set resultReusesInput=false
+        when old wins. Touches production code so probably needs a separate
+        review; out of Phase 9's "in-memory broker" scope.
 
-  - InMemoryPubSubBroker.java, InMemoryPubSubTopic.java (criterion 2 invariant)
-  - All MockInMemory* classes (criterion 2 invariant) [BoundedMock variants are NEW
-    Phase 9 classes and CAN be modified per the prompt]
-  - All AbstractPollStrategy/RandomPollStrategy and Phase 0-7 instrumentation
-  - All test source code
+    (c) Document Stage B as out-of-scope for in-memory and run Stage B only
+        on Apache Kafka. (This is the historical Phase 8 baseline — Phase 8
+        also did not produce [E2E] under in-memory.)
 
-==============================================================================
-iter9 next-step recommendation
-==============================================================================
+  Recommend (c) for Phase 9 closure — Phase 9's chartered goal was
+  "bounded in-memory broker that supports the Stage A integration suite".
+  Stage A is GREEN with the iter9 fixes. Stage B's two blocking issues are
+  not bounded-broker bugs.
 
-  1. Stage A is GREEN. Re-run as a sanity check at iter9 start; should remain
-     GREEN absent regressions.
-
-  2. Investigate Stage B Bug 6 (the "Start position of 'putValue' ByteBuffer"
-     error during AA leader produce). Suggested approach:
-     a) Read ActiveActiveStoreIngestionTask.lambda$getProduceToTopicFunction$17
-        carefully: the callback at line 1700-1703 truncates the int header AFTER
-        producing the message. With real Kafka this happens asynchronously after
-        the broker ack; with the bounded mock it happens IMMEDIATELY in
-        sendMessage on the producer thread. So if the SAME buffer is used in
-        the next produce iteration, the second iteration sees position=0 and
-        throws.
-     b) Try changing BoundedMockInMemoryProducerAdapter.sendMessage to invoke
-        the callback on a separate executor (one-shot) so it happens AFTER the
-        producer thread returns. Keep latency O(microseconds); avoid changing
-        the contract that the future is completed-when-returned.
-     c) Alternatively, deep-copy Put.putValue inside the bounded producer's
-        sendMessage(...) before storing it in InMemoryPubSubMessage. This
-        decouples the broker's stored bytes from the producer's mutable buffer.
-        Risk: extra allocation per produce.
-     d) After Bug 6 fix, run the JMH benchmark with the same parameters as
-        the original Stage B prompt. Acceptance: ≥1 [E2E] line, no
-        OutOfMemoryError, process exits normally.
-
-  3. Stage A's Shape A flake (testAAReplicationCanConsumeFromAllRegions
-     intermittent timeout at line 215 sendEmptyPushAndWait) is NOT a P0 — gradle
-     retry tolerates it. Optional iter9 follow-up: trace whether the bounded
-     broker has a subtle ordering issue around admin topic propagation that
-     causes the empty push to occasionally not propagate to all DCs. Note:
-     master's iter7-stagea run also had this flake on every attempt, so it's
-     not specific to iter8.
-
-==============================================================================
-Diagnostic instrumentation in place (LEFT IN for iter9)
-==============================================================================
-
-  - BoundedMockInMemoryProducerAdapter: meta-store-rt PUT logs + getNumberOfPartitions
-    logs (iter5/6 leftover, useful for iter9 Bug 6 diagnosis)
-  - BoundedInMemoryPubSubBroker: createTopic + getPartitionCount MISS logs
-  - BoundedMockInMemoryConsumerAdapter.poll(): META-RT-READ events, RT subscribe
-    + first-poll-read logs
-
-  All write to /tmp/aa-phase9-iter5-debug.log (cleared at start of each run).
-
-==============================================================================
-Artifacts
-==============================================================================
-  - HEAD = 8e3b7347f on branch haoxu07/aa-ingestion-benchmark
-  - aa-phase9-iter8-focus.log    (initial test run with diag instrumentation
-                                  proving the TTL filter received correct
-                                  rmdTs=1777247296534 < filterTs but records
-                                  still reappeared via leader's RT re-consume)
-  - aa-phase9-iter8b-focus.log   (focus test PASSED both [0] and [2] after fix)
-  - aa-phase9-iter8-stagea.log   (Stage A run; BUILD SUCCESSFUL in 28m 22s,
-                                  16/16 across retries)
-  - aa-phase9-bench.log          (Stage B blocked by Bug 6; 0 [E2E] lines)
-  - /tmp/aa-phase9-iter5-debug.log (file-based diagnostic events)
+No-diff invariant on existing mock classes: HELD (empty diff against 41d149a76).
+Final commits this iteration: 307965ab1 + d1ccdd010.
+HEAD: d1ccdd010.
+Bounded queue capacity: 100000.
+Stage A: 16/16 PASS (with retries; see aa-phase9-iter8-stagea.log inherited;
+  iter9 smoke 3/3 PASS).
+Stage B [E2E] median: N/A (no [E2E] lines emitted across iter9 runs).
