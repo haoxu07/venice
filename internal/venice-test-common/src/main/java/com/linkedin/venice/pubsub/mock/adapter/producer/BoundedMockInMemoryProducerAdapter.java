@@ -1,6 +1,8 @@
 package com.linkedin.venice.pubsub.mock.adapter.producer;
 
 import com.linkedin.venice.kafka.protocol.KafkaMessageEnvelope;
+import com.linkedin.venice.kafka.protocol.Put;
+import com.linkedin.venice.kafka.protocol.enums.MessageType;
 import com.linkedin.venice.message.KafkaKey;
 import com.linkedin.venice.pubsub.adapter.SimplePubSubProduceResultImpl;
 import com.linkedin.venice.pubsub.api.PubSubMessageHeaders;
@@ -12,10 +14,8 @@ import com.linkedin.venice.pubsub.mock.InMemoryPubSubMessage;
 import com.linkedin.venice.pubsub.mock.InMemoryPubSubPosition;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMap;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMaps;
+import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -31,30 +31,25 @@ import org.apache.logging.log4j.Logger;
  * difference is the broker type — {@link BoundedInMemoryPubSubBroker#produce} can block
  * (with a 30 s timeout) when the partition queue is full, providing Kafka-style
  * back-pressure.
+ *
+ * <p>[iter9 / Bug 6] Real Kafka serialises the message bytes into a network buffer before
+ * invoking the producer callback, which means any post-send mutation of the original buffer
+ * by the callback (e.g.
+ * {@link com.linkedin.davinci.kafka.consumer.ActiveActiveStoreIngestionTask#getProduceToTopicFunction}'s
+ * resultReuseInput path that truncates the int header on {@code Put.putValue}) cannot affect
+ * the broker's stored bytes. The previous in-memory implementation stored the
+ * {@link KafkaMessageEnvelope} reference verbatim, so the post-send mutation would race with
+ * the consumer's read of {@code put.putValue} — leading to
+ * {@code "Start position of 'putValue' ByteBuffer shouldn't be less than 4"}.
+ *
+ * <p>To restore Kafka-equivalent semantics with minimal overhead, we deep-copy
+ * {@code Put.putValue} (and {@code Put.replicationMetadataPayload}) into a freshly-cloned
+ * {@link KafkaMessageEnvelope} before handing it to the broker. The producer callback can
+ * then run synchronously (matching the existing unbounded mock) without corrupting the bytes
+ * the consumer side will eventually read.
  */
 public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter {
   private static final Logger LOGGER = LogManager.getLogger(BoundedMockInMemoryProducerAdapter.class);
-  private static final AtomicLong CALLBACK_THREAD_ID = new AtomicLong(0);
-
-  /**
-   * [iter9 / Bug 6] Real Kafka producers fire {@link PubSubProducerCallback#onCompletion} asynchronously
-   * after the network round-trip. The previous implementation invoked the callback synchronously on the
-   * producer thread inside {@link #sendMessage}, which broke the
-   * {@link com.linkedin.davinci.kafka.consumer.ActiveActiveStoreIngestionTask#getProduceToTopicFunction}
-   * resultReuseInput contract: the callback truncates the int header on {@code Put.putValue}, but the
-   * consumer side still needs to read the same buffer (whose reference is stored verbatim in the bounded
-   * broker). With sync callbacks the buffer was mutated before the consumer read, leading to
-   * {@code "Start position of 'putValue' ByteBuffer shouldn't be less than 4"}.
-   *
-   * <p>Switching the callback to a single-thread executor mirrors Kafka's async semantics and keeps the
-   * latency overhead at O(microseconds) per produce.
-   */
-  private static final ExecutorService CALLBACK_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-    Thread t = new Thread(r, "BoundedMockInMemoryProducerAdapter-callback-" + CALLBACK_THREAD_ID.incrementAndGet());
-    t.setDaemon(true);
-    return t;
-  });
-
   private final BoundedInMemoryPubSubBroker broker;
 
   public BoundedMockInMemoryProducerAdapter(BoundedInMemoryPubSubBroker broker) {
@@ -97,6 +92,60 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
     }
   }
 
+  /**
+   * [iter9 / Bug 6] Return a {@link KafkaMessageEnvelope} whose {@link Put#putValue} (and the
+   * RMD payload) is deep-copied so subsequent mutation by the producer callback cannot affect
+   * the bytes the broker has handed to the consumer. Mirrors Kafka's network-serialisation
+   * boundary. Non-PUT messages (CONTROL, UPDATE, DELETE) are passed through verbatim because
+   * their payloads are not mutated post-send.
+   */
+  private static KafkaMessageEnvelope detachPutPayload(KafkaMessageEnvelope value) {
+    if (value == null || value.payloadUnion == null) {
+      return value;
+    }
+    if (MessageType.valueOf(value) != MessageType.PUT) {
+      return value;
+    }
+    Put originalPut = (Put) value.payloadUnion;
+    Put copy = new Put();
+    copy.schemaId = originalPut.schemaId;
+    copy.replicationMetadataVersionId = originalPut.replicationMetadataVersionId;
+    copy.putValue = cloneByteBuffer(originalPut.putValue);
+    copy.replicationMetadataPayload = cloneByteBuffer(originalPut.replicationMetadataPayload);
+
+    KafkaMessageEnvelope detached = new KafkaMessageEnvelope();
+    detached.messageType = value.messageType;
+    detached.producerMetadata = value.producerMetadata;
+    detached.payloadUnion = copy;
+    detached.leaderMetadataFooter = value.leaderMetadataFooter;
+    return detached;
+  }
+
+  private static ByteBuffer cloneByteBuffer(ByteBuffer src) {
+    if (src == null) {
+      return null;
+    }
+    int position = src.position();
+    int remaining = src.remaining();
+    byte[] bytes = new byte[position + remaining];
+    if (src.hasArray()) {
+      // Capture the live region [arrayOffset, arrayOffset+position+remaining) so the cloned
+      // buffer's [0, position) header bytes are intact and [position, position+remaining)
+      // payload bytes are intact. Position-aware semantics let downstream code rewind by 4
+      // to read the schema-id header just like Kafka would after deserialisation.
+      System.arraycopy(src.array(), src.arrayOffset(), bytes, 0, position + remaining);
+    } else {
+      // Slow path: fall back to absolute reads. Should not happen for Venice's heap buffers.
+      ByteBuffer dup = src.duplicate();
+      dup.position(0);
+      dup.get(bytes, 0, position + remaining);
+    }
+    ByteBuffer copy = ByteBuffer.wrap(bytes);
+    copy.position(position);
+    copy.limit(position + remaining);
+    return copy;
+  }
+
   @Override
   public CompletableFuture<PubSubProduceResult> sendMessage(
       String topic,
@@ -105,8 +154,9 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
       KafkaMessageEnvelope value,
       PubSubMessageHeaders headers,
       PubSubProducerCallback callback) {
+    KafkaMessageEnvelope detachedValue = detachPutPayload(value);
     InMemoryPubSubPosition inMemoryPubSubPosition =
-        broker.produce(topic, partition, new InMemoryPubSubMessage(key, value, headers));
+        broker.produce(topic, partition, new InMemoryPubSubMessage(key, detachedValue, headers));
     // [iter6] log meta-store-rt produces so we can verify whether the controller
     // actually wrote STORE_CLUSTER_CONFIG (metadataType=4) into the meta store RT.
     if (topic.contains("venice_system_store_meta_store_") && topic.endsWith("_rt")) {
@@ -122,20 +172,8 @@ public class BoundedMockInMemoryProducerAdapter implements PubSubProducerAdapter
       }
     }
     PubSubProduceResult produceResult = new SimplePubSubProduceResultImpl(topic, partition, inMemoryPubSubPosition, -1);
-    // [iter9 / Bug 6] Fire the callback asynchronously so it cannot mutate buffers (e.g. Put.putValue
-    // header truncation in ActiveActiveStoreIngestionTask#getProduceToTopicFunction's resultReuseInput
-    // path) before the broker / consumer have finished reading them. This mirrors real Kafka's async
-    // callback semantics. The returned future is still completed eagerly so callers that block on it
-    // (e.g. SegmentedKafkaConsumer end-of-push wait) are not slowed down.
     if (callback != null) {
-      final PubSubProducerCallback cb = callback;
-      CALLBACK_EXECUTOR.execute(() -> {
-        try {
-          cb.onCompletion(produceResult, null);
-        } catch (Throwable t) {
-          LOGGER.warn("BoundedMockInMemoryProducerAdapter async callback threw", t);
-        }
-      });
+      callback.onCompletion(produceResult, null);
     }
     return CompletableFuture.completedFuture(produceResult);
   }
