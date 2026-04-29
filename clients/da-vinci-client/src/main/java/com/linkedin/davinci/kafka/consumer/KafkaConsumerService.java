@@ -521,7 +521,11 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
         new ArrayList<>(topicPartitionIngestionInfoMap.entrySet());
     rows.sort((a, b) -> Long.compare(b.getValue().getOffsetLag(), a.getValue().getOffsetLag()));
 
-    // Pre-format float fields and compute column widths from actual data.
+    // Pre-format float fields and compute column widths from actual data. We keep the
+    // versionTopic column even though it's redundant with the partition's topic for batch
+    // ingestion, because for hybrid leaders past EOP the partition is on a real-time topic
+    // (e.g. `store_rt`) while versionTopic is the consuming version (e.g. `store_v3`) — that
+    // mapping is not derivable from the partition name alone.
     int n = rows.size();
     String[] msgRateStrs = new String[n];
     String[] byteRateStrs = new String[n];
@@ -531,6 +535,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
     int wByte = "byteRate".length();
     int wRec = "lastRecord(ms)".length();
     int wOff = "latestOffset".length();
+    int wVt = "versionTopic".length();
     for (int i = 0; i < n; i++) {
       Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
       TopicPartitionIngestionInfo v = e.getValue();
@@ -542,6 +547,8 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
       wByte = Math.max(wByte, byteRateStrs[i].length());
       wRec = Math.max(wRec, Long.toString(v.getElapsedTimeSinceLastRecordForPartitionInMs()).length());
       wOff = Math.max(wOff, Long.toString(v.getLatestOffset()).length());
+      String vt = v.getVersionTopicName() == null ? "" : v.getVersionTopicName();
+      wVt = Math.max(wVt, vt.length());
     }
 
     // Hoist consumer-level fields (identical across rows) into the header.
@@ -555,12 +562,21 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
         .append('\n');
 
     // 4-char left margin reserves 2 columns for the optional `* ` marker.
-    String headerFmt =
-        "    %-" + wPart + "s  %" + wLag + "s  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "s  %" + wOff + "s%n";
-    sb.append(String.format(headerFmt, "partition", "lag", "msgRate", "byteRate", "lastRecord(ms)", "latestOffset"));
+    String headerFmt = "    %-" + wPart + "s  %" + wLag + "s  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "s  %" + wOff
+        + "s  %-" + wVt + "s%n";
+    sb.append(
+        String.format(
+            headerFmt,
+            "partition",
+            "lag",
+            "msgRate",
+            "byteRate",
+            "lastRecord(ms)",
+            "latestOffset",
+            "versionTopic"));
 
-    String rowFmt =
-        "%s%-" + wPart + "s  %" + wLag + "d  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "d  %" + wOff + "d%s%n";
+    String rowFmt = "%s%-" + wPart + "s  %" + wLag + "d  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "d  %" + wOff
+        + "d  %-" + wVt + "s%s%n";
     for (int i = 0; i < n; i++) {
       Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
       TopicPartitionIngestionInfo v = e.getValue();
@@ -577,6 +593,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
               byteRateStrs[i],
               v.getElapsedTimeSinceLastRecordForPartitionInMs(),
               v.getLatestOffset(),
+              v.getVersionTopicName() == null ? "" : v.getVersionTopicName(),
               suffix));
     }
     return sb.toString();

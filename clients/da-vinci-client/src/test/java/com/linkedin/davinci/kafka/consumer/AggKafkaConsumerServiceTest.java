@@ -409,11 +409,14 @@ public class AggKafkaConsumerServiceTest {
     Assert
         .assertTrue(result.contains("lastPoll=100ms"), "header should carry consumer-level poll age; got:\n" + result);
     Assert.assertTrue(result.contains("partitions=1"), "header should carry partition count; got:\n" + result);
-    // Column header line has all six column titles.
+    // Column header line has all seven column titles.
     Assert.assertTrue(
         result.contains("partition") && result.contains("lag") && result.contains("msgRate")
-            && result.contains("byteRate") && result.contains("lastRecord(ms)") && result.contains("latestOffset"),
-        "column header should list all six columns; got:\n" + result);
+            && result.contains("byteRate") && result.contains("lastRecord(ms)") && result.contains("latestOffset")
+            && result.contains("versionTopic"),
+        "column header should list all seven columns; got:\n" + result);
+    // Per-row versionTopic value should be present (test uses topic.getName() as versionTopicName).
+    Assert.assertTrue(result.contains(topic.getName()), "row should include versionTopic name; got:\n" + result);
     // Row data values appear (numbers as columns, not key:value pairs).
     Assert.assertTrue(result.contains(topicPartition.toString()), "row should include partition; got:\n" + result);
     Assert.assertTrue(result.contains("1000"), "row should include latestOffset value; got:\n" + result);

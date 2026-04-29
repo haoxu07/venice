@@ -29,8 +29,22 @@ public class KafkaConsumerServiceFormatterTest {
     return new PubSubTopicPartitionImpl(topic, partition);
   }
 
-  /** Builds an ingestion info object with realistic shared-consumer fields. */
+  /**
+   * Builds an ingestion info object with realistic shared-consumer fields and a generic
+   * version-topic name. Use {@link #infoWithVersionTopic} when the version-topic name matters
+   * (e.g. testing the hybrid-leader case where the partition is on `_rt` but consuming for `_vN`).
+   */
   private TopicPartitionIngestionInfo info(long lag, long latestOffset, double msgRate, double byteRate, long lastRec) {
+    return infoWithVersionTopic(lag, latestOffset, msgRate, byteRate, lastRec, "version-topic");
+  }
+
+  private TopicPartitionIngestionInfo infoWithVersionTopic(
+      long lag,
+      long latestOffset,
+      double msgRate,
+      double byteRate,
+      long lastRec,
+      String versionTopicName) {
     return new TopicPartitionIngestionInfo(
         latestOffset,
         lag,
@@ -39,7 +53,7 @@ public class KafkaConsumerServiceFormatterTest {
         "shared-consumer-0",
         53694L, // elapsedTimeSinceLastConsumerPollInMs (consumer-level)
         lastRec,
-        "version-topic"); // versionTopicName (no longer printed per row)
+        versionTopicName);
   }
 
   @Test
@@ -67,7 +81,7 @@ public class KafkaConsumerServiceFormatterTest {
   }
 
   @Test
-  public void columnHeaderListsSixColumnsInOrder() {
+  public void columnHeaderListsAllColumnsInOrder() {
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new HashMap<>();
     map.put(tp("store_v1", 0), info(0, 100, 0.0, 0.0, 1000));
     String out = KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(map, null);
@@ -80,8 +94,9 @@ public class KafkaConsumerServiceFormatterTest {
     int iByte = header.indexOf("byteRate");
     int iRec = header.indexOf("lastRecord(ms)");
     int iOff = header.indexOf("latestOffset");
+    int iVt = header.indexOf("versionTopic");
     Assert.assertTrue(
-        iPart >= 0 && iLag > iPart && iMsg > iLag && iByte > iMsg && iRec > iByte && iOff > iRec,
+        iPart >= 0 && iLag > iPart && iMsg > iLag && iByte > iMsg && iRec > iByte && iOff > iRec && iVt > iOff,
         "column header order is wrong; got: " + header);
   }
 
@@ -219,8 +234,9 @@ public class KafkaConsumerServiceFormatterTest {
 
   @Test
   public void consumerLevelFieldsAreNotDuplicatedPerRow() {
-    // The original toString() repeated `consumerIdStr:` and `elapsedTimeSinceLastConsumerPollInMs:` per row.
-    // With the new formatter those fields live in the header only. Verify each appears exactly once.
+    // The original toString() repeated `consumerIdStr:` and `elapsedTimeSinceLastConsumerPollInMs:`
+    // on every row. With the new formatter those fields live in the header only. Verify each
+    // appears exactly once.
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new HashMap<>();
     for (int i = 0; i < 5; i++) {
       map.put(tp("store_v1", i), info(i, 100 + i, 0, 0, 1000));
@@ -231,7 +247,45 @@ public class KafkaConsumerServiceFormatterTest {
     Assert.assertEquals(occurrences(out, "lastPoll="), 1, "lastPoll should appear exactly once in header");
     Assert.assertFalse(out.contains("consumerIdStr:"), "old key:value form should be gone");
     Assert.assertFalse(out.contains("elapsedTimeSinceLastConsumerPollInMs:"), "old key:value form should be gone");
-    Assert.assertFalse(out.contains("versionTopicName:"), "versionTopicName is redundant with partition column");
+    Assert.assertFalse(out.contains("versionTopicName:"), "versionTopicName key:value form should be gone");
+  }
+
+  @Test
+  public void versionTopicColumnDistinguishesHybridLeaderFromBatch() {
+    // Hybrid leader past EOP: partition is on the real-time topic but consumes into a versioned
+    // topic. The partition name alone does not reveal which version is consuming, so the
+    // versionTopic column must surface that mapping.
+    Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new LinkedHashMap<>();
+    map.put(tp("store1_rt", 0), infoWithVersionTopic(100, 0, 0, 0, 0, "store1_v3"));
+    map.put(tp("store1_v3", 0), infoWithVersionTopic(0, 0, 0, 0, 0, "store1_v3"));
+    String out = KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(map, null);
+
+    String[] dataRows = dataRows(out);
+    boolean rtRowHasVersionTopic = false;
+    boolean batchRowHasVersionTopic = false;
+    for (String row: dataRows) {
+      if (row.contains("store1_rt-0")) {
+        Assert.assertTrue(
+            row.contains("store1_v3"),
+            "real-time partition row must include the consuming versionTopic; got: " + row);
+        rtRowHasVersionTopic = true;
+      } else if (row.contains("store1_v3-0")) {
+        Assert.assertTrue(row.contains("store1_v3"), "batch partition row must still print versionTopic; got: " + row);
+        batchRowHasVersionTopic = true;
+      }
+    }
+    Assert.assertTrue(rtRowHasVersionTopic && batchRowHasVersionTopic);
+  }
+
+  @Test
+  public void emptyVersionTopicIsRenderedAsBlankNotNull() {
+    // The producing path coerces a null destinationVersionTopic to "" (see
+    // KafkaConsumerService.getIngestionInfoFromConsumer). Defensive: even if a null slips through
+    // (e.g. via direct construction), the formatter must not throw or print "null".
+    Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new HashMap<>();
+    map.put(tp("store_v1", 0), infoWithVersionTopic(0, 1, 0, 0, 0, null));
+    String out = KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(map, null);
+    Assert.assertFalse(out.contains("null"), "null versionTopic must not leak into output; got:\n" + out);
   }
 
   @Test
@@ -248,50 +302,54 @@ public class KafkaConsumerServiceFormatterTest {
 
   @Test
   public void widthsAdaptToHeaderWhenDataIsSmall() {
-    // All values are 1 char wide; header titles ("latestOffset" = 12, "lastRecord(ms)" = 14) should dominate.
+    // All values are short; header titles ("latestOffset" = 12, "lastRecord(ms)" = 14,
+    // "versionTopic" = 12) should dominate the column widths and the row should pad to fit them.
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new HashMap<>();
-    map.put(tp("a_v1", 0), info(0, 1, 0, 0, 0));
+    map.put(tp("a_v1", 0), infoWithVersionTopic(0, 1, 0, 0, 0, "vt"));
     String out = KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(map, null);
 
     String[] lines = out.split("\n");
-    // Column header starts after 4-space margin.
     String header = lines[1];
     Assert.assertTrue(header.contains("latestOffset"));
     Assert.assertTrue(header.contains("lastRecord(ms)"));
-    // Row should align to the wider header titles, leaving lots of leading whitespace before the small numbers.
+    Assert.assertTrue(header.contains("versionTopic"));
+    // Header and the single data row should be the same length (versionTopic is left-aligned and
+    // padded). The data row is the last column-aligned column, so length parity is the alignment
+    // invariant.
     String row = lines[2];
-    int idxLatestOffsetInHeader = header.indexOf("latestOffset");
-    int rowLength = row.endsWith("(triggered)") ? row.length() - "  (triggered)".length() : row.length();
-    int idxLastDigit = rowLength - 1;
     Assert.assertEquals(
-        idxLastDigit,
-        idxLatestOffsetInHeader + "latestOffset".length() - 1,
-        "last char of row should align with end of latestOffset header; row='" + row + "' header='" + header + "'");
+        row.length(),
+        header.length(),
+        "row and header should be same length; row='" + row + "' header='" + header + "'");
   }
 
   @Test
   public void realisticSharedConsumerScenarioFromIncident() {
     // Reconstruct the dump from the user's reported log: 16 partitions across 3 stores.
     // Verify (a) the output is much smaller than the original blob, (b) it's sorted, (c) the
-    // worst lag clusters together at the top, (d) the trigger marker lands on the right row.
+    // worst lag clusters together at the top, (d) the trigger marker lands on the right row,
+    // (e) the versionTopic column reflects each partition's destination version.
+    String ng = "cert-basic-dataset-northguard_v3";
+    String aa = "aa-partial-update-benchmark-medium_v2";
+    String v89 = "cert-basic-dataset_v89";
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new LinkedHashMap<>();
-    map.put(tp("cert-basic-dataset-northguard_v3", 7), info(3971738, 4000961, 0, 0, 385294));
-    map.put(tp("aa-partial-update-benchmark-medium_v2", 84), info(0, 5346109, 0, 0, 385301));
-    PubSubTopicPartition trigger = tp("cert-basic-dataset_v89", 40);
-    map.put(trigger, info(0, 8232319, 0, 0, 1226927));
-    map.put(tp("cert-basic-dataset_v89", 10), info(0, 8235941, 0, 0, 268715));
-    map.put(tp("aa-partial-update-benchmark-medium_v2", 44), info(128, 5351890, 0, 0, 969889));
-    map.put(tp("aa-partial-update-benchmark-medium_v2", 45), info(168, 5391638, 0, 0, 385309));
-    map.put(tp("cert-basic-dataset-northguard_v3", 32), info(3979827, 4005186, 0, 0, 1120585));
-    map.put(tp("cert-basic-dataset-northguard_v3", 0), info(3970739, 3997774, 0, 0, 1226920));
-    map.put(tp("cert-basic-dataset_v89", 82), info(44, 8243155, 0, 0, 969896));
-    map.put(tp("cert-basic-dataset_v89", 21), info(0, 8227759, 0, 0, 385313));
-    map.put(tp("cert-basic-dataset-northguard_v3", 25), info(3972689, 4002268, 0, 0, 268715));
-    map.put(tp("cert-basic-dataset_v89", 90), info(0, 8220505, 0, 0, 1120579));
-    map.put(tp("cert-basic-dataset-northguard_v3", 58), info(3971168, 3999572, 0, 0, 936733));
-    map.put(tp("cert-basic-dataset-northguard_v3", 48), info(3971503, 3999731, 0, 0, 1527710));
-    map.put(tp("aa-partial-update-benchmark-medium_v2", 33), info(353, 5361438, 5.14, 735.75, 53694));
-    map.put(tp("cert-basic-dataset-northguard_v3", 52), info(3968092, 3997262, 0, 0, 576128));
+    map.put(tp(ng, 7), infoWithVersionTopic(3971738, 4000961, 0, 0, 385294, ng));
+    map.put(tp(aa, 84), infoWithVersionTopic(0, 5346109, 0, 0, 385301, aa));
+    PubSubTopicPartition trigger = tp(v89, 40);
+    map.put(trigger, infoWithVersionTopic(0, 8232319, 0, 0, 1226927, v89));
+    map.put(tp(v89, 10), infoWithVersionTopic(0, 8235941, 0, 0, 268715, v89));
+    map.put(tp(aa, 44), infoWithVersionTopic(128, 5351890, 0, 0, 969889, aa));
+    map.put(tp(aa, 45), infoWithVersionTopic(168, 5391638, 0, 0, 385309, aa));
+    map.put(tp(ng, 32), infoWithVersionTopic(3979827, 4005186, 0, 0, 1120585, ng));
+    map.put(tp(ng, 0), infoWithVersionTopic(3970739, 3997774, 0, 0, 1226920, ng));
+    map.put(tp(v89, 82), infoWithVersionTopic(44, 8243155, 0, 0, 969896, v89));
+    map.put(tp(v89, 21), infoWithVersionTopic(0, 8227759, 0, 0, 385313, v89));
+    map.put(tp(ng, 25), infoWithVersionTopic(3972689, 4002268, 0, 0, 268715, ng));
+    map.put(tp(v89, 90), infoWithVersionTopic(0, 8220505, 0, 0, 1120579, v89));
+    map.put(tp(ng, 58), infoWithVersionTopic(3971168, 3999572, 0, 0, 936733, ng));
+    map.put(tp(ng, 48), infoWithVersionTopic(3971503, 3999731, 0, 0, 1527710, ng));
+    map.put(tp(aa, 33), infoWithVersionTopic(353, 5361438, 5.14, 735.75, 53694, aa));
+    map.put(tp(ng, 52), infoWithVersionTopic(3968092, 3997262, 0, 0, 576128, ng));
 
     String out = KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(map, trigger);
 
@@ -318,6 +376,12 @@ public class KafkaConsumerServiceFormatterTest {
     // Sanity: 5.14 msgRate row's byteRate must be formatted to 2 decimals.
     Assert.assertTrue(out.contains("735.75"), "byteRate 735.749... must round to 735.75; got:\n" + out);
     Assert.assertTrue(out.contains("5.14"), "msgRate 5.139... must format to 5.14; got:\n" + out);
+
+    // versionTopic column must appear for each store at least once. (Per-row assertion is tedious,
+    // and the test above already exercises versionTopic-per-row separately.)
+    Assert.assertTrue(out.contains(ng), "versionTopic " + ng + " must appear; got:\n" + out);
+    Assert.assertTrue(out.contains(aa), "versionTopic " + aa + " must appear; got:\n" + out);
+    Assert.assertTrue(out.contains(v89), "versionTopic " + v89 + " must appear; got:\n" + out);
   }
 
   @Test
