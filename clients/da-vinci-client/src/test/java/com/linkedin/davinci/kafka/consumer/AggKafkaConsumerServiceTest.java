@@ -404,11 +404,27 @@ public class AggKafkaConsumerServiceTest {
     String result = serviceSpy.getIngestionInfoFor(topic, topicPartition, regionName);
 
     Assert.assertNotNull(result);
-    Assert.assertTrue(result.contains(topicPartition.toString()));
-    Assert.assertTrue(result.contains("latestOffset:1000"));
-    Assert.assertTrue(result.contains("offsetLag:50"));
-    Assert.assertTrue(result.contains("msgRate:10.5"));
-    Assert.assertTrue(result.contains("consumer-1"));
+    // Header carries consumer-level fields (id, lastPoll, partition count) hoisted out of per-row data.
+    Assert.assertTrue(result.contains("consumer=consumer-1"), "header should carry consumer id; got:\n" + result);
+    Assert
+        .assertTrue(result.contains("lastPoll=100ms"), "header should carry consumer-level poll age; got:\n" + result);
+    Assert.assertTrue(result.contains("partitions=1"), "header should carry partition count; got:\n" + result);
+    // Column header line has all six column titles.
+    Assert.assertTrue(
+        result.contains("partition") && result.contains("lag") && result.contains("msgRate")
+            && result.contains("byteRate") && result.contains("lastRecord(ms)") && result.contains("latestOffset"),
+        "column header should list all six columns; got:\n" + result);
+    // Row data values appear (numbers as columns, not key:value pairs).
+    Assert.assertTrue(result.contains(topicPartition.toString()), "row should include partition; got:\n" + result);
+    Assert.assertTrue(result.contains("1000"), "row should include latestOffset value; got:\n" + result);
+    Assert.assertTrue(result.contains("50"), "row should include lag value; got:\n" + result);
+    Assert.assertTrue(result.contains("10.50"), "row should include formatted msgRate; got:\n" + result);
+    Assert.assertTrue(result.contains("1024.00"), "row should include formatted byteRate; got:\n" + result);
+    // Triggering partition matches the lone row → marker should be present.
+    Assert.assertTrue(result.contains("(triggered)"), "triggering partition should be marked; got:\n" + result);
+    // Old `key:value` format should not leak through.
+    Assert.assertFalse(result.contains("latestOffset:1000"), "should no longer use key:value format; got:\n" + result);
+    Assert.assertFalse(result.contains("offsetLag:"), "should no longer use key:value format; got:\n" + result);
 
     verify(mockConsumerService).getIngestionInfoFor(topic, topicPartition, true);
   }

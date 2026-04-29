@@ -628,7 +628,10 @@ public class AggKafkaConsumerService extends AbstractVeniceService {
     }
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> topicPartitionIngestionInfoMap =
         consumerService.getIngestionInfoFor(versionTopic, pubSubTopicPartition, true);
-    return KafkaConsumerService.convertTopicPartitionIngestionInfoMapToStr(topicPartitionIngestionInfoMap);
+    // pubSubTopicPartition is the partition whose lag triggered this dump; mark its row so it
+    // stands out among siblings sharing the same consumer.
+    return KafkaConsumerService
+        .convertTopicPartitionIngestionInfoMapToStr(topicPartitionIngestionInfoMap, pubSubTopicPartition);
   }
 
   private String getKafkaUrlFromRegionName(String regionName) {

@@ -1566,7 +1566,6 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
         return;
       }
       PubSubTopic ingestingTopic = versionTopic;
-      String infoPrefix = "isCurrentVersion: " + (storeIngestionTask.isCurrentVersion()) + "\n";
       if (storeIngestionTask.isHybridMode() && partitionConsumptionState.isEndOfPushReceived()
           && partitionConsumptionState.getLeaderFollowerState() == LeaderFollowerStateType.LEADER) {
         ingestingTopic = pubSubTopicRepository.getTopic(Utils.composeRealTimeTopic(storeName));
@@ -1580,9 +1579,11 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
         return;
       }
       INGESTION_DEBUGGER_LOGGER.warn(
-          "Ingestion info for topic partition: {}, {}",
+          "Heartbeat-lag dump for replica {} (isCurrentVersion={}, region={}):\n{}",
           Utils.getReplicaId(ingestingTopic.getName(), partition),
-          infoPrefix + consumerServiceIngestionInfo);
+          storeIngestionTask.isCurrentVersion(),
+          regionName,
+          consumerServiceIngestionInfo);
     } catch (Exception e) {
       INGESTION_DEBUGGER_LOGGER.error(
           "Error on preparing ingestion info for store: {}, version: {}, partition: {}",

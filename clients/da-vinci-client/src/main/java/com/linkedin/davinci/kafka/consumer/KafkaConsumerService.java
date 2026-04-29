@@ -478,7 +478,9 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
         SharedKafkaConsumer consumer = consumerToConsumptionTask.getByIndex(slowestTaskId).getKey();
         Map<PubSubTopicPartition, TopicPartitionIngestionInfo> topicPartitionIngestionInfoMap =
             getIngestionInfoFromConsumer(true, consumer);
-        String consumerIngestionInfoStr = convertTopicPartitionIngestionInfoMapToStr(topicPartitionIngestionInfoMap);
+        // No specific triggering partition for the slow-consumer alarm — it's a consumer-level signal.
+        String consumerIngestionInfoStr =
+            convertTopicPartitionIngestionInfoMapToStr(topicPartitionIngestionInfoMap, null);
         // log the slowest consumer id if it couldn't make any progress in a minute!
         LOGGER.warn(
             "Shared consumer ({} - task {}) couldn't make any progress for over {} ms, thread name: {}, stack trace:\n{}, consumer info:\n{}",
@@ -493,16 +495,89 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
     return maxElapsedTimeSinceLastPollInConsumerPool;
   }
 
+  /**
+   * Render a consumer's ingestion info map as a fixed-width table for logging.
+   *
+   * <p>Format: a single header line with consumer-level fields ({@code consumerIdStr},
+   * {@code elapsedTimeSinceLastConsumerPollInMs}, partition count) followed by a column header and
+   * one row per partition. Rows are sorted by {@code offsetLag} descending so the worst offenders
+   * appear first. Column widths adapt to the actual data so values stay aligned.
+   *
+   * <p>If {@code triggeringPartition} is non-null and matches a row, that row is prefixed with
+   * {@code "* "} and suffixed with {@code "(triggered)"}, making it easy to spot which partition's
+   * heartbeat lag prompted the dump. Pass {@code null} when the dump is not triggered by a
+   * specific partition (e.g. the slow-shared-consumer alarm).
+   */
   public static String convertTopicPartitionIngestionInfoMapToStr(
-      Map<PubSubTopicPartition, TopicPartitionIngestionInfo> topicPartitionIngestionInfoMap) {
-    // Convert Map of ingestion info for this consumer to String for logging with each partition line by line.
+      Map<PubSubTopicPartition, TopicPartitionIngestionInfo> topicPartitionIngestionInfoMap,
+      PubSubTopicPartition triggeringPartition) {
     // Empty map could be caused by too frequent logging for a specific consumer.
-    StringBuilder sb = new StringBuilder();
-    if (topicPartitionIngestionInfoMap != null && !topicPartitionIngestionInfoMap.isEmpty()) {
-      for (Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> entry: topicPartitionIngestionInfoMap
-          .entrySet()) {
-        sb.append(entry.getKey().toString()).append(": ").append(entry.getValue().toString()).append("\n");
-      }
+    if (topicPartitionIngestionInfoMap == null || topicPartitionIngestionInfoMap.isEmpty()) {
+      return "";
+    }
+
+    // Sort by lag descending so the worst offenders are at the top.
+    List<Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo>> rows =
+        new ArrayList<>(topicPartitionIngestionInfoMap.entrySet());
+    rows.sort((a, b) -> Long.compare(b.getValue().getOffsetLag(), a.getValue().getOffsetLag()));
+
+    // Pre-format float fields and compute column widths from actual data.
+    int n = rows.size();
+    String[] msgRateStrs = new String[n];
+    String[] byteRateStrs = new String[n];
+    int wPart = "partition".length();
+    int wLag = "lag".length();
+    int wMsg = "msgRate".length();
+    int wByte = "byteRate".length();
+    int wRec = "lastRecord(ms)".length();
+    int wOff = "latestOffset".length();
+    for (int i = 0; i < n; i++) {
+      Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
+      TopicPartitionIngestionInfo v = e.getValue();
+      msgRateStrs[i] = String.format("%.2f", v.getMsgRate());
+      byteRateStrs[i] = String.format("%.2f", v.getByteRate());
+      wPart = Math.max(wPart, e.getKey().toString().length());
+      wLag = Math.max(wLag, Long.toString(v.getOffsetLag()).length());
+      wMsg = Math.max(wMsg, msgRateStrs[i].length());
+      wByte = Math.max(wByte, byteRateStrs[i].length());
+      wRec = Math.max(wRec, Long.toString(v.getElapsedTimeSinceLastRecordForPartitionInMs()).length());
+      wOff = Math.max(wOff, Long.toString(v.getLatestOffset()).length());
+    }
+
+    // Hoist consumer-level fields (identical across rows) into the header.
+    TopicPartitionIngestionInfo any = rows.get(0).getValue();
+    StringBuilder sb = new StringBuilder().append("consumer=")
+        .append(any.getConsumerIdStr())
+        .append("  lastPoll=")
+        .append(any.getElapsedTimeSinceLastConsumerPollInMs())
+        .append("ms  partitions=")
+        .append(n)
+        .append('\n');
+
+    // 4-char left margin reserves 2 columns for the optional `* ` marker.
+    String headerFmt =
+        "    %-" + wPart + "s  %" + wLag + "s  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "s  %" + wOff + "s%n";
+    sb.append(String.format(headerFmt, "partition", "lag", "msgRate", "byteRate", "lastRecord(ms)", "latestOffset"));
+
+    String rowFmt =
+        "%s%-" + wPart + "s  %" + wLag + "d  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "d  %" + wOff + "d%s%n";
+    for (int i = 0; i < n; i++) {
+      Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
+      TopicPartitionIngestionInfo v = e.getValue();
+      boolean isTrigger = triggeringPartition != null && triggeringPartition.equals(e.getKey());
+      String marker = isTrigger ? "  * " : "    ";
+      String suffix = isTrigger ? "  (triggered)" : "";
+      sb.append(
+          String.format(
+              rowFmt,
+              marker,
+              e.getKey().toString(),
+              v.getOffsetLag(),
+              msgRateStrs[i],
+              byteRateStrs[i],
+              v.getElapsedTimeSinceLastRecordForPartitionInMs(),
+              v.getLatestOffset(),
+              suffix));
     }
     return sb.toString();
   }
