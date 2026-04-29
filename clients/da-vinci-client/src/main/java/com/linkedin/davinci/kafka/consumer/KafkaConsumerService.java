@@ -30,6 +30,7 @@ import com.linkedin.venice.utils.locks.AutoCloseableLock;
 import io.tehuti.metrics.MetricsRepository;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -522,10 +523,14 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
       return "";
     }
 
-    // Sort by lag descending so the worst offenders are at the top.
+    // Sort by lag descending so the worst offenders are at the top, breaking ties by partition
+    // name ascending so the same input map always renders the same rows in the same order
+    // (otherwise equal-lag rows — common at lag=0 — fall back to HashMap iteration order).
     List<Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo>> rows =
         new ArrayList<>(topicPartitionIngestionInfoMap.entrySet());
-    rows.sort((a, b) -> Long.compare(b.getValue().getOffsetLag(), a.getValue().getOffsetLag()));
+    rows.sort(
+        Comparator.<Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo>>comparingLong(
+            e -> e.getValue().getOffsetLag()).reversed().thenComparing(e -> e.getKey().toString()));
 
     // Pre-format float fields and compute column widths from actual data. We keep the
     // versionTopic column even though it's redundant with the partition's topic for batch
@@ -569,7 +574,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
 
     // 4-char left margin reserves 2 columns for the optional ` * ` trigger marker.
     String headerFmt = "    %-" + wPart + "s  %" + wLag + "s  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "s  %" + wOff
-        + "s  %-" + wVt + "s%n";
+        + "s  %-" + wVt + "s\n";
     sb.append(
         String.format(
             Locale.ROOT,
@@ -583,7 +588,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
             "versionTopic"));
 
     String rowFmt = "%s%-" + wPart + "s  %" + wLag + "d  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "d  %" + wOff
-        + "d  %-" + wVt + "s%s%n";
+        + "d  %-" + wVt + "s%s\n";
     for (int i = 0; i < n; i++) {
       Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
       TopicPartitionIngestionInfo v = e.getValue();

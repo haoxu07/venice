@@ -1553,14 +1553,20 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       PubSubTopic versionTopic = pubSubTopicRepository.getTopic(Version.composeKafkaTopic(storeName, version));
       StoreIngestionTask storeIngestionTask = getStoreIngestionTask(versionTopic.getName());
       if (storeIngestionTask == null) {
-        INGESTION_DEBUGGER_LOGGER.error(
+        // The ingestion task may have been torn down between the heartbeat-lag callback firing and
+        // this debug-log call (version cleanup, fatal-error close, etc.). The dump is purely
+        // diagnostic and the underlying ingestion problem will surface through other logs, so log
+        // at WARN to avoid tripping ERROR-rate dashboards on a benign race.
+        INGESTION_DEBUGGER_LOGGER.warn(
             "StoreIngestionTask is not available for version topic: {} when preparing ingestion info",
             versionTopic);
         return;
       }
       PartitionConsumptionState partitionConsumptionState = storeIngestionTask.getPartitionConsumptionState(partition);
       if (partitionConsumptionState == null) {
-        INGESTION_DEBUGGER_LOGGER.error(
+        // Same race as above but at the partition level: PCS was unsubscribed (state transition,
+        // partition rebalance) before the diagnostic dump ran. Benign — WARN is sufficient.
+        INGESTION_DEBUGGER_LOGGER.warn(
             "PartitionConsumptionState is not available for topic-partition: {} when preparing ingestion info",
             Utils.getReplicaId(versionTopic, partition));
         return;

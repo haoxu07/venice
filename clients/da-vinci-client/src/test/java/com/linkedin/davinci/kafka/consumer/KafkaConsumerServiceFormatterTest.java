@@ -116,6 +116,29 @@ public class KafkaConsumerServiceFormatterTest {
   }
 
   @Test
+  public void equalLagRowsAreOrderedDeterministicallyByPartitionName() {
+    // All four rows have offsetLag=0 — common in production when a consumer is idle.
+    // Without a tie-breaker, HashMap iteration order would vary across JVMs and runs.
+    // Verify the formatter sorts equal-lag rows by partition name ascending so output is stable.
+    Map<PubSubTopicPartition, TopicPartitionIngestionInfo> input = new HashMap<>();
+    input.put(tp("zeta_v1", 0), info(0, 0, 0, 0, 0));
+    input.put(tp("alpha_v1", 0), info(0, 0, 0, 0, 0));
+    input.put(tp("mu_v1", 0), info(0, 0, 0, 0, 0));
+    input.put(tp("beta_v1", 0), info(0, 0, 0, 0, 0));
+
+    // Run the formatter twice on the same input; rows must come out in the same order.
+    String[] firstRun = dataRows(fmt(input, null));
+    String[] secondRun = dataRows(fmt(input, null));
+    Assert.assertEquals(secondRun, firstRun, "tie-broken sort must be deterministic across runs");
+
+    // And the order must be partition-name ascending (alpha, beta, mu, zeta).
+    Assert.assertTrue(firstRun[0].contains("alpha_v1-0"), firstRun[0]);
+    Assert.assertTrue(firstRun[1].contains("beta_v1-0"), firstRun[1]);
+    Assert.assertTrue(firstRun[2].contains("mu_v1-0"), firstRun[2]);
+    Assert.assertTrue(firstRun[3].contains("zeta_v1-0"), firstRun[3]);
+  }
+
+  @Test
   public void triggeringPartitionIsMarkedExactlyOnce() {
     Map<PubSubTopicPartition, TopicPartitionIngestionInfo> map = new HashMap<>();
     map.put(tp("a_v1", 0), info(100, 0, 0, 0, 0));
