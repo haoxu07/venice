@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -503,10 +504,15 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
    * one row per partition. Rows are sorted by {@code offsetLag} descending so the worst offenders
    * appear first. Column widths adapt to the actual data so values stay aligned.
    *
-   * <p>If {@code triggeringPartition} is non-null and matches a row, that row is prefixed with
-   * {@code "* "} and suffixed with {@code "(triggered)"}, making it easy to spot which partition's
-   * heartbeat lag prompted the dump. Pass {@code null} when the dump is not triggered by a
-   * specific partition (e.g. the slow-shared-consumer alarm).
+   * <p>Every row begins with a 4-character left margin. If {@code triggeringPartition} is non-null
+   * and matches a row, the margin on that row is replaced with {@code "  * "} and the row is
+   * suffixed with {@code "(triggered)"}, making it easy to spot which partition's heartbeat lag
+   * prompted the dump. Non-triggering rows keep the plain {@code "    "} margin so columns stay
+   * aligned. Pass {@code null} when the dump is not triggered by a specific partition (e.g. the
+   * slow-shared-consumer alarm).
+   *
+   * <p>All numeric formatting uses {@link Locale#ROOT} so the decimal separator is consistent
+   * across hosts regardless of the JVM default locale.
    */
   public static String convertTopicPartitionIngestionInfoMapToStr(
       Map<PubSubTopicPartition, TopicPartitionIngestionInfo> topicPartitionIngestionInfoMap,
@@ -539,8 +545,8 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
     for (int i = 0; i < n; i++) {
       Map.Entry<PubSubTopicPartition, TopicPartitionIngestionInfo> e = rows.get(i);
       TopicPartitionIngestionInfo v = e.getValue();
-      msgRateStrs[i] = String.format("%.2f", v.getMsgRate());
-      byteRateStrs[i] = String.format("%.2f", v.getByteRate());
+      msgRateStrs[i] = String.format(Locale.ROOT, "%.2f", v.getMsgRate());
+      byteRateStrs[i] = String.format(Locale.ROOT, "%.2f", v.getByteRate());
       wPart = Math.max(wPart, e.getKey().toString().length());
       wLag = Math.max(wLag, Long.toString(v.getOffsetLag()).length());
       wMsg = Math.max(wMsg, msgRateStrs[i].length());
@@ -561,11 +567,12 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
         .append(n)
         .append('\n');
 
-    // 4-char left margin reserves 2 columns for the optional `* ` marker.
+    // 4-char left margin reserves 2 columns for the optional ` * ` trigger marker.
     String headerFmt = "    %-" + wPart + "s  %" + wLag + "s  %" + wMsg + "s  %" + wByte + "s  %" + wRec + "s  %" + wOff
         + "s  %-" + wVt + "s%n";
     sb.append(
         String.format(
+            Locale.ROOT,
             headerFmt,
             "partition",
             "lag",
@@ -585,6 +592,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
       String suffix = isTrigger ? "  (triggered)" : "";
       sb.append(
           String.format(
+              Locale.ROOT,
               rowFmt,
               marker,
               e.getKey().toString(),
