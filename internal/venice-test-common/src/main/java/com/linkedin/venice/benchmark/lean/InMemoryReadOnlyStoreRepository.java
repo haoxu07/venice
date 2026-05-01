@@ -119,7 +119,10 @@ public class InMemoryReadOnlyStoreRepository implements ReadOnlyStoreRepository 
     zkStore.setPartitionCount(partitionCount);
     zkStore.setNativeReplicationEnabled(true);
     zkStore.setActiveActiveReplicationEnabled(true);
-    zkStore.setWriteComputationEnabled(true);
+    // Disable write-compute to match the upstream RMD-cache benchmark config
+    // (workloadType != WorkloadType.PUT). The RMD cache targets the value-level
+    // DCR path which is exercised when WC is OFF and workload is pure PUT.
+    zkStore.setWriteComputationEnabled(false);
     zkStore.setChunkingEnabled(false);
     zkStore.setRmdVersion(DEFAULT_RMD_VERSION_ID);
     // For the AA write-compute path, MergeConflictResolver.update() requires a non-null superset

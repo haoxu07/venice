@@ -36,7 +36,7 @@ public final class AAIngestionWorkloadHelper {
    * Bounded key pool for PUT so both producers concurrently hit the same keys and exercise the
    * value-level DCR path (timestamp-based conflict resolution).
    */
-  public static final int PUT_KEY_POOL_SIZE = 10_000;
+  public static final int PUT_KEY_POOL_SIZE = 100_000;
 
   /**
    * Each PARTIAL_UPDATE pool key is pre-populated with a tags map of this size. AddToMap updates
