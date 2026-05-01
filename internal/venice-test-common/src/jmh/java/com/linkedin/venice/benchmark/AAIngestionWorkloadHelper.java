@@ -30,7 +30,7 @@ public final class AAIngestionWorkloadHelper {
    * Bounded key pool for PARTIAL_UPDATE so updates actually hit existing records and exercise
    * the server-side read-modify-write + field-level DCR path.
    */
-  public static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 10_000;
+  public static final int PARTIAL_UPDATE_KEY_POOL_SIZE = 100_000;
 
   /**
    * Bounded key pool for PUT so both producers concurrently hit the same keys and exercise the
