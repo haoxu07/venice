@@ -245,6 +245,11 @@ import static com.linkedin.venice.ConfigKeys.SYSTEM_SCHEMA_INITIALIZATION_AT_STA
 import static com.linkedin.venice.ConfigKeys.TIME_LAG_THRESHOLD_FOR_FAST_ONLINE_TRANSITION_IN_RESTART_MINUTES;
 import static com.linkedin.venice.ConfigKeys.UNREGISTER_METRIC_FOR_DELETED_STORE_ENABLED;
 import static com.linkedin.venice.ConfigKeys.UNSORTED_INPUT_DRAINER_SIZE;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_BUDGET_PER_CALL;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_DEBOUNCE_MS;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_ENABLED;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_THRESHOLD;
+import static com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED;
 import static com.linkedin.venice.ConfigKeys.USE_DA_VINCI_SPECIFIC_EXECUTION_STATUS_FOR_ERROR;
 import static com.linkedin.venice.ConfigKeys.VENICE_LOG_CONTEXT_COMPONENT;
 import static com.linkedin.venice.pubsub.PubSubConstants.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_CONSUMER_POOL_SIZE_DEFAULT_VALUE;
@@ -681,6 +686,12 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final long aaRmdTimestampCacheBloomExpectedInsertions;
   private final double aaRmdTimestampCacheBloomFpp;
   private final boolean aaRmdTimestampCacheBloomAuthoritative;
+  // VT-merge experiment fields. See ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED for description.
+  private final boolean vtUpdateOperandEnabled;
+  private final boolean mergeSweepEnabled;
+  private final int mergeSweepThreshold;
+  private final int mergeSweepBudgetPerCall;
+  private final long mergeSweepDebounceMs;
   private final boolean crossTpParallelProcessingEnabled;
   private final int crossTpParallelProcessingThreadPoolSize;
   private final boolean crossTpParallelProcessingCurrentVersionAAWCLeaderOnly;
@@ -1187,6 +1198,17 @@ public class VeniceServerConfig extends VeniceClusterConfig {
         System.getProperty("venice.server.aa.rmd.timestamp.cache.bloom.authoritative", "false"));
     aaRmdTimestampCacheBloomAuthoritative =
         serverProperties.getBoolean(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE, defaultBloomAuthoritative);
+    // VT-merge experiment flags. JVM system property override exists so the JMH benchmark harness
+    // can flip the flag via -jvmArgs without modifying server config files.
+    boolean defaultVtUpdateOperandEnabled =
+        Boolean.parseBoolean(System.getProperty("venice.server.vt.update.operand.enabled", "false"));
+    vtUpdateOperandEnabled = serverProperties.getBoolean(SERVER_VT_UPDATE_OPERAND_ENABLED, defaultVtUpdateOperandEnabled);
+    boolean defaultMergeSweepEnabled =
+        Boolean.parseBoolean(System.getProperty("venice.server.merge.sweep.enabled", "false"));
+    mergeSweepEnabled = serverProperties.getBoolean(SERVER_MERGE_SWEEP_ENABLED, defaultMergeSweepEnabled);
+    mergeSweepThreshold = serverProperties.getInt(SERVER_MERGE_SWEEP_THRESHOLD, 4);
+    mergeSweepBudgetPerCall = serverProperties.getInt(SERVER_MERGE_SWEEP_BUDGET_PER_CALL, 500);
+    mergeSweepDebounceMs = serverProperties.getLong(SERVER_MERGE_SWEEP_DEBOUNCE_MS, 500L);
     crossTpParallelProcessingEnabled = serverProperties.getBoolean(SERVER_CROSS_TP_PARALLEL_PROCESSING_ENABLED, false);
     crossTpParallelProcessingThreadPoolSize =
         serverProperties.getInt(SERVER_CROSS_TP_PARALLEL_PROCESSING_THREAD_POOL_SIZE, 4);
@@ -2132,6 +2154,30 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public boolean isAaRmdTimestampCacheBloomAuthoritative() {
     return aaRmdTimestampCacheBloomAuthoritative;
+  }
+
+  // ============================================================================================
+  // VT-merge experiment getters. See ConfigKeys for the full description.
+  // ============================================================================================
+
+  public boolean isVtUpdateOperandEnabled() {
+    return vtUpdateOperandEnabled;
+  }
+
+  public boolean isMergeSweepEnabled() {
+    return mergeSweepEnabled;
+  }
+
+  public int getMergeSweepThreshold() {
+    return mergeSweepThreshold;
+  }
+
+  public int getMergeSweepBudgetPerCall() {
+    return mergeSweepBudgetPerCall;
+  }
+
+  public long getMergeSweepDebounceMs() {
+    return mergeSweepDebounceMs;
   }
 
   public boolean isCrossTpParallelProcessingEnabled() {

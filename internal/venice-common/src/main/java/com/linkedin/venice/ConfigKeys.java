@@ -3022,6 +3022,46 @@ public class ConfigKeys {
   public static final String SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE =
       "server.aa.rmd.timestamp.cache.bloom.authoritative";
 
+  // ============================================================================================
+  // VT-merge experiment config keys (gated by feature flag, default OFF, no-op on production
+  // deployments unless explicitly flipped). See autoresearch/vt-rocksdb-merge/GOAL.md for the
+  // design.
+  // ============================================================================================
+
+  /**
+   * Master flag for the VT-merge experiment. When enabled:
+   *  - Leader for AA partial-update path skips the value/RMD Get and MergeConflictResolver.update(),
+   *    and produces MessageType.UPDATE directly to VT carrying the operand bytes.
+   *  - Follower's VT-consumption path accepts MessageType.UPDATE and routes it to
+   *    storageEngine.merge(...).
+   *  - RocksDB column family is opened with StringAppendOperator registered.
+   *  - All written values get a kind byte prefix; reads handle both forms.
+   *
+   * Default: false.
+   */
+  public static final String SERVER_VT_UPDATE_OPERAND_ENABLED = "server.vt.update.operand.enabled";
+
+  /**
+   * Enables the PartitionSweeper running on the drainer thread. Has effect only when
+   * {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is also true. Default: false. Phase 2 only.
+   */
+  public static final String SERVER_MERGE_SWEEP_ENABLED = "server.merge.sweep.enabled";
+
+  /**
+   * Number of operands per key before sweep is triggered. Default: 4. Phase 2 only.
+   */
+  public static final String SERVER_MERGE_SWEEP_THRESHOLD = "server.merge.sweep.threshold";
+
+  /**
+   * Max keys swept per drainer-loop iteration. Default: 500. Phase 2 only.
+   */
+  public static final String SERVER_MERGE_SWEEP_BUDGET_PER_CALL = "server.merge.sweep.budget.per.call";
+
+  /**
+   * Minimum interval between two sweeps of the same key. Default: 500 ms. Phase 2 only.
+   */
+  public static final String SERVER_MERGE_SWEEP_DEBOUNCE_MS = "server.merge.sweep.debounce.ms";
+
   /**
    * This config is used to control the RocksDB lookup concurrency when handling AA/WC workload with parallel processing enabled.
    * Check {@link #SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED} for more details.
