@@ -531,6 +531,14 @@ public abstract class AbstractStorageEngine<Partition extends AbstractStoragePar
   }
 
   @Override
+  public void merge(int partitionId, byte[] key, ByteBuffer operand) throws VeniceException {
+    executeWithSafeGuard(partitionId, () -> {
+      AbstractStoragePartition partition = getPartitionOrThrow(partitionId);
+      partition.merge(key, operand);
+    });
+  }
+
+  @Override
   public void delete(int partitionId, byte[] key) throws VeniceException {
     executeWithSafeGuard(partitionId, () -> {
       AbstractStoragePartition partition = getPartitionOrThrow(partitionId);

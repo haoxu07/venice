@@ -184,4 +184,21 @@ public abstract class AbstractStoragePartition {
   public AbstractStorageIterator getIterator() {
     throw new UnsupportedOperationException("Method not supported for storage engine");
   }
+
+  /**
+   * Performs a RocksDB-style merge operation: appends the operand bytes onto the existing
+   * value for {@code key} (if any), with the operator semantics determined by the column-family
+   * configuration. Used by the VT-merge experiment (see
+   * {@code com.linkedin.venice.ConfigKeys#SERVER_VT_UPDATE_OPERAND_ENABLED}).
+   *
+   * <p>Default implementation throws {@link VeniceUnsupportedOperationException}; only
+   * partition implementations that have registered a merge operator (e.g. RocksDB with
+   * {@code StringAppendOperator}) override this.
+   *
+   * @param key the key whose value should be merged.
+   * @param operand the operand bytes to append. Caller retains ownership of the buffer.
+   */
+  public void merge(byte[] key, ByteBuffer operand) {
+    throw new VeniceUnsupportedOperationException("merge");
+  }
 }

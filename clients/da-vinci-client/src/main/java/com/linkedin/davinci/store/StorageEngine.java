@@ -116,6 +116,15 @@ public interface StorageEngine<Partition extends AbstractStoragePartition> exten
 
   void delete(int partitionId, byte[] key) throws VeniceException;
 
+  /**
+   * RocksDB-style merge operation. Default impl throws; only engines whose underlying partitions
+   * support a merge operator (e.g. RocksDB with StringAppendOperator) override this. Used by the
+   * VT-merge experiment (see {@code com.linkedin.venice.ConfigKeys#SERVER_VT_UPDATE_OPERAND_ENABLED}).
+   */
+  default void merge(int partitionId, byte[] key, java.nio.ByteBuffer operand) throws VeniceException {
+    throw new com.linkedin.venice.exceptions.VeniceUnsupportedOperationException("merge");
+  }
+
   void deleteWithReplicationMetadata(int partitionId, byte[] key, byte[] replicationMetadata) throws VeniceException;
 
   byte[] getReplicationMetadata(int partitionId, ByteBuffer key);

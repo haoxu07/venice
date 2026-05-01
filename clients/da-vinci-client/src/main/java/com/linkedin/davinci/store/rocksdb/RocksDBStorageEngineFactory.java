@@ -251,6 +251,15 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
     return rocksDBServerConfig.isUseSeparateRMDCacheEnabled() && isRMD ? sharedRMDCache : sharedCache;
   }
 
+  /**
+   * @return whether the VT-merge experiment flag {@code server.vt.update.operand.enabled} is on.
+   *         Consulted by {@code RocksDBStoragePartition.getStoreOptions} to decide whether to
+   *         register {@code StringAppendOperator} on the column-family options.
+   */
+  public boolean isVtUpdateOperandEnabled() {
+    return serverConfig.isVtUpdateOperandEnabled();
+  }
+
   @Override
   public synchronized StorageEngine getStorageEngine(VeniceStoreVersionConfig storeConfig)
       throws StorageInitializationException {

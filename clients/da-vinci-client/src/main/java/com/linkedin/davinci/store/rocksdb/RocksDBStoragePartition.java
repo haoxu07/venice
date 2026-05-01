@@ -53,6 +53,7 @@ import org.rocksdb.Slice;
 import org.rocksdb.SstFileWriter;
 import org.rocksdb.Statistics;
 import org.rocksdb.Status;
+import org.rocksdb.StringAppendOperator;
 import org.rocksdb.WriteOptions;
 
 
@@ -423,6 +424,15 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
     options.setMemtableHugePageSize(rocksDBServerConfig.getMemTableHugePageSize());
 
     options.setCreateMissingColumnFamilies(true); // This config allows to create new column family automatically.
+
+    // VT-merge experiment: register StringAppendOperator on the default column family when the
+    // server-side flag is on. RMD column family is unaffected (RMD is not used in the VT-merge
+    // path; see GOAL.md §2). We use a 1-byte delimiter (0x01) — operand chunks already carry
+    // their own [kind][len:varint] header, so the delimiter is just structural padding the reader
+    // skips over.
+    if (!isRMD && factory.isVtUpdateOperandEnabled()) {
+      options.setMergeOperator(new StringAppendOperator((char) 0x01));
+    }
     return options;
   }
 
@@ -531,6 +541,41 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
   @Override
   public <K, V> void put(K key, V value) {
     throw new UnsupportedOperationException("Method not implemented!!");
+  }
+
+  /**
+   * VT-merge experiment: invoke RocksDB's {@code merge} on the default column family. The merge
+   * operator must already be registered (via {@code getStoreOptions} when
+   * {@code server.vt.update.operand.enabled} is on); otherwise RocksDB will throw at the
+   * native layer.
+   *
+   * <p>The {@code operand} buffer is expected to be in the wire format
+   * {@code [kind=0x01][len:varint][avro-WC-payload]} — see
+   * {@code MaterializingRocksDBStoragePartition} for the read-side fold.
+   *
+   * @param key the key to merge against.
+   * @param operand the operand bytes; caller retains ownership.
+   */
+  @Override
+  public synchronized void merge(byte[] key, ByteBuffer operand) {
+    makeSureRocksDBIsStillOpen();
+    if (readOnly) {
+      throw new VeniceException(
+          "Cannot make writes while database is opened in read-only mode for replica: " + replicaId);
+    }
+    try {
+      rocksDB.merge(
+          writeOptions,
+          key,
+          0,
+          key.length,
+          operand.array(),
+          operand.position(),
+          operand.remaining());
+    } catch (RocksDBException e) {
+      checkAndThrowDiskLimitException(e);
+      throw new VeniceException("Failed to merge operand into RocksDB: " + replicaId, e);
+    }
   }
 
   @Override
