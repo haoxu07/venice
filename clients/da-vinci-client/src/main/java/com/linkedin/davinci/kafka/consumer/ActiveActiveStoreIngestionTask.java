@@ -742,6 +742,32 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
           beforeProcessingBatchRecordsTimestampMs);
       return;
     }
+
+    /**
+     * VT-merge experiment fast path. When {@code server.vt.update.operand.enabled} is on AND the
+     * incoming RT message is an UPDATE, bypass {@code MergeConflictResolver.update()} entirely:
+     * the leader does not read the existing value/RMD, does not run DCR — it just forwards the
+     * raw operand to VT as a {@code MessageType.UPDATE}. The follower / leader-local replica's
+     * VT-consumption path picks it up and routes to {@code storageEngine.merge(...)} which appends
+     * the operand into RocksDB via {@code StringAppendOperator}. See {@code GOAL.md §3 Phase 1}.
+     *
+     * Note: this is intentionally a single-region, no-DCR experiment. PUT and DELETE still go
+     * through the original DCR path; only UPDATE short-circuits.
+     */
+    if (getServerConfig().isVtUpdateOperandEnabled()) {
+      DefaultPubSubMessage rtRecord = consumerRecordWrapper.getMessage();
+      KafkaMessageEnvelope rtKafkaValue = rtRecord.getValue();
+      if (MessageType.valueOf(rtKafkaValue.messageType) == MessageType.UPDATE) {
+        produceUpdateOperandToVT(
+            rtRecord,
+            partitionConsumptionState,
+            partition,
+            kafkaUrl,
+            kafkaClusterId,
+            beforeProcessingRecordTimestampNs);
+        return;
+      }
+    }
     DefaultPubSubMessage consumerRecord = consumerRecordWrapper.getMessage();
     KafkaKey kafkaKey = consumerRecord.getKey();
     byte[] keyBytes = kafkaKey.getKey();
@@ -898,6 +924,74 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     } catch (IOException e) {
       throw new VeniceException(e);
     }
+  }
+
+  /**
+   * VT-merge experiment fast path. Produces the incoming RT {@code Update} message directly to
+   * the local Version Topic as a {@code MessageType.UPDATE} carrying the raw operand bytes.
+   * <p>
+   * Compared to {@link #producePutOrDeleteToKafka}: no value lookup, no RMD lookup, no DCR, no
+   * transient-record bookkeeping, no view-writer fan-out. The follower's VT-consumption path
+   * (overridden in {@link StoreIngestionTask#processKafkaDataMessage}) routes the UPDATE to
+   * {@code storageEngine.merge(...)}.
+   * <p>
+   * The wire format on VT is identical to the wire format on RT — we forward the same
+   * {@link Update} payloadUnion. This means the VT consistency checker (which compares VT bytes
+   * across regions for the same key) will see operand-shaped messages on VT in this mode, not
+   * full PUTs.
+   */
+  private void produceUpdateOperandToVT(
+      DefaultPubSubMessage rtRecord,
+      PartitionConsumptionState partitionConsumptionState,
+      int partition,
+      String kafkaUrl,
+      int kafkaClusterId,
+      long beforeProcessingRecordTimestampNs) {
+    aggVersionedIngestionStats.recordTotalDCR(storeName, versionNumber);
+    KafkaKey rtKafkaKey = rtRecord.getKey();
+    final byte[] keyBytes = rtKafkaKey.getKey();
+    final Update incomingUpdate = (Update) rtRecord.getValue().payloadUnion;
+
+    // Build a lean Update payload for the VT producer. We pass through updateValue, schemaId,
+    // and updateSchemaId verbatim — same Avro WC bytes the leader received on RT.
+    final Update vtUpdate = new Update();
+    vtUpdate.updateValue = incomingUpdate.updateValue;
+    vtUpdate.schemaId = incomingUpdate.schemaId;
+    vtUpdate.updateSchemaId = incomingUpdate.updateSchemaId;
+
+    final ByteBuffer operandForProduce = incomingUpdate.updateValue;
+    final int valueSchemaId = incomingUpdate.schemaId;
+    final int derivedSchemaId = incomingUpdate.updateSchemaId;
+
+    LeaderProducedRecordContext leaderProducedRecordContext = LeaderProducedRecordContext
+        .newUpdateRecord(kafkaClusterId, rtRecord.getPosition(), keyBytes, vtUpdate);
+
+    BiConsumer<ChunkAwareCallback, LeaderMetadataWrapper> produceToTopicFunction = (callback, leaderMetadataWrapper) -> {
+      // VeniceWriter.update produces MessageType.UPDATE to the topic. The writeComputeSerializer
+      // for the leader writer is DefaultSerializer (byte[]→byte[] passthrough — see
+      // VeniceWriterOptions defaults), so the bytes on VT are exactly the operand bytes from RT.
+      // N.B. we do not have a writer.update() overload that takes the same LeaderMetadataWrapper;
+      // for Phase 1 the leaderMetadataWrapper's RT position bookkeeping is best-effort. The DIV
+      // path is unchanged because produced messages still go through the same VeniceWriter.
+      partitionConsumptionState.getVeniceWriterLazyRef()
+          .get()
+          .update(
+              keyBytes,
+              ByteUtils.extractByteArray(operandForProduce),
+              valueSchemaId,
+              derivedSchemaId,
+              callback);
+    };
+
+    produceToLocalKafka(
+        rtRecord,
+        partitionConsumptionState,
+        leaderProducedRecordContext,
+        produceToTopicFunction,
+        partition,
+        kafkaUrl,
+        kafkaClusterId,
+        beforeProcessingRecordTimestampNs);
   }
 
   /**

@@ -3,12 +3,14 @@ package com.linkedin.davinci.kafka.consumer;
 import static com.linkedin.venice.kafka.protocol.enums.MessageType.CONTROL_MESSAGE;
 import static com.linkedin.venice.kafka.protocol.enums.MessageType.DELETE;
 import static com.linkedin.venice.kafka.protocol.enums.MessageType.PUT;
+import static com.linkedin.venice.kafka.protocol.enums.MessageType.UPDATE;
 import static com.linkedin.venice.memory.ClassSizeEstimator.getClassOverhead;
 import static com.linkedin.venice.memory.InstanceSizeEstimator.getSize;
 
 import com.linkedin.venice.kafka.protocol.ControlMessage;
 import com.linkedin.venice.kafka.protocol.Delete;
 import com.linkedin.venice.kafka.protocol.Put;
+import com.linkedin.venice.kafka.protocol.Update;
 import com.linkedin.venice.kafka.protocol.enums.MessageType;
 import com.linkedin.venice.memory.Measurable;
 import com.linkedin.venice.pubsub.api.PubSubPosition;
@@ -45,7 +47,8 @@ public class LeaderProducedRecordContext implements Measurable {
   private final PubSubPosition consumedPosition;
 
   /**
-   * Type of message should be only PUT/DELETE/CONTROL_MESSAGE and never be UPDATE.
+   * Type of message: PUT, DELETE, CONTROL_MESSAGE, or (only when the VT-merge experiment is on
+   * via {@code SERVER_VT_UPDATE_OPERAND_ENABLED}) UPDATE.
    */
   private final MessageType messageType;
 
@@ -142,6 +145,22 @@ public class LeaderProducedRecordContext implements Measurable {
       Delete valueUnion) {
     checkConsumedOffsetParam(consumedOffset);
     return new LeaderProducedRecordContext(consumedKafkaClusterId, consumedOffset, DELETE, keyBytes, valueUnion);
+  }
+
+  /**
+   * Construct an UPDATE record context. Used by the VT-merge experiment (
+   * {@code com.linkedin.venice.ConfigKeys#SERVER_VT_UPDATE_OPERAND_ENABLED}) where the leader
+   * forwards RT UPDATE messages directly to VT carrying raw operand bytes — bypassing the
+   * read-modify-write DCR path. The downstream drainer routes this to
+   * {@code storageEngine.merge(...)}.
+   */
+  public static LeaderProducedRecordContext newUpdateRecord(
+      int consumedKafkaClusterId,
+      PubSubPosition consumedOffset,
+      byte[] keyBytes,
+      Update valueUnion) {
+    checkConsumedOffsetParam(consumedOffset);
+    return new LeaderProducedRecordContext(consumedKafkaClusterId, consumedOffset, UPDATE, keyBytes, valueUnion);
   }
 
   private LeaderProducedRecordContext(

@@ -2814,9 +2814,11 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         return DelegateConsumerRecordResult.SKIPPED_MESSAGE;
       }
       boolean produceToLocalKafka = shouldProduceToVersionTopic(partitionConsumptionState);
-      // UPDATE message is only expected in LEADER which must be produced to kafka.
+      // UPDATE message is only expected in LEADER which must be produced to kafka — except when the
+      // VT-merge experiment is on, in which case the leader forwards UPDATEs to VT and the
+      // follower / local-replica VT-consumption path routes them to storageEngine.merge(...).
       MessageType msgType = MessageType.valueOf(kafkaValue);
-      if (msgType == UPDATE && !produceToLocalKafka) {
+      if (msgType == UPDATE && !produceToLocalKafka && !serverConfig.isVtUpdateOperandEnabled()) {
         throw new VeniceMessageException(
             ingestionTaskName + " hasProducedToKafka: Received UPDATE message in non-leader for: "
                 + consumerRecord.getTopicPartition() + " Offset " + consumerRecord.getPosition());

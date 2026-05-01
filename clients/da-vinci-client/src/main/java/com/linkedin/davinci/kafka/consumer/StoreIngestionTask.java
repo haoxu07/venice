@@ -4847,6 +4847,39 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         break;
 
       case UPDATE:
+        /**
+         * VT-merge experiment: when {@code server.vt.update.operand.enabled} is on, the leader
+         * forwards UPDATE messages directly to VT carrying raw operand bytes (no DCR, no value
+         * lookup). We accept those here and route them to {@code storageEngine.merge(...)} which
+         * appends the operand into RocksDB via the registered StringAppendOperator. See
+         * {@link com.linkedin.davinci.kafka.consumer.ActiveActiveStoreIngestionTask#produceUpdateOperandToVT}.
+         */
+        if (serverConfig.isVtUpdateOperandEnabled()) {
+          Update updateMsg;
+          if (leaderProducedRecordContext == null) {
+            keyBytes = kafkaKey.getKey();
+            updateMsg = (Update) kafkaValue.payloadUnion;
+          } else {
+            keyBytes = leaderProducedRecordContext.getKeyBytes();
+            updateMsg = (Update) leaderProducedRecordContext.getValueUnion();
+          }
+          keyLen = keyBytes.length;
+          ByteBuffer operandBuffer = updateMsg.updateValue;
+          valueLen = operandBuffer.remaining();
+          try {
+            storageEngine.merge(producedPartition, keyBytes, operandBuffer);
+          } catch (PersistenceFailureException e) {
+            throwOrLogStorageFailureDependingIfStillSubscribed(producedPartition, e);
+          }
+          if (recordMetrics) {
+            double mergeLatency = LatencyUtils.getElapsedTimeFromNSToMS(startTimeNs);
+            versionedIngestionStats.recordStorageEnginePutTime(storeName, versionNumber, mergeLatency);
+            if (tehutiRecordMetrics) {
+              hostLevelIngestionStats.recordStorageEnginePutLatency(mergeLatency, currentTimeMs);
+            }
+          }
+          break;
+        }
         throw new VeniceMessageException(
             ingestionTaskName + ": Not expecting UPDATE message from: " + consumerRecord.getTopicPartition()
                 + ", Offset: " + consumerRecord.getPosition());
