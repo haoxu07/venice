@@ -172,6 +172,11 @@ public class DelegatingStorageEngine<P extends AbstractStoragePartition> impleme
   }
 
   @Override
+  public void merge(int partitionId, byte[] key, ByteBuffer operand) throws VeniceException {
+    this.delegate.merge(partitionId, key, operand);
+  }
+
+  @Override
   public void deleteWithReplicationMetadata(int partitionId, byte[] key, byte[] replicationMetadata)
       throws VeniceException {
     this.delegate.deleteWithReplicationMetadata(partitionId, key, replicationMetadata);
