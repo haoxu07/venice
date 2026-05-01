@@ -1,0 +1,4 @@
+phase	designMode	jmh_ops_per_sec	e2e_ops_per_sec	storage_dc0_bytes	storage_dc1_bytes	read_lat_dc0_p50_ns	read_lat_dc0_p99_ns	read_lat_dc1_p50_ns	read_lat_dc1_p99_ns	vt_mismatches	vt_missing	vt_errors	harness_start_ms	raw_log
+phase2	BASELINE	136305.583	30569.73	971053848	971046550	27396	63536	27598	64016	0	0	0	13600	data/raw/phase1-baseline-sanity.log
+phase2	MERGE_OPERAND	133164.533	64799.87	206455493	206458951	11699	22425	11529	25202	0	0	0	13604	data/raw/phase1-merge-operand-v2.log
+phase2	MERGE_OPERAND_SWEPT	139348.928	67800.50	206456849	206462250	14221	21927	13867	21421	0	0	0	13609	data/raw/phase2-merge-operand-swept.log
