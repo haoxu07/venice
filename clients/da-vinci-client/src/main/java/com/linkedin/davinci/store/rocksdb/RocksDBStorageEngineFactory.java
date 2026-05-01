@@ -260,6 +260,22 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
     return serverConfig.isVtUpdateOperandEnabled();
   }
 
+  /**
+   * @return whether the Phase 2 sweeper flag {@code server.merge.sweep.enabled} is on. Has effect
+   *         only when {@code server.vt.update.operand.enabled} is also on.
+   */
+  public boolean isMergeSweepEnabled() {
+    return serverConfig.isMergeSweepEnabled();
+  }
+
+  public int getMergeSweepBudgetPerCall() {
+    return serverConfig.getMergeSweepBudgetPerCall();
+  }
+
+  public long getMergeSweepDebounceMs() {
+    return serverConfig.getMergeSweepDebounceMs();
+  }
+
   @Override
   public synchronized StorageEngine getStorageEngine(VeniceStoreVersionConfig storeConfig)
       throws StorageInitializationException {
