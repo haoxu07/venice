@@ -1,0 +1,24 @@
+metric	value	unit	notes
+jmh_score	138323.031	ops/s	JMH measurement iteration; warmup score 54914.9 not used
+e2e_throughput_warmup	19413.40	ops/s	First E2E iteration (warmup), records=275_000, elapsed=14165ms
+e2e_throughput_measurement	30037.68	ops/s	Measurement iteration, records=2_767_000, elapsed=92117ms
+vt_check_mismatches	0	count	Cross-region VT consistency check passed
+vt_check_missing	0	count	Cross-region VT consistency check passed
+vt_check_errors	0	count	Cross-region VT consistency check passed
+harness_start_ms	13774	ms	MinimalAAIngestionHarness start() time
+records_in_measurement	2767000	count	Total records produced during measurement iteration
+key_pool_size	100000	count	PARTIAL_UPDATE_KEY_POOL_SIZE (post-bump)
+storage_size_dc0_bytes	900961598	bytes	~900 MB on disk after measurement (incl. pre-population + 2.7M updates)
+storage_size_dc1_bytes	900923026	bytes	~900 MB on disk
+read_lat_dc0_p50_ns	17737	ns	~17.7 us; 5K samples, hot pool keys
+read_lat_dc0_p99_ns	59548	ns	~59.5 us
+read_lat_dc1_p50_ns	19101	ns	~19.1 us
+read_lat_dc1_p99_ns	59560	ns	~59.6 us
+benchmark_class	LeanActiveActiveIngestionBenchmark
+workload_type	PARTIAL_UPDATE
+design_mode	BASELINE	(implicit)	No flag wired yet
+jvm_heap	32G		-Xms32G -Xmx32G
+jmh_params	-f 1 -wi 1 -w 5s -i 1 -r 20s -foe true		Standard params
+git_head_pre_metric	0dc65b0ce		[bench] Bump PARTIAL_UPDATE_KEY_POOL_SIZE to 100_000
+git_head_with_metrics	(post-commit)		[bench] Add storage size + read latency capture
+vt_bytes_per_sec	NOT_CAPTURED	bytes/s	Will derive in Phase 1 from per-region storage delta over measurement window

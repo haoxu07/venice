@@ -221,6 +221,21 @@ public class LeanActiveActiveIngestionBenchmark {
         t.printStackTrace(System.err);
       }
     }
+    // Capture storage size + a quick read-latency probe BEFORE harness.stop() deletes temp dirs.
+    if (harness != null) {
+      try {
+        captureStorageMetrics();
+      } catch (Throwable t) {
+        System.err.println("[STORAGE] Capture failed: " + t);
+        t.printStackTrace(System.err);
+      }
+      try {
+        captureReadLatencyMetrics();
+      } catch (Throwable t) {
+        System.err.println("[READ-LAT] Capture failed: " + t);
+        t.printStackTrace(System.err);
+      }
+    }
     if (harness != null) {
       try {
         harness.stop();
@@ -228,6 +243,86 @@ public class LeanActiveActiveIngestionBenchmark {
         System.err.println("[LeanActiveActiveIngestionBenchmark] harness.stop() threw: " + t);
       }
     }
+  }
+
+  /**
+   * Walk both region RocksDB dirs and emit total bytes-on-disk per region. Captured before
+   * {@code harness.stop()} since stop() deletes the temp dirs.
+   */
+  private void captureStorageMetrics() {
+    for (int regionId = 0; regionId < REGION_COUNT; regionId++) {
+      java.io.File regionRoot = harness.getRegionTempDir(regionId);
+      java.io.File rocksdbRoot = new java.io.File(regionRoot, "rocksdb");
+      long bytes = directorySize(rocksdbRoot);
+      System.err.println(
+          String.format("[STORAGE] region=dc-%d rocksdb_bytes=%d rocksdb_path=%s",
+              regionId, bytes, rocksdbRoot.getAbsolutePath()));
+    }
+  }
+
+  private static long directorySize(java.io.File path) {
+    if (path == null || !path.exists()) {
+      return 0L;
+    }
+    if (path.isFile()) {
+      return path.length();
+    }
+    long total = 0L;
+    java.io.File[] children = path.listFiles();
+    if (children == null) {
+      return 0L;
+    }
+    for (java.io.File child: children) {
+      total += directorySize(child);
+    }
+    return total;
+  }
+
+  /**
+   * Probe read latency on a sample of "hot" keys (the partial-update pool keys). Emits p50/p99
+   * from a single-thread tight loop of {@code engine.get(partition, key)} calls. Captures both
+   * regions for symmetry. Sample size is bounded so this doesn't stretch teardown by minutes.
+   */
+  private void captureReadLatencyMetrics() {
+    if (workloadType != WorkloadType.PARTIAL_UPDATE) {
+      return;
+    }
+    final int sampleCount = 5_000;
+    final int strideOverPool = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / sampleCount);
+    long[] dc0Nanos = new long[sampleCount];
+    long[] dc1Nanos = new long[sampleCount];
+    int captured = 0;
+    for (int i = 0; i < sampleCount && i * strideOverPool < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+      String key = partialUpdatePoolPrePopulateKey(i * strideOverPool);
+      byte[] keyBytes = keySerializer.serialize(key);
+      int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
+      long t0 = System.nanoTime();
+      byte[] dc0 = engineDC0.get(partition, keyBytes);
+      long t1 = System.nanoTime();
+      byte[] dc1 = engineDC1.get(partition, keyBytes);
+      long t2 = System.nanoTime();
+      if (dc0 != null && dc1 != null) {
+        dc0Nanos[captured] = t1 - t0;
+        dc1Nanos[captured] = t2 - t1;
+        captured++;
+      }
+    }
+    if (captured == 0) {
+      System.err.println("[READ-LAT] No hot keys returned non-null; aborting probe.");
+      return;
+    }
+    long[] dc0Trim = java.util.Arrays.copyOf(dc0Nanos, captured);
+    long[] dc1Trim = java.util.Arrays.copyOf(dc1Nanos, captured);
+    java.util.Arrays.sort(dc0Trim);
+    java.util.Arrays.sort(dc1Trim);
+    long dc0p50 = dc0Trim[(int) (captured * 0.50)];
+    long dc0p99 = dc0Trim[(int) (captured * 0.99)];
+    long dc1p50 = dc1Trim[(int) (captured * 0.50)];
+    long dc1p99 = dc1Trim[(int) (captured * 0.99)];
+    System.err.println(
+        String.format(
+            "[READ-LAT] samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
+            captured, dc0p50, dc0p99, dc1p50, dc1p99));
   }
 
   /**
