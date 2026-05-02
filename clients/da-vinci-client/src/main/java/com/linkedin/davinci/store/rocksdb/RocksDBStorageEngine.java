@@ -144,6 +144,18 @@ public class RocksDBStorageEngine extends AbstractStorageEngine<RocksDBStoragePa
   public RocksDBStoragePartition createStoragePartition(StoragePartitionConfig storagePartitionConfig) {
     // Metadata partition should not enable replication metadata column family.
     if (storagePartitionConfig.getPartitionId() == METADATA_PARTITION_ID || !replicationMetadataEnabled) {
+      // VT-merge experiment: when the feature flag is on, use the materializing subclass which
+      // wraps put/merge with kind-byte framing and folds concat blobs on read. Metadata
+      // partitions still use the base class to avoid framing internal Venice metadata.
+      if (factory.isVtUpdateOperandEnabled() && storagePartitionConfig.getPartitionId() != METADATA_PARTITION_ID) {
+        return new MaterializingRocksDBStoragePartition(
+            storagePartitionConfig,
+            factory,
+            rocksDbPath,
+            memoryStats,
+            rocksDbThrottler,
+            rocksDBServerConfig);
+      }
       return new RocksDBStoragePartition(
           storagePartitionConfig,
           factory,

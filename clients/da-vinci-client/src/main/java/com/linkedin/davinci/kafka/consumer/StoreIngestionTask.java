@@ -4866,8 +4866,19 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           keyLen = keyBytes.length;
           ByteBuffer operandBuffer = updateMsg.updateValue;
           valueLen = operandBuffer.remaining();
+          // VT-merge experiment Phase B: prepend the (valueSchemaId, updateSchemaId) pair to the
+          // operand bytes before calling merge. The materializing storage partition will frame
+          // the result as [0x01][len:varint][operand-content] and the read-fold path will
+          // recover the schema ids to deserialize the WC operand against the correct schema.
+          // See com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent.
+          byte[] payload = com.linkedin.venice.utils.ByteUtils.extractByteArray(operandBuffer);
+          byte[] operandContent =
+              com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent.frame(
+                  updateMsg.schemaId,
+                  updateMsg.updateSchemaId,
+                  payload);
           try {
-            storageEngine.merge(producedPartition, keyBytes, operandBuffer);
+            storageEngine.merge(producedPartition, keyBytes, ByteBuffer.wrap(operandContent));
           } catch (PersistenceFailureException e) {
             throwOrLogStorageFailureDependingIfStillSubscribed(producedPartition, e);
           }

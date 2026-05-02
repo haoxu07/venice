@@ -271,6 +271,22 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         schemaRepository,
         mergeRecordHelper,
         serverConfig.isComputeFastAvroEnabled());
+
+    // VT-merge experiment Phase B: register a MaterializingFoldContext so this store-version's
+    // RocksDB partitions can fold concat-blob reads back to materialized records using this
+    // task's WriteComputeProcessor + schema repository. The registration is keyed by the
+    // store-version-topic name (which matches RocksDBStoragePartition.storeNameAndVersion).
+    if (serverConfig.isVtUpdateOperandEnabled()) {
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext foldContext =
+          new com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext(
+              storeName,
+              schemaRepository,
+              this.storeWriteComputeHandler,
+              serverConfig.isComputeFastAvroEnabled());
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.register(
+          getKafkaVersionTopic(),
+          foldContext);
+    }
     this.isNativeReplicationEnabled = version.isNativeReplicationEnabled();
 
     configureNativeReplicationAndDataRecovery(version, true);
@@ -378,6 +394,18 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
     if (veniceWriterForRealTime.isPresent()) {
       veniceWriterForRealTime.get().close(doFlush);
     }
+  }
+
+  @Override
+  public synchronized void close() {
+    // VT-merge experiment Phase B: unregister the materializing fold context (no-op if it was
+    // never registered). Done before super.close() so any in-flight read on this store-version
+    // will fail loudly rather than silently use a stale context after close.
+    if (serverConfig.isVtUpdateOperandEnabled()) {
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry
+          .unregister(getKafkaVersionTopic());
+    }
+    super.close();
   }
 
   @Override

@@ -1,0 +1,230 @@
+package com.linkedin.davinci.store.rocksdb.merge;
+
+import com.linkedin.davinci.kafka.consumer.StoreWriteComputeProcessor;
+import com.linkedin.davinci.kafka.consumer.WriteComputeResult;
+import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
+import com.linkedin.davinci.serializer.avro.fast.MapOrderPreservingFastSerDeFactory;
+import com.linkedin.venice.exceptions.VeniceException;
+import com.linkedin.venice.meta.ReadOnlySchemaRepository;
+import com.linkedin.venice.serializer.RecordDeserializer;
+import com.linkedin.venice.utils.collections.BiIntKeyCache;
+import java.nio.ByteBuffer;
+import java.util.List;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericRecord;
+
+
+/**
+ * Per-store context the {@link com.linkedin.davinci.store.rocksdb.MaterializingRocksDBStoragePartition}
+ * uses to fold a concat-blob into a materialized base record on read.
+ *
+ * <p>Holds:
+ * <ul>
+ *   <li>a {@link ReadOnlySchemaRepository} for value-schema and write-compute-schema lookup
+ *   <li>a {@link StoreWriteComputeProcessor} for applying WC operands to a base record
+ *   <li>per-schemaId Avro deserializer cache for the base value bytes
+ * </ul>
+ *
+ * <p>Lifecycle: created and {@link MaterializingFoldContextRegistry#register registered} by an
+ * ingestion task when it first opens a store-version's storage; unregistered when the store-
+ * version is closed. The storage partition looks up the context via the registry on each
+ * {@code get} call. If no context is registered (e.g. during boot, or for store-versions where
+ * no ingestion task is running), the storage partition falls back to returning raw bytes.
+ *
+ * <p>Per the VT-merge experiment {@code GOAL.md} §4 Phase B + §6.
+ */
+public final class MaterializingFoldContext {
+  private final String storeName;
+  private final ReadOnlySchemaRepository schemaRepository;
+  private final StoreWriteComputeProcessor wcProcessor;
+  private final boolean fastAvroEnabled;
+
+  /** Cache for value-schema deserializers, keyed by (writerSchemaId, readerSchemaId). */
+  private final BiIntKeyCache<RecordDeserializer<GenericRecord>> valueDeserializerCache;
+
+  public MaterializingFoldContext(
+      String storeName,
+      ReadOnlySchemaRepository schemaRepository,
+      StoreWriteComputeProcessor wcProcessor,
+      boolean fastAvroEnabled) {
+    this.storeName = storeName;
+    this.schemaRepository = schemaRepository;
+    this.wcProcessor = wcProcessor;
+    this.fastAvroEnabled = fastAvroEnabled;
+    this.valueDeserializerCache = new BiIntKeyCache<>((writerId, readerId) -> {
+      Schema writer = schemaRepository.getValueSchema(storeName, writerId).getSchema();
+      Schema reader = schemaRepository.getValueSchema(storeName, readerId).getSchema();
+      if (this.fastAvroEnabled) {
+        return MapOrderPreservingFastSerDeFactory.getDeserializer(writer, reader);
+      }
+      return MapOrderPreservingSerDeFactory.getDeserializer(writer, reader);
+    });
+  }
+
+  /**
+   * Apply the operand chain to the base value bytes. Returns the materialized value bytes (Avro
+   * encoded, no schema-id prefix). Caller is responsible for prepending the schemaId header.
+   *
+   * @param baseSchemaId schema id the base bytes were encoded under
+   * @param baseValueBytes Avro-encoded base value (no schema-id prefix)
+   * @param framedOperands list of operand-content blobs in arrival order; each blob is structured
+   *     {@code [valueSchemaId : 4B BE][updateSchemaId : 4B BE][avro-WC-payload]}
+   * @return Avro-encoded materialized value (no schema-id prefix)
+   */
+  public byte[] foldOperands(int baseSchemaId, byte[] baseValueBytes, List<byte[]> framedOperands) {
+    if (framedOperands == null || framedOperands.isEmpty()) {
+      return baseValueBytes;
+    }
+    GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, baseValueBytes);
+    byte[] last = baseValueBytes;
+    int lastSchemaId = baseSchemaId;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      WriteComputeResult result = wcProcessor.applyWriteCompute(
+          curr,
+          c.valueSchemaId,
+          baseSchemaId,
+          ByteBuffer.wrap(c.payload),
+          c.updateSchemaId,
+          c.updateSchemaId);
+      curr = result.getUpdatedValue();
+      if (curr == null) {
+        // WC delete: return null tombstone bytes
+        return null;
+      }
+      last = result.getUpdatedValueBytes();
+      lastSchemaId = baseSchemaId;
+    }
+    if (lastSchemaId != baseSchemaId) {
+      // Defensive — shouldn't happen since we always pass baseSchemaId as readerValueSchemaId.
+      throw new VeniceException("Unexpected schema-id drift during fold");
+    }
+    return last;
+  }
+
+  /**
+   * Apply operands against an empty/default base when no base record is yet on disk. Used for
+   * the operand-only edge case (key was first written via Merge before any Put).
+   *
+   * @param framedOperands list of operand-content blobs (see {@link #foldOperands})
+   * @return (resolvedSchemaId, materialized value bytes) so the caller can frame with the
+   *     schemaId. Returns null bytes for a WC-delete tombstone.
+   */
+  public FoldOnlyResult foldOperandOnly(List<byte[]> framedOperands) {
+    if (framedOperands == null || framedOperands.isEmpty()) {
+      throw new VeniceException("foldOperandOnly called with empty operand list");
+    }
+    // Use the first operand's value-schema-id as the resolution rule (per GOAL.md §6 "use the
+    // latest WC schema id from the schema repo" — but the operand carries its own schema id, so
+    // we use that).
+    OperandContent firstOp = OperandContent.parse(framedOperands.get(0));
+    int valueSchemaId = firstOp.valueSchemaId;
+
+    GenericRecord curr = null; // empty base; WriteComputeProcessor handles null currValue.
+    int lastSchemaId = valueSchemaId;
+    byte[] lastBytes = null;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      WriteComputeResult result = wcProcessor.applyWriteCompute(
+          curr,
+          c.valueSchemaId,
+          valueSchemaId,
+          ByteBuffer.wrap(c.payload),
+          c.updateSchemaId,
+          c.updateSchemaId);
+      curr = result.getUpdatedValue();
+      if (curr == null) {
+        return new FoldOnlyResult(valueSchemaId, null);
+      }
+      lastBytes = result.getUpdatedValueBytes();
+    }
+    return new FoldOnlyResult(lastSchemaId, lastBytes);
+  }
+
+  /**
+   * Deserialize Avro value bytes (no schema-id prefix) into a {@link GenericRecord} using the
+   * cached deserializer for the schema-id pair.
+   */
+  GenericRecord deserializeValue(int writerSchemaId, int readerSchemaId, byte[] avroBytes) {
+    return valueDeserializerCache.get(writerSchemaId, readerSchemaId).deserialize(avroBytes);
+  }
+
+  public String getStoreName() {
+    return storeName;
+  }
+
+  /**
+   * Result of folding an operand-only chain: the schema id under which the materialized record is
+   * encoded, plus the bytes (or null if folded to a tombstone).
+   */
+  public static final class FoldOnlyResult {
+    private final int schemaId;
+    private final byte[] bytes;
+
+    FoldOnlyResult(int schemaId, byte[] bytes) {
+      this.schemaId = schemaId;
+      this.bytes = bytes;
+    }
+
+    public int getSchemaId() {
+      return schemaId;
+    }
+
+    public byte[] getBytes() {
+      return bytes;
+    }
+  }
+
+  /**
+   * Wire format inside an operand "content" blob (the bytes wrapped by
+   * {@link ConcatBlobParser}'s {@code [0x01][len:varint]} framing):
+   * {@code [valueSchemaId : 4B BE][updateSchemaId : 4B BE][avro-WC-payload]}.
+   *
+   * <p>The follower's UPDATE-consume path (in {@code StoreIngestionTask}) prepends the two
+   * schema-id ints before calling {@code storageEngine.merge(...)}. This carries the schema
+   * identity through the on-disk representation so the read-fold path can deserialize the
+   * operand against the correct WC schema.
+   */
+  public static final class OperandContent {
+    public final int valueSchemaId;
+    public final int updateSchemaId;
+    public final byte[] payload;
+
+    public OperandContent(int valueSchemaId, int updateSchemaId, byte[] payload) {
+      this.valueSchemaId = valueSchemaId;
+      this.updateSchemaId = updateSchemaId;
+      this.payload = payload;
+    }
+
+    public static OperandContent parse(byte[] content) {
+      if (content == null || content.length < 8) {
+        throw new VeniceException(
+            "OperandContent: too short (" + (content == null ? 0 : content.length) + " bytes)");
+      }
+      int valueSchemaId =
+          ((content[0] & 0xff) << 24) | ((content[1] & 0xff) << 16) | ((content[2] & 0xff) << 8) | (content[3] & 0xff);
+      int updateSchemaId =
+          ((content[4] & 0xff) << 24) | ((content[5] & 0xff) << 16) | ((content[6] & 0xff) << 8) | (content[7] & 0xff);
+      byte[] payload = new byte[content.length - 8];
+      System.arraycopy(content, 8, payload, 0, payload.length);
+      return new OperandContent(valueSchemaId, updateSchemaId, payload);
+    }
+
+    /**
+     * Build operand content bytes by prepending the two schema-id ints to {@code payload}.
+     */
+    public static byte[] frame(int valueSchemaId, int updateSchemaId, byte[] payload) {
+      byte[] out = new byte[8 + payload.length];
+      out[0] = (byte) (valueSchemaId >>> 24);
+      out[1] = (byte) (valueSchemaId >>> 16);
+      out[2] = (byte) (valueSchemaId >>> 8);
+      out[3] = (byte) valueSchemaId;
+      out[4] = (byte) (updateSchemaId >>> 24);
+      out[5] = (byte) (updateSchemaId >>> 16);
+      out[6] = (byte) (updateSchemaId >>> 8);
+      out[7] = (byte) updateSchemaId;
+      System.arraycopy(payload, 0, out, 8, payload.length);
+      return out;
+    }
+  }
+}
