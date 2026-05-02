@@ -603,7 +603,14 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
           "Cannot make writes while database is opened in read-only mode for replica: " + replicaId);
     }
     try {
+      // VT-merge experiment: explicitly target the default column family handle. The no-CF
+      // overload of rocksDB.merge is documented as targeting the default CF, but if RocksDB
+      // has been opened with multiple column families (as in the AA case which has DEFAULT
+      // and REPLICATION_METADATA), being explicit avoids ambiguity. Index 0 is always
+      // DEFAULT_COLUMN_FAMILY in our column family list.
+      org.rocksdb.ColumnFamilyHandle defaultCfHandle = columnFamilyHandleList.get(0);
       rocksDB.merge(
+          defaultCfHandle,
           writeOptions,
           key,
           0,
