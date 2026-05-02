@@ -95,6 +95,15 @@ public class TestPartialUpdateWithActiveActiveReplication extends AbstractMultiR
   }
 
   @Override
+  protected java.util.Properties getExtraServerProperties() {
+    java.util.Properties properties = new java.util.Properties();
+    if (Boolean.getBoolean("vt.update.operand.flag")) {
+      properties.setProperty(com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED, "true");
+    }
+    return properties;
+  }
+
+  @Override
   @BeforeClass(alwaysRun = true)
   public void setUp() {
     super.setUp();

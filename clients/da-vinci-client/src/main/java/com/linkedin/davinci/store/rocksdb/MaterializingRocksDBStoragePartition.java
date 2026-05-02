@@ -66,12 +66,20 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
   @Override
   public byte[] get(byte[] key) {
     byte[] raw = super.get(key);
+    // Diagnostic: log presence/absence at storage level so we can tell whether the bug is
+    // upstream (data never made it to disk) or downstream (data is here but reader doesn't see it).
+    org.apache.logging.log4j.LogManager.getLogger(MaterializingRocksDBStoragePartition.class)
+        .info("VT-merge READ-DIAG[byte[]]: storeVersion={} keyLen={} rawNull={} rawLen={}",
+            storeNameAndVersion, key.length, raw == null, raw == null ? -1 : raw.length);
     return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }
 
   @Override
   public ByteBuffer get(byte[] key, ByteBuffer valueToBePopulated) {
     byte[] raw = super.get(key);
+    org.apache.logging.log4j.LogManager.getLogger(MaterializingRocksDBStoragePartition.class)
+        .info("VT-merge READ-DIAG[byte[],BB]: storeVersion={} keyLen={} rawNull={} rawLen={}",
+            storeNameAndVersion, key.length, raw == null, raw == null ? -1 : raw.length);
     if (raw == null) {
       return null;
     }
@@ -93,6 +101,9 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
   public byte[] get(ByteBuffer keyBuffer) {
     byte[] keyBytes = ByteUtils.extractByteArray(keyBuffer);
     byte[] raw = super.get(keyBytes);
+    org.apache.logging.log4j.LogManager.getLogger(MaterializingRocksDBStoragePartition.class)
+        .info("VT-merge READ-DIAG[ByteBuffer]: storeVersion={} keyLen={} rawNull={} rawLen={}",
+            storeNameAndVersion, keyBytes.length, raw == null, raw == null ? -1 : raw.length);
     return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }
 

@@ -951,7 +951,20 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       long beforeProcessingRecordTimestampNs) {
     aggVersionedIngestionStats.recordTotalDCR(storeName, versionNumber);
     KafkaKey rtKafkaKey = rtRecord.getKey();
-    final byte[] keyBytes = rtKafkaKey.getKey();
+    final byte[] rawKeyBytes = rtKafkaKey.getKey();
+    // VT-merge experiment Phase C fix: when chunking is enabled, the server's read path wraps
+    // the user key with a chunking suffix byte before looking up the value (see
+    // SingleGetChunkingAdapter / AbstractAvroChunkingAdapter — `key = KEY_WITH_CHUNKING_SUFFIX_SERIALIZER
+    // .serializeNonChunkedKey(key)` when isChunked=true). The legacy PUT path produces the wrapped
+    // key onto VT via VeniceWriter.put which internally applies the same wrapping. Our flag-on path
+    // calls VeniceWriter.update which does NOT wrap the key, so without this fix the operand lands
+    // at the raw key while reads look up the wrapped key — a deterministic miss for every read.
+    // Apply the same wrapping here so VT carries the wrapped key end-to-end (drainer → merge →
+    // RocksDB), matching what the read path expects.
+    final byte[] keyBytes = isChunked()
+        ? com.linkedin.davinci.storage.chunking.ChunkingUtils.KEY_WITH_CHUNKING_SUFFIX_SERIALIZER
+            .serializeNonChunkedKey(rawKeyBytes)
+        : rawKeyBytes;
     final Update incomingUpdate = (Update) rtRecord.getValue().payloadUnion;
 
     // Build a lean Update payload for the VT producer. We pass through updateValue, schemaId,

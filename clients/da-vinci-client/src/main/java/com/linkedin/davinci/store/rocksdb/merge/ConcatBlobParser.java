@@ -88,7 +88,19 @@ public final class ConcatBlobParser {
     byte[] base = null;
     int cursor = 0;
 
-    if (blob.length >= SCHEMA_ID_HEADER_LEN + 1 && blob[SCHEMA_ID_HEADER_LEN] == KIND_BASE) {
+    // Discriminate between materialized-base form and operand-only form:
+    //   materialized-base: [schemaId : 4B][kind=0x00 : 1B][len : varint][avro][optional concat ops]
+    //   operand-only:      [kind=0x01 : 1B][len : varint][operand][optional more ops]
+    //
+    // We MUST check blob[0]==KIND_OPERAND first. The previous version only checked
+    // blob[SCHEMA_ID_HEADER_LEN] == KIND_BASE, which collides for operand-only blobs whose
+    // schemaId byte sequence happens to contain 0x00 at offset 4 (e.g., when the operand's
+    // inner envelope embeds a 4-byte BE schema-id like 0x00 0x00 0x00 0x01 starting at offset 2,
+    // the byte at offset 4 is 0x00 == KIND_BASE → false-positive base detection).
+    if (blob[0] == KIND_OPERAND) {
+      // Operand-only blob: parse as a chain starting at offset 0.
+      // schemaId stays NO_SCHEMA_ID_PRESENT, base stays null, cursor stays 0.
+    } else if (blob.length >= SCHEMA_ID_HEADER_LEN + 1 && blob[SCHEMA_ID_HEADER_LEN] == KIND_BASE) {
       schemaId = ByteUtils.readInt(blob, 0);
       cursor = SCHEMA_ID_HEADER_LEN + 1; // past schemaId + kind byte
       // Read varint length, then the base payload.
@@ -103,12 +115,11 @@ public final class ConcatBlobParser {
       base = new byte[baseLen];
       System.arraycopy(blob, cursor, base, 0, baseLen);
       cursor += baseLen;
-    } else if (blob[0] != KIND_OPERAND) {
+    } else {
       throw new VeniceException(
           "ConcatBlobParser: first byte is " + Integer.toHexString(blob[0] & 0xff)
               + " which is neither a materialized-base prefix nor the operand kind byte 0x01");
     }
-    // else: blob starts with 0x01 — parse as operand-only chain below.
 
     List<byte[]> operands = parseOperandChain(blob, cursor);
     return new Parsed(schemaId, base, operands);
