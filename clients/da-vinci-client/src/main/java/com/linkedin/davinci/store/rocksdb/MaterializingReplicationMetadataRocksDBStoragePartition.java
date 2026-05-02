@@ -29,6 +29,20 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
       RocksDBThrottler rocksDbThrottler,
       RocksDBServerConfig rocksDBServerConfig) {
     super(storagePartitionConfig, factory, dbDir, rocksDBMemoryStats, rocksDbThrottler, rocksDBServerConfig);
+    org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
+        .info("VT-merge: constructed materializing-RMD partition for storeVersion={} partition={}",
+            storeNameAndVersion, partitionId);
+  }
+
+  @Override
+  public byte[] get(byte[] key) {
+    byte[] raw = super.get(key);
+    if (raw != null && raw.length >= 5 && raw[com.linkedin.venice.utils.ByteUtils.SIZE_OF_INT] == 0x00) {
+      org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
+          .info("VT-merge: get(byte[]) called: storeVersion={} partition={} keyLen={} rawLen={}",
+              storeNameAndVersion, partitionId, key.length, raw.length);
+    }
+    return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }
 
   // -------- WRITE PATH --------
@@ -85,11 +99,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
   }
 
   // -------- READ PATH --------
-
-  @Override
-  public byte[] get(byte[] key) {
-    return MaterializingFraming.materialize(super.get(key), storeNameAndVersion);
-  }
+  // get(byte[]) is overridden above with diagnostic logging.
 
   @Override
   public ByteBuffer get(byte[] key, ByteBuffer valueToBePopulated) {
@@ -114,7 +124,18 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
   @Override
   public byte[] get(ByteBuffer keyBuffer) {
     byte[] keyBytes = ByteUtils.extractByteArray(keyBuffer);
-    return MaterializingFraming.materialize(super.get(keyBytes), storeNameAndVersion);
+    byte[] raw = super.get(keyBytes);
+    if (raw != null && raw.length > 0) {
+      StringBuilder hex = new StringBuilder(Math.min(raw.length, 64) * 3);
+      int n = Math.min(raw.length, 64);
+      for (int i = 0; i < n; i++) {
+        hex.append(String.format("%02x ", raw[i] & 0xff));
+      }
+      org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
+          .info("VT-merge: get(ByteBuffer) raw bytes: storeVersion={} partition={} rawLen={} firstBytes={}",
+              storeNameAndVersion, partitionId, raw.length, hex);
+    }
+    return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }
 
   /** Bypass-the-fold accessor used by the sweeper. */

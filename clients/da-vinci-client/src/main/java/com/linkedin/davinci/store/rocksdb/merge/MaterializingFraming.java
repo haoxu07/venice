@@ -208,6 +208,8 @@ public final class MaterializingFraming {
       return prependSchemaId(schemaId, avroBase);
     }
     MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
+    LOGGER.info("VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
+        storeNameAndVersion, raw.length, avroBase.length, operands.size(), ctx == null);
     if (ctx == null) {
       LOGGER.warn(
           "MaterializingFraming: no fold context registered for store-version {}; returning raw "
