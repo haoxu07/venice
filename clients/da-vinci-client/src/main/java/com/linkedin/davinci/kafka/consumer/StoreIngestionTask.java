@@ -4877,6 +4877,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
                   updateMsg.schemaId,
                   updateMsg.updateSchemaId,
                   payload);
+          LOGGER.info("VT-merge follower case UPDATE: storeVersion={} partition={} keyLen={} "
+              + "valueSchemaId={} updateSchemaId={} operandLen={}",
+              kafkaVersionTopic, producedPartition, keyBytes.length, updateMsg.schemaId,
+              updateMsg.updateSchemaId, payload.length);
           try {
             storageEngine.merge(producedPartition, keyBytes, ByteBuffer.wrap(operandContent));
           } catch (PersistenceFailureException e) {

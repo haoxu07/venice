@@ -1332,9 +1332,6 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
       PubSubProducerCallback callback,
       long logicalTs) {
     isChunkingFlagInvoked = true;
-    if (isChunkingEnabled) {
-      throw new VeniceException("Chunking is not supported for update operation in VeniceWriter");
-    }
     byte[] serializedKey = keySerializer.serialize(topicName, key);
     byte[] serializedUpdate = writeComputeSerializer.serialize(topicName, update);
     int partition = getPartition(serializedKey);
@@ -1345,6 +1342,12 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
           "This partial update exceeds the maximum size. "
               + getSizeReport(serializedKey.length, serializedUpdate.length, 0));
     }
+    // Note: when chunking is enabled on this VeniceWriter, only small (sub-chunk-size) UPDATE
+    // operands are supported — chunked UPDATE messages aren't a thing in Venice. Since the
+    // size check above already enforces the small-operand constraint, we no longer need the
+    // strict chunking-on -> reject check that was here. The relaxation is required by the
+    // VT-merge experiment (server.vt.update.operand.enabled), which forwards small UPDATE
+    // operands to VT even on chunking-enabled stores.
 
     if (writerHook != null) {
       writerHook.onBeforeProduce(VeniceWriterHook.OperationType.UPDATE, serializedKey.length, serializedUpdate.length);

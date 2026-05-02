@@ -227,6 +227,9 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
     // include the framing bytes too. See MaterializingFraming.setFramingActiveForChecksum.
     if (serverConfig.isVtUpdateOperandEnabled()) {
       com.linkedin.davinci.store.rocksdb.merge.MaterializingFraming.setFramingActiveForChecksum(true);
+      LOGGER.info("VT-merge experiment: server.vt.update.operand.enabled is ON; "
+          + "MaterializingRocksDBStoragePartition will frame put/merge with kind-byte; "
+          + "PartitionConsumptionState's expected SST checksum will include framing bytes");
     }
   }
 
