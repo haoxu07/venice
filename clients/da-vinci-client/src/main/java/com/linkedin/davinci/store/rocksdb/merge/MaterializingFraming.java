@@ -30,6 +30,32 @@ public final class MaterializingFraming {
   }
 
   /**
+   * Process-global flag indicating that the VT-merge experiment is active for batch-push value
+   * checksum computation. Set by {@code RocksDBStorageEngineFactory} when the server-side
+   * feature flag is on. Consulted by {@code PartitionConsumptionState.maybeUpdateExpectedChecksum}
+   * to apply the framing transformation to the checksum so the upstream-computed checksum
+   * matches the actual SST-file content (which is post-framing).
+   *
+   * <p>Static for the same reason {@link MaterializingFoldContextRegistry} is static — see its
+   * Javadoc. The alternative is plumbing the flag through to PartitionConsumptionState via the
+   * StoreIngestionTask constructor chain, which has a much wider blast radius.
+   */
+  private static volatile boolean FRAMING_ACTIVE_FOR_CHECKSUM = false;
+
+  public static void setFramingActiveForChecksum(boolean active) {
+    FRAMING_ACTIVE_FOR_CHECKSUM = active;
+  }
+
+  /**
+   * @return {@code true} iff the framing transformation should be applied to {@code schemaId}'s
+   *         value bytes when computing the expected SST-file checksum. Returns {@code false}
+   *         for chunks/manifests (negative schemaId) which bypass framing.
+   */
+  public static boolean isFramingActiveForChecksum(int schemaId) {
+    return FRAMING_ACTIVE_FOR_CHECKSUM && schemaId != CHUNK_SCHEMA_ID && schemaId != CHUNK_MANIFEST_SCHEMA_ID;
+  }
+
+  /**
    * Thread-local re-entry guard. Set to {@code true} for the duration of the partition's
    * outermost framing call; nested calls (e.g. when a parent class's
    * {@code put(byte[], byte[])} forwards to {@code put(byte[], ByteBuffer)} via a virtual

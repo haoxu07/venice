@@ -221,6 +221,13 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
         && !rocksDBServerConfig.isRocksDBPlainTableFormatEnabled()) {
       rocksDBMemoryStats.setRMDBlockCache(sharedRMDCache, rocksDBServerConfig.getRocksDBRMDBlockCacheSizeInBytes());
     }
+
+    // VT-merge experiment Phase B: signal to PartitionConsumptionState's checksum computer that
+    // batch-push values will be framed at the storage layer, so the upstream checksum should
+    // include the framing bytes too. See MaterializingFraming.setFramingActiveForChecksum.
+    if (serverConfig.isVtUpdateOperandEnabled()) {
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFraming.setFramingActiveForChecksum(true);
+    }
   }
 
   public long getMemtableSize() {

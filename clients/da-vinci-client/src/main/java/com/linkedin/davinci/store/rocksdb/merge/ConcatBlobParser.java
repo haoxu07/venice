@@ -197,7 +197,7 @@ public final class ConcatBlobParser {
   /**
    * Encode {@code value} as an unsigned LEB128 varint. Used for the payload-length prefix.
    */
-  static byte[] encodeVarint(int value) {
+  public static byte[] encodeVarint(int value) {
     if (value < 0) {
       throw new VeniceException("ConcatBlobParser.encodeVarint: negative value " + value);
     }

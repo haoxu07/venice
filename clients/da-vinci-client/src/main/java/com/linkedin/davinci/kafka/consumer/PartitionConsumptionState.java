@@ -841,6 +841,19 @@ public class PartitionConsumptionState {
     this.expectedSSTFileChecksum.update(key);
     ByteBuffer putValue = put.putValue;
     this.expectedSSTFileChecksum.update(put.schemaId);
+    // VT-merge experiment Phase B: when the flag is on AND the value is a user record (positive
+    // schemaId), the storage partition will frame the value as
+    // [schemaId : 4B][0x00][len:varint][avro] before writing to RocksDB. Mirror that framing
+    // here so the expected SST-file checksum covers the same bytes that will be in the SST file.
+    // For chunks/manifests (negative schemaId), no framing is applied.
+    if (com.linkedin.davinci.store.rocksdb.merge.MaterializingFraming.isFramingActiveForChecksum(put.schemaId)) {
+      // Insert the kind byte and the varint length into the checksum stream.
+      this.expectedSSTFileChecksum
+          .update(new byte[] { com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser.KIND_BASE });
+      byte[] varlen =
+          com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser.encodeVarint(putValue.remaining());
+      this.expectedSSTFileChecksum.update(varlen);
+    }
     this.expectedSSTFileChecksum.update(putValue.array(), putValue.position(), putValue.remaining());
   }
 
