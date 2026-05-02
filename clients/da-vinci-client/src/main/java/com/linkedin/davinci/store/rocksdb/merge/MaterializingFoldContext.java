@@ -4,10 +4,13 @@ import com.linkedin.davinci.kafka.consumer.StoreWriteComputeProcessor;
 import com.linkedin.davinci.kafka.consumer.WriteComputeResult;
 import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
 import com.linkedin.davinci.serializer.avro.fast.MapOrderPreservingFastSerDeFactory;
+import com.linkedin.venice.compression.VeniceCompressor;
 import com.linkedin.venice.exceptions.VeniceException;
+import com.linkedin.venice.utils.lazy.Lazy;
 import com.linkedin.venice.meta.ReadOnlySchemaRepository;
 import com.linkedin.venice.serializer.RecordDeserializer;
 import com.linkedin.venice.utils.collections.BiIntKeyCache;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 import org.apache.avro.Schema;
@@ -38,6 +41,12 @@ public final class MaterializingFoldContext {
   private final ReadOnlySchemaRepository schemaRepository;
   private final StoreWriteComputeProcessor wcProcessor;
   private final boolean fastAvroEnabled;
+  /**
+   * Compressor for this store-version's value bytes. May be {@code null} for tests or NO_OP
+   * stores that don't compress at write time. When non-null, base value bytes are decompressed
+   * before deserialization, and folded value bytes are recompressed before being returned.
+   */
+  private final Lazy<VeniceCompressor> compressor;
 
   /** Cache for value-schema deserializers, keyed by (writerSchemaId, readerSchemaId). */
   private final BiIntKeyCache<RecordDeserializer<GenericRecord>> valueDeserializerCache;
@@ -47,10 +56,20 @@ public final class MaterializingFoldContext {
       ReadOnlySchemaRepository schemaRepository,
       StoreWriteComputeProcessor wcProcessor,
       boolean fastAvroEnabled) {
+    this(storeName, schemaRepository, wcProcessor, fastAvroEnabled, null);
+  }
+
+  public MaterializingFoldContext(
+      String storeName,
+      ReadOnlySchemaRepository schemaRepository,
+      StoreWriteComputeProcessor wcProcessor,
+      boolean fastAvroEnabled,
+      Lazy<VeniceCompressor> compressor) {
     this.storeName = storeName;
     this.schemaRepository = schemaRepository;
     this.wcProcessor = wcProcessor;
     this.fastAvroEnabled = fastAvroEnabled;
+    this.compressor = compressor;
     this.valueDeserializerCache = new BiIntKeyCache<>((writerId, readerId) -> {
       Schema writer = schemaRepository.getValueSchema(storeName, writerId).getSchema();
       Schema reader = schemaRepository.getValueSchema(storeName, readerId).getSchema();
@@ -75,9 +94,11 @@ public final class MaterializingFoldContext {
     if (framedOperands == null || framedOperands.isEmpty()) {
       return baseValueBytes;
     }
-    GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, baseValueBytes);
-    byte[] last = baseValueBytes;
-    int lastSchemaId = baseSchemaId;
+    // Decompress the base bytes if a compressor is configured (the base was written through the
+    // store's compression strategy at batch-push or merge-conflict-fold time).
+    byte[] decompressedBase = decompressBase(baseValueBytes);
+    GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, decompressedBase);
+    byte[] lastUncompressed = decompressedBase;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
       WriteComputeResult result = wcProcessor.applyWriteCompute(
@@ -92,14 +113,9 @@ public final class MaterializingFoldContext {
         // WC delete: return null tombstone bytes
         return null;
       }
-      last = result.getUpdatedValueBytes();
-      lastSchemaId = baseSchemaId;
+      lastUncompressed = result.getUpdatedValueBytes();
     }
-    if (lastSchemaId != baseSchemaId) {
-      // Defensive — shouldn't happen since we always pass baseSchemaId as readerValueSchemaId.
-      throw new VeniceException("Unexpected schema-id drift during fold");
-    }
-    return last;
+    return compressFolded(lastUncompressed);
   }
 
   /**
@@ -138,7 +154,49 @@ public final class MaterializingFoldContext {
       }
       lastBytes = result.getUpdatedValueBytes();
     }
-    return new FoldOnlyResult(lastSchemaId, lastBytes);
+    return new FoldOnlyResult(lastSchemaId, compressFolded(lastBytes));
+  }
+
+  /** Decompress the base bytes if a compressor is configured. */
+  private byte[] decompressBase(byte[] baseValueBytes) {
+    if (compressor == null) {
+      return baseValueBytes;
+    }
+    VeniceCompressor c = compressor.get();
+    if (c == null) {
+      return baseValueBytes;
+    }
+    try {
+      ByteBuffer decompressed = c.decompress(baseValueBytes, 0, baseValueBytes.length);
+      byte[] out = new byte[decompressed.remaining()];
+      decompressed.get(out);
+      return out;
+    } catch (IOException e) {
+      throw new VeniceException("Failed to decompress base bytes during fold", e);
+    }
+  }
+
+  /** Re-compress the folded bytes if a compressor is configured. */
+  private byte[] compressFolded(byte[] foldedBytes) {
+    if (foldedBytes == null) {
+      return null;
+    }
+    if (compressor == null) {
+      return foldedBytes;
+    }
+    VeniceCompressor c = compressor.get();
+    if (c == null) {
+      return foldedBytes;
+    }
+    try {
+      ByteBuffer compressed = c.compress(ByteBuffer.wrap(foldedBytes), 0);
+      // Compress may return a buffer with content starting at position 0; extract.
+      byte[] out = new byte[compressed.remaining()];
+      compressed.get(out);
+      return out;
+    } catch (IOException e) {
+      throw new VeniceException("Failed to compress folded bytes during fold", e);
+    }
   }
 
   /**

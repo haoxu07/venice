@@ -435,6 +435,11 @@ subprojects {
     maxHeapSize = System.getProperty('maxHeapSize', '4g')
 
     systemProperty 'pubSubBrokerFactory', System.getProperty('pubSubBrokerFactory', "com.linkedin.venice.integration.utils.KafkaBrokerFactory")
+    // VT-merge experiment Phase C: forward the feature-flag sysprop to test JVMs so the same
+    // PartialUpdateTest class can run under flag-OFF and flag-ON modes.
+    if (System.getProperty('vt.update.operand.flag') != null) {
+      systemProperty 'vt.update.operand.flag', System.getProperty('vt.update.operand.flag')
+    }
 
     System.getProperty('jvmArgs')?.eachMatch(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/) { jvmArgs it }
 

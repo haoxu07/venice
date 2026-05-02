@@ -274,15 +274,18 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
 
     // VT-merge experiment Phase B: register a MaterializingFoldContext so this store-version's
     // RocksDB partitions can fold concat-blob reads back to materialized records using this
-    // task's WriteComputeProcessor + schema repository. The registration is keyed by the
-    // store-version-topic name (which matches RocksDBStoragePartition.storeNameAndVersion).
+    // task's WriteComputeProcessor + schema repository + compressor (the base value bytes are
+    // stored compressed; the fold path must decompress before deserialization and recompress
+    // after applying WC). The registration is keyed by the store-version-topic name (which
+    // matches RocksDBStoragePartition.storeNameAndVersion).
     if (serverConfig.isVtUpdateOperandEnabled()) {
       com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext foldContext =
           new com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext(
               storeName,
               schemaRepository,
               this.storeWriteComputeHandler,
-              serverConfig.isComputeFastAvroEnabled());
+              serverConfig.isComputeFastAvroEnabled(),
+              this.compressor);
       com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.register(
           getKafkaVersionTopic(),
           foldContext);

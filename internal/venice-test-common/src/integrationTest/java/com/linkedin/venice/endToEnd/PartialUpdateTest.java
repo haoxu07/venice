@@ -105,6 +105,12 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
   protected Properties getExtraServerProperties() {
     Properties properties = new Properties();
     properties.setProperty(ConfigKeys.SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED, "true");
+    // VT-merge experiment Phase C: gate the feature flag on a system property so the same test
+    // class runs under both flag-OFF (regression) and flag-ON (correctness) modes. Set
+    // -Dvt.update.operand.flag=true to enable. See autoresearch/vt-rocksdb-merge-correctness/GOAL.md §4.
+    if (Boolean.getBoolean("vt.update.operand.flag")) {
+      properties.setProperty(ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED, "true");
+    }
     return properties;
   }
 

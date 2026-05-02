@@ -164,6 +164,18 @@ public class RocksDBStorageEngine extends AbstractStorageEngine<RocksDBStoragePa
           rocksDbThrottler,
           rocksDBServerConfig);
     } else {
+      // VT-merge experiment: AA store-versions also need the materializing wrapper, which
+      // extends ReplicationMetadataRocksDBStoragePartition (preserving the RMD column-family
+      // behavior) and adds kind-byte framing on the value column family.
+      if (factory.isVtUpdateOperandEnabled()) {
+        return new MaterializingReplicationMetadataRocksDBStoragePartition(
+            storagePartitionConfig,
+            factory,
+            rocksDbPath,
+            memoryStats,
+            rocksDbThrottler,
+            rocksDBServerConfig);
+      }
       return new ReplicationMetadataRocksDBStoragePartition(
           storagePartitionConfig,
           factory,
