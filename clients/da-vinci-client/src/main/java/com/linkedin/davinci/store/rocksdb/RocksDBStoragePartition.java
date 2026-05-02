@@ -266,6 +266,13 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
         columnFamilyOptions = new ColumnFamilyOptions(getStoreOptions(storagePartitionConfig, true));
       } else {
         columnFamilyOptions = new ColumnFamilyOptions(options);
+        // VT-merge experiment: explicitly carry the StringAppendOperator MergeOperator across to
+        // the ColumnFamilyOptions for the default CF. ColumnFamilyOptions(Options) does NOT
+        // copy mergeOperator from the Options object — that field has to be set on the CF
+        // options directly. Without this, rocksDB.merge fails or silently no-ops.
+        if (factory.isVtUpdateOperandEnabled()) {
+          columnFamilyOptions.setMergeOperator(new StringAppendOperator((char) 0x01));
+        }
       }
       columnFamilyDescriptors.add(new ColumnFamilyDescriptor(name, columnFamilyOptions));
     }

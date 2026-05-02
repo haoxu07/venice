@@ -956,12 +956,35 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
 
     // Build a lean Update payload for the VT producer. We pass through updateValue, schemaId,
     // and updateSchemaId verbatim — same Avro WC bytes the leader received on RT.
+    //
+    // VT-merge experiment Phase B fix: when the IngestionBatchProcessor pre-processes this same
+    // record (running processActiveActiveMessage in parallel with this fast-path), it calls
+    // mergeConflictResolver.update which deserializes incomingUpdate.updateValue and ADVANCES
+    // the buffer's position past the operand bytes. By the time we get here, remaining() may
+    // be 0. Use the backing array directly via arrayOffset()+0..limit() to recover the bytes
+    // independent of the buffer's current position.
+    final byte[] operandBytesSnapshot;
+    {
+      ByteBuffer src = incomingUpdate.updateValue;
+      if (src.hasArray()) {
+        int len = src.limit();
+        int off = src.arrayOffset();
+        operandBytesSnapshot = new byte[len];
+        System.arraycopy(src.array(), off, operandBytesSnapshot, 0, len);
+      } else {
+        ByteBuffer dup = src.duplicate();
+        dup.position(0); // reset position; limit unchanged
+        operandBytesSnapshot = new byte[dup.remaining()];
+        dup.get(operandBytesSnapshot);
+      }
+    }
+
     final Update vtUpdate = new Update();
-    vtUpdate.updateValue = incomingUpdate.updateValue;
+    vtUpdate.updateValue = ByteBuffer.wrap(operandBytesSnapshot);
     vtUpdate.schemaId = incomingUpdate.schemaId;
     vtUpdate.updateSchemaId = incomingUpdate.updateSchemaId;
 
-    final ByteBuffer operandForProduce = incomingUpdate.updateValue;
+    final ByteBuffer operandForProduce = ByteBuffer.wrap(operandBytesSnapshot);
     final int valueSchemaId = incomingUpdate.schemaId;
     final int derivedSchemaId = incomingUpdate.updateSchemaId;
 
