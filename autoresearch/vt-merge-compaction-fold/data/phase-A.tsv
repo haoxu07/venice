@@ -1,0 +1,4 @@
+iter	jmh_score	e2e_score	bp_wait_ms	engine_bytes_dc0	engine_bytes_dc1	total_write_amp	compaction_stall_count	max_running_compactions_during_iter	estimate_keys_end	operand_count_p50	operand_count_p90	operand_count_p99	operand_count_max
+# Phase A skipped: rocksdbjni 9.11.2 does not expose a Java callback API for compaction filters.
+# See phase-A-NOTES.md for the API-surface investigation. Branch proceeds directly to Phase B
+# (pure-Java write-path chain-length backstop).
