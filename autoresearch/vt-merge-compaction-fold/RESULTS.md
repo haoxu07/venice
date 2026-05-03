@@ -74,7 +74,7 @@ Phases B and D both bound chain depth strictly and deliver iter-over-iter stable
 
 - `ed6b02a4f` — `[chore][autoresearch] Phase A: BLOCKED — rocksdbjni 9.11.2 lacks Java filter callback`
 - `010b10696` — `[chore][bench][dvc] Phase B: chain-length backstop bounds operand chain to 64`
-- `<phase-D-hash>` — `[chore][dvc] Phase D: retire PartitionSweeper + DirtyKeyTracker + sweep configs` (created next)
+- `1f6a4a74a` — `[chore][bench][dvc] Phase D: retire PartitionSweeper + DirtyKeyTracker + sweep configs`
 
 ## Follow-up work (out of scope for this work-stream)
 
