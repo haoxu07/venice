@@ -20,12 +20,15 @@ import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.putPoolKey
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.putSentinelKey;
 import static com.linkedin.venice.utils.TestUtils.waitForNonDeterministicAssertion;
 
+import com.linkedin.davinci.kafka.consumer.PartitionConsumptionState;
+import com.linkedin.davinci.kafka.consumer.StoreIngestionTask;
 import com.linkedin.davinci.store.StorageEngine;
 import com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.WorkloadType;
 import com.linkedin.venice.benchmark.lean.MinimalAAIngestionHarness;
 import com.linkedin.venice.meta.Version;
 import com.linkedin.venice.partitioner.DefaultVenicePartitioner;
 import com.linkedin.venice.partitioner.VenicePartitioner;
+import com.linkedin.venice.pubsub.api.PubSubPosition;
 import com.linkedin.venice.serializer.AvroSerializer;
 import com.linkedin.venice.utils.TestUtils;
 import com.linkedin.venice.utils.Utils;
@@ -35,6 +38,8 @@ import com.linkedin.venice.writer.update.UpdateBuilderImpl;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.avro.Schema;
@@ -132,6 +137,14 @@ public class LeanActiveActiveIngestionBenchmark {
   @Param({ "BASELINE" })
   private DesignMode designMode;
 
+  /**
+   * Producer-side back-pressure threshold (records). The producer blocks when
+   * {@code producedCount - lastSeenStorageCount > maxBacklog}. Tunable via JMH
+   * {@code -p maxBacklog=N}. See {@code autoresearch/jmh-backpressure/GOAL.md} §2 Approach 1.
+   */
+  @Param({ "100000" })
+  private long maxBacklog;
+
   private MinimalAAIngestionHarness harness;
   private String storeName;
   private String versionTopicName;
@@ -144,6 +157,9 @@ public class LeanActiveActiveIngestionBenchmark {
   // Per-region RocksDB engines (used by the iteration teardown drain check and pre-population).
   private StorageEngine engineDC0;
   private StorageEngine engineDC1;
+  // Per-region ingestion tasks (used by the back-pressure poller to read consumer-side VT progress).
+  private StoreIngestionTask sitDC0;
+  private StoreIngestionTask sitDC1;
 
   private AvroSerializer<String> keySerializer;
   private AvroSerializer<GenericRecord> valueSerializer;
@@ -156,6 +172,26 @@ public class LeanActiveActiveIngestionBenchmark {
   // Wall-clock end-to-end measurement (mirrors ActiveActiveIngestionBenchmark).
   private final AtomicLong iterationRecordCount = new AtomicLong(0);
   private volatile long iterationStartNanos;
+
+  // ---------------- Back-pressure (Option A: lag-bounded gate) ----------------
+  // GOAL: autoresearch/jmh-backpressure/GOAL.md §2 Approach 1
+  /** Records produced this iteration (incremented by the workload methods). */
+  private final AtomicLong producedCount = new AtomicLong(0);
+  /**
+   * Slowest-region VT-progress delta from this iteration's baseline, updated by the
+   * background poller. This is min(DC0 VT offset, DC1 VT offset) - baseline. Using min
+   * means the gate respects the slower follower; both regions must keep up before the
+   * producer is allowed to advance further.
+   */
+  private volatile long lastSeenStorageCount = 0L;
+  private volatile long iterationStorageBaseline = 0L;
+  private ScheduledExecutorService backpressurePoller;
+  /**
+   * Diagnostic counter: total milliseconds spent in {@link #waitForBackpressure()} during the
+   * current iteration. Reported in {@code [E2E]} log line for visibility into how much the
+   * producer is being throttled.
+   */
+  private final AtomicLong backpressureWaitNanos = new AtomicLong(0);
 
   @Setup(Level.Trial)
   public void setUp() throws Exception {
@@ -202,6 +238,18 @@ public class LeanActiveActiveIngestionBenchmark {
     writerDC1 = harness.getVeniceWriterForRTTopic(1);
     engineDC0 = harness.getStorageEngineForRegion(0);
     engineDC1 = harness.getStorageEngineForRegion(1);
+    sitDC0 = harness.getIngestionTaskForRegion(0);
+    sitDC1 = harness.getIngestionTaskForRegion(1);
+
+    // Back-pressure poller: every 100ms, sum each region's per-partition latest-processed VT
+    // offset, take the slower-region min, store as lastSeenStorageCount. The producer hot loop
+    // reads this volatile value to gate advancement. See GOAL.md §2 Approach 1.
+    backpressurePoller = Executors.newSingleThreadScheduledExecutor(r -> {
+      Thread t = new Thread(r, "jmh-backpressure-poller");
+      t.setDaemon(true);
+      return t;
+    });
+    backpressurePoller.scheduleAtFixedRate(this::updateLastSeenStorageCount, 100, 100, TimeUnit.MILLISECONDS);
 
     // Verify the pipeline is working with a canary record. This is the lean-harness equivalent of
     // the full benchmark's "wait for canary visible on router" step, but uses RocksDB directly.
@@ -246,6 +294,15 @@ public class LeanActiveActiveIngestionBenchmark {
 
   @TearDown(Level.Trial)
   public void cleanUp() {
+    // Stop the back-pressure poller first so it doesn't race with harness teardown.
+    if (backpressurePoller != null) {
+      try {
+        backpressurePoller.shutdownNow();
+        backpressurePoller.awaitTermination(2, TimeUnit.SECONDS);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+    }
     // For PARTIAL_UPDATE, run the Spark-based VT consistency check across both regions before
     // stopping the harness. Reports counts of VALUE_MISMATCH and MISSING rows to stderr.
     if (workloadType == WorkloadType.PARTIAL_UPDATE) {
@@ -572,6 +629,13 @@ public class LeanActiveActiveIngestionBenchmark {
     iterationRecordCount.set(0);
     lastProducedKey = null;
     iterationStartNanos = System.nanoTime();
+    // Reset back-pressure counters for this iteration. Establish the storage baseline as the
+    // current consumer-side VT progress so producedCount and lastSeenStorageCount measure deltas
+    // within this iteration only.
+    producedCount.set(0);
+    backpressureWaitNanos.set(0);
+    iterationStorageBaseline = readSlowerRegionVtOffsetSum();
+    lastSeenStorageCount = 0L;
   }
 
   @Benchmark
@@ -612,13 +676,22 @@ public class LeanActiveActiveIngestionBenchmark {
     waitForKeysVisibleOnBothRegions(keys, 10, TimeUnit.MINUTES);
     long elapsedNanos = System.nanoTime() - iterationStartNanos;
     double opsPerSec = records * 1e9 / elapsedNanos;
+    long bpWaitMs = backpressureWaitNanos.get() / 1_000_000L;
+    long produced = producedCount.get();
+    long consumed = lastSeenStorageCount;
     System.err.println(
         String.format(
-            "[E2E] workload=%s records=%d elapsed_ms=%d e2e_throughput_ops_per_sec=%.2f",
+            "[E2E] workload=%s records=%d elapsed_ms=%d e2e_throughput_ops_per_sec=%.2f"
+                + " bp_wait_ms=%d bp_produced=%d bp_consumed_delta=%d bp_lag_at_end=%d max_backlog=%d",
             workloadType,
             records,
             elapsedNanos / 1_000_000L,
-            opsPerSec));
+            opsPerSec,
+            bpWaitMs,
+            produced,
+            consumed,
+            produced - consumed,
+            maxBacklog));
   }
 
   // ---------------- Workload methods (mirror ActiveActiveIngestionBenchmark) ----------------
@@ -640,6 +713,8 @@ public class LeanActiveActiveIngestionBenchmark {
 
     writerDC0.flush();
     writerDC1.flush();
+    producedCount.addAndGet(NUM_RECORDS_PER_INVOCATION);
+    waitForBackpressure();
     return sentinelKey;
   }
 
@@ -678,6 +753,8 @@ public class LeanActiveActiveIngestionBenchmark {
 
     writerDC0.flush();
     writerDC1.flush();
+    producedCount.addAndGet(NUM_RECORDS_PER_INVOCATION);
+    waitForBackpressure();
     return sentinelKeys.toString();
   }
 
@@ -722,6 +799,8 @@ public class LeanActiveActiveIngestionBenchmark {
     }
     writerDC0.flush();
     writerDC1.flush();
+    producedCount.addAndGet(NUM_RECORDS_PER_INVOCATION);
+    waitForBackpressure();
     return lastWrittenKey;
   }
 
@@ -774,6 +853,92 @@ public class LeanActiveActiveIngestionBenchmark {
         }
       }
     });
+  }
+
+  // ---------------- Back-pressure helpers (Option A: lag-bounded gate) ----------------
+  // GOAL: autoresearch/jmh-backpressure/GOAL.md §2 Approach 1.
+
+  /**
+   * Read the current consumer-side VT progress as the slower-region sum across all partitions of
+   * {@link PartitionConsumptionState#getLatestProcessedVtPosition()}'s numeric offset.
+   *
+   * <p>min(DC0, DC1) is used so the gate respects the slower follower — both regions must consume
+   * before the producer is allowed to advance. Returns 0 if the SITs / PCSs aren't ready yet.
+   */
+  private long readSlowerRegionVtOffsetSum() {
+    return Math.min(readRegionVtOffsetSum(sitDC0), readRegionVtOffsetSum(sitDC1));
+  }
+
+  private long readRegionVtOffsetSum(StoreIngestionTask sit) {
+    if (sit == null) {
+      return 0L;
+    }
+    long sum = 0L;
+    for (int p = 0; p < PARTITION_COUNT; p++) {
+      try {
+        PartitionConsumptionState pcs = sit.getPartitionConsumptionState(p);
+        if (pcs == null) {
+          continue;
+        }
+        PubSubPosition pos = pcs.getLatestProcessedVtPosition();
+        if (pos == null) {
+          continue;
+        }
+        long off = pos.getNumericOffset();
+        if (off > 0) {
+          sum += off;
+        }
+      } catch (Throwable ignored) {
+        // PCS may flicker during teardown; ignore and treat as no progress on this partition.
+      }
+    }
+    return sum;
+  }
+
+  /**
+   * Background-poller callback. Updates {@link #lastSeenStorageCount} to the slower-region delta
+   * from {@link #iterationStorageBaseline}. Runs every 100ms via {@link #backpressurePoller}.
+   */
+  private void updateLastSeenStorageCount() {
+    try {
+      long currentSum = readSlowerRegionVtOffsetSum();
+      long delta = currentSum - iterationStorageBaseline;
+      if (delta < 0) {
+        delta = 0;
+      }
+      lastSeenStorageCount = delta;
+    } catch (Throwable ignored) {
+      // Don't let poller exceptions kill the executor.
+    }
+  }
+
+  /**
+   * Block the producer until {@code producedCount - lastSeenStorageCount <= maxBacklog}. Sleeps
+   * 2ms between checks (poller updates {@code lastSeenStorageCount} every 100ms, so granularity
+   * is ~100ms anyway). Tracks total wait time in {@link #backpressureWaitNanos} for diagnostics.
+   */
+  private void waitForBackpressure() {
+    long waitStartNanos = 0L;
+    boolean recordingWait = false;
+    while (true) {
+      long lag = producedCount.get() - lastSeenStorageCount;
+      if (lag <= maxBacklog) {
+        break;
+      }
+      if (!recordingWait) {
+        waitStartNanos = System.nanoTime();
+        recordingWait = true;
+      }
+      try {
+        Thread.sleep(2);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    if (recordingWait) {
+      backpressureWaitNanos.addAndGet(System.nanoTime() - waitStartNanos);
+    }
   }
 
   public static void main(String[] args) throws RunnerException {
