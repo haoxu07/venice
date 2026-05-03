@@ -779,7 +779,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       DefaultPubSubMessage rtRecord = consumerRecordWrapper.getMessage();
       KafkaMessageEnvelope rtKafkaValue = rtRecord.getValue();
       if (MessageType.valueOf(rtKafkaValue.messageType) == MessageType.UPDATE) {
-        LOGGER.info("VT-merge leader fast-path: storeVersion={} partition={} forwarding UPDATE -> VT",
+        LOGGER.debug("VT-merge leader fast-path: storeVersion={} partition={} forwarding UPDATE -> VT",
             kafkaVersionTopic, partition);
         produceUpdateOperandToVT(
             rtRecord,

@@ -208,7 +208,7 @@ public final class MaterializingFraming {
       return prependSchemaId(schemaId, avroBase);
     }
     MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
-    LOGGER.info("VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
+    LOGGER.debug("VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
         storeNameAndVersion, raw.length, avroBase.length, operands.size(), ctx == null);
     if (ctx == null) {
       // No fold context registered. We have a parsed base — return [schemaId][avroBase]

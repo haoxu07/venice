@@ -39,7 +39,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
     byte[] raw = super.get(key);
     if (raw != null && raw.length >= 5 && raw[com.linkedin.venice.utils.ByteUtils.SIZE_OF_INT] == 0x00) {
       org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
-          .info("VT-merge: get(byte[]) called: storeVersion={} partition={} keyLen={} rawLen={}",
+          .debug("VT-merge: get(byte[]) called: storeVersion={} partition={} keyLen={} rawLen={}",
               storeNameAndVersion, partitionId, key.length, raw.length);
     }
     return MaterializingFraming.materialize(raw, storeNameAndVersion);
@@ -132,7 +132,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
         hex.append(String.format("%02x ", raw[i] & 0xff));
       }
       org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
-          .info("VT-merge: get(ByteBuffer) raw bytes: storeVersion={} partition={} rawLen={} firstBytes={}",
+          .debug("VT-merge: get(ByteBuffer) raw bytes: storeVersion={} partition={} rawLen={} firstBytes={}",
               storeNameAndVersion, partitionId, raw.length, hex);
     }
     return MaterializingFraming.materialize(raw, storeNameAndVersion);

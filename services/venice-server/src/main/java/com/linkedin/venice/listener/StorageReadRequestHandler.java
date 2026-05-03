@@ -486,7 +486,7 @@ public class StorageReadRequestHandler extends ChannelInboundHandlerAdapter {
       boolean isChunked = StoreVersionStateUtils.isChunked(svs);
       // VT-merge diagnostic
       org.apache.logging.log4j.LogManager.getLogger(StorageReadRequestHandler.class)
-          .info("VT-merge SERVER-RECV-GET: topic={} partition={} keyLen={} isChunked={}",
+          .debug("VT-merge SERVER-RECV-GET: topic={} partition={} keyLen={} isChunked={}",
               topic, request.getPartition(), key.length, isChunked);
       SingleGetResponseWrapper response = new SingleGetResponseWrapper();
       response.setCompressionStrategy(StoreVersionStateUtils.getCompressionStrategy(svs));
@@ -524,7 +524,7 @@ public class StorageReadRequestHandler extends ChannelInboundHandlerAdapter {
       response.setValueRecord(valueRecord);
       // VT-merge diagnostic
       org.apache.logging.log4j.LogManager.getLogger(StorageReadRequestHandler.class)
-          .info("VT-merge SERVER-AFTER-GET: topic={} partition={} keyLen={} valueRecordNull={}",
+          .debug("VT-merge SERVER-AFTER-GET: topic={} partition={} keyLen={} valueRecordNull={}",
               topic, request.getPartition(), key.length, valueRecord == null);
 
       if (valueRecord == null) {
