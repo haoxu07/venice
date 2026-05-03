@@ -495,6 +495,27 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     KafkaMessageEnvelope kafkaValue = consumerRecord.getValue();
     byte[] keyBytes = kafkaKey.getKey();
     MessageType msgType = MessageType.valueOf(kafkaValue.messageType);
+
+    /**
+     * VT-merge experiment: when the flag is on AND the incoming message is an UPDATE, the
+     * downstream {@link #processMessageAndMaybeProduceToKafka} short-circuits straight into
+     * {@code produceUpdateOperandToVT} without consulting the {@link MergeConflictResultWrapper}
+     * we'd build here. Running {@link MergeConflictResolver#update} here is therefore wasted
+     * work AND unsafe: it deserializes {@code update.updateValue}, advancing the buffer's
+     * position past the operand bytes. The leader fast-path then has to "snapshot" the bytes
+     * back via {@code array()}+{@code arrayOffset()}+{@code limit()}, but that snapshot is
+     * incorrect when the buffer was constructed via {@link ByteBuffer#wrap(byte[], int, int)}
+     * with a non-zero {@code position} (which is the case for shared-array Avro decoders): the
+     * snapshot captures bytes BEFORE the actual operand data.
+     *
+     * Returning a sentinel-empty processed result here is safe because the caller's flag-on
+     * branch never reads the wrapper. For consistency with the {@code SIT_NULL_DCR_RESULT}
+     * sentinel pattern, return {@code null} which the caller's flag-off branch already handles
+     * by re-running {@code processActiveActiveMessage}.
+     */
+    if (getServerConfig().isVtUpdateOperandEnabled() && msgType == MessageType.UPDATE) {
+      return null;
+    }
     final int incomingValueSchemaId;
     final int incomingWriteComputeSchemaId;
     int incomingUpdatePayloadSize = 0;
@@ -976,20 +997,27 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     // the buffer's position past the operand bytes. By the time we get here, remaining() may
     // be 0. Use the backing array directly via arrayOffset()+0..limit() to recover the bytes
     // independent of the buffer's current position.
+    // VT-merge experiment Phase C iter 10 fix: with the IngestionBatchProcessor's
+    // {@link #processActiveActiveMessage} now bypassed for flag-on UPDATEs (returning null
+    // early), the {@code incomingUpdate.updateValue} buffer arrives here with its ORIGINAL
+    // position/limit untouched — no MergeConflictResolver has consumed the bytes yet. The
+    // remaining bytes (position..limit) are exactly the operand we want.
+    //
+    // Earlier iter-5 used {@code limit() - arrayOffset()} which silently captures bytes
+    // BEFORE the actual operand when the buffer was constructed via
+    // {@link ByteBuffer#wrap(byte[], int, int)} with non-zero offset (the case for
+    // shared-array Avro decoders): {@code position} is non-zero, {@code limit} is at the
+    // end of the actual data, but {@code arrayOffset} is 0 — so the snapshot covers
+    // {@code [0..limit)} which includes ~30 bytes of preceding KafkaMessageEnvelope
+    // metadata (producer GUID, segment, timestamp). The malformed prepended bytes then
+    // fail downstream Avro WC deserialization with
+    // "ArrayIndexOutOfBoundsException: Index -12 out of bounds" because the union-index
+    // varint is read from the wrong offset.
     final byte[] operandBytesSnapshot;
     {
-      ByteBuffer src = incomingUpdate.updateValue;
-      if (src.hasArray()) {
-        int len = src.limit();
-        int off = src.arrayOffset();
-        operandBytesSnapshot = new byte[len];
-        System.arraycopy(src.array(), off, operandBytesSnapshot, 0, len);
-      } else {
-        ByteBuffer dup = src.duplicate();
-        dup.position(0); // reset position; limit unchanged
-        operandBytesSnapshot = new byte[dup.remaining()];
-        dup.get(operandBytesSnapshot);
-      }
+      ByteBuffer src = incomingUpdate.updateValue.duplicate();
+      operandBytesSnapshot = new byte[src.remaining()];
+      src.get(operandBytesSnapshot);
     }
 
     final Update vtUpdate = new Update();

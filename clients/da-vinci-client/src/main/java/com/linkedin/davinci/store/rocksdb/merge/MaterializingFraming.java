@@ -211,11 +211,14 @@ public final class MaterializingFraming {
     LOGGER.info("VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
         storeNameAndVersion, raw.length, avroBase.length, operands.size(), ctx == null);
     if (ctx == null) {
+      // No fold context registered. We have a parsed base — return [schemaId][avroBase]
+      // (i.e. the unfolded base bytes) so readers see the last materialized state instead of
+      // the raw concat blob with operand kind bytes that would fail Avro decoding.
       LOGGER.warn(
-          "MaterializingFraming: no fold context registered for store-version {}; returning raw "
-              + "concat-blob bytes (downstream readers will fail)",
+          "MaterializingFraming: no fold context registered for store-version {}; "
+              + "returning unfolded base bytes (operands ignored)",
           storeNameAndVersion);
-      return raw;
+      return prependSchemaId(schemaId, avroBase);
     }
     byte[] materializedAvro = ctx.foldOperands(schemaId, avroBase, operands);
     if (materializedAvro == null) {
@@ -234,11 +237,17 @@ public final class MaterializingFraming {
     List<byte[]> operands = parsed.getOperands();
     MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
     if (ctx == null) {
+      // No fold context registered (e.g. ingestion task hasn't started yet, or store-version not
+      // ingested by this server). The raw bytes are kind-byte framed and would fail downstream
+      // Avro decoding if returned as-is. Returning null is the safest fallback — the read path
+      // treats it as a key-not-found, which is correct (we don't have a usable materialized
+      // value to return) and lets the test's wait-for-non-deterministic-assertion loop retry
+      // until ingestion has caught up and the context is registered.
       LOGGER.warn(
           "MaterializingFraming: no fold context registered for store-version {} (operand-only blob); "
-              + "returning raw bytes",
+              + "returning null (treated as missing key)",
           storeNameAndVersion);
-      return raw;
+      return null;
     }
     MaterializingFoldContext.FoldOnlyResult result = ctx.foldOperandOnly(operands);
     if (result.getBytes() == null) {

@@ -491,8 +491,36 @@ public class StorageReadRequestHandler extends ChannelInboundHandlerAdapter {
       SingleGetResponseWrapper response = new SingleGetResponseWrapper();
       response.setCompressionStrategy(StoreVersionStateUtils.getCompressionStrategy(svs));
 
-      ValueRecord valueRecord =
-          SingleGetChunkingAdapter.get(storageEngine, request.getPartition(), key, isChunked, response.getStats());
+      ValueRecord valueRecord;
+      try {
+        valueRecord =
+            SingleGetChunkingAdapter.get(storageEngine, request.getPartition(), key, isChunked, response.getStats());
+      } catch (Throwable t) {
+        // VT-merge diagnostic: capture deserialization failures with the raw stored bytes so
+        // we can examine what's on disk that the chunking adapter chokes on.
+        try {
+          ByteBuffer wrappedKey = isChunked
+              ? com.linkedin.davinci.storage.chunking.ChunkingUtils.KEY_WITH_CHUNKING_SUFFIX_SERIALIZER
+                  .serializeNonChunkedKeyAsByteBuffer(key)
+              : ByteBuffer.wrap(key);
+          byte[] rawBytes = storageEngine.get(request.getPartition(), wrappedKey);
+          StringBuilder hex = new StringBuilder(Math.min(rawBytes == null ? 0 : rawBytes.length, 96) * 3);
+          if (rawBytes != null) {
+            int n = Math.min(rawBytes.length, 96);
+            for (int i = 0; i < n; i++) {
+              hex.append(String.format("%02x ", rawBytes[i] & 0xff));
+            }
+          }
+          org.apache.logging.log4j.LogManager.getLogger(StorageReadRequestHandler.class)
+              .error("VT-merge SERVER-DESERIALIZE-FAIL: topic={} partition={} keyLen={} rawNull={} rawLen={} firstBytes={} ex={}",
+                  topic, request.getPartition(), key.length, rawBytes == null, rawBytes == null ? -1 : rawBytes.length,
+                  hex, t.toString());
+        } catch (Throwable inner) {
+          org.apache.logging.log4j.LogManager.getLogger(StorageReadRequestHandler.class)
+              .error("VT-merge SERVER-DESERIALIZE-FAIL diag failure: {}", inner.toString());
+        }
+        throw t;
+      }
       response.setValueRecord(valueRecord);
       // VT-merge diagnostic
       org.apache.logging.log4j.LogManager.getLogger(StorageReadRequestHandler.class)
