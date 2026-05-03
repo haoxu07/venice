@@ -75,7 +75,8 @@ public class LeanHarnessSchemaTest {
     valueSchema = new Schema.Parser().parse(VALUE_SCHEMA_STR);
     rmdSchema = new RmdSchemaGeneratorV1().generateMetadataSchema(valueSchema);
     writeComputeSchema = WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(valueSchema);
-    schemaRepo = new InMemoryReadOnlySchemaRepository(STORE_NAME, keySchema, valueSchema, rmdSchema, writeComputeSchema);
+    schemaRepo =
+        new InMemoryReadOnlySchemaRepository(STORE_NAME, keySchema, valueSchema, rmdSchema, writeComputeSchema);
     storeRepo = new InMemoryReadOnlyStoreRepository(STORE_NAME);
   }
 
@@ -144,7 +145,8 @@ public class LeanHarnessSchemaTest {
     tags.put("rank", "gold");
     original.put("tags", tags);
 
-    RecordSerializer<GenericRecord> serializer = FastSerializerDeserializerFactory.getFastAvroGenericSerializer(lookedUp);
+    RecordSerializer<GenericRecord> serializer =
+        FastSerializerDeserializerFactory.getFastAvroGenericSerializer(lookedUp);
     RecordDeserializer<GenericRecord> deserializer =
         FastSerializerDeserializerFactory.getFastAvroGenericDeserializer(lookedUp, lookedUp);
 
@@ -209,7 +211,8 @@ public class LeanHarnessSchemaTest {
     GenericRecord updateRecord = builder.build();
     assertEquals(updateRecord.getSchema(), wcSchema);
 
-    RecordSerializer<GenericRecord> serializer = FastSerializerDeserializerFactory.getFastAvroGenericSerializer(wcSchema);
+    RecordSerializer<GenericRecord> serializer =
+        FastSerializerDeserializerFactory.getFastAvroGenericSerializer(wcSchema);
     RecordDeserializer<GenericRecord> deserializer =
         FastSerializerDeserializerFactory.getFastAvroGenericDeserializer(wcSchema, wcSchema);
     byte[] bytes = serializer.serialize(updateRecord);

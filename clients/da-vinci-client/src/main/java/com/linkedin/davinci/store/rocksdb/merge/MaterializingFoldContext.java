@@ -6,10 +6,10 @@ import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
 import com.linkedin.davinci.serializer.avro.fast.MapOrderPreservingFastSerDeFactory;
 import com.linkedin.venice.compression.VeniceCompressor;
 import com.linkedin.venice.exceptions.VeniceException;
-import com.linkedin.venice.utils.lazy.Lazy;
 import com.linkedin.venice.meta.ReadOnlySchemaRepository;
 import com.linkedin.venice.serializer.RecordDeserializer;
 import com.linkedin.venice.utils.collections.BiIntKeyCache;
+import com.linkedin.venice.utils.lazy.Lazy;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -256,8 +256,7 @@ public final class MaterializingFoldContext {
 
     public static OperandContent parse(byte[] content) {
       if (content == null || content.length < 8) {
-        throw new VeniceException(
-            "OperandContent: too short (" + (content == null ? 0 : content.length) + " bytes)");
+        throw new VeniceException("OperandContent: too short (" + (content == null ? 0 : content.length) + " bytes)");
       }
       int valueSchemaId =
           ((content[0] & 0xff) << 24) | ((content[1] & 0xff) << 16) | ((content[2] & 0xff) << 8) | (content[3] & 0xff);

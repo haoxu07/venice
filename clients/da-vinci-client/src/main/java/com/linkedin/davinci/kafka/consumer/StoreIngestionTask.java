@@ -4872,15 +4872,17 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           // recover the schema ids to deserialize the WC operand against the correct schema.
           // See com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent.
           byte[] payload = com.linkedin.venice.utils.ByteUtils.extractByteArray(operandBuffer);
-          byte[] operandContent =
-              com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent.frame(
-                  updateMsg.schemaId,
-                  updateMsg.updateSchemaId,
-                  payload);
-          LOGGER.debug("VT-merge follower case UPDATE: storeVersion={} partition={} keyLen={} "
-              + "valueSchemaId={} updateSchemaId={} operandLen={}",
-              kafkaVersionTopic, producedPartition, keyBytes.length, updateMsg.schemaId,
-              updateMsg.updateSchemaId, payload.length);
+          byte[] operandContent = com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent
+              .frame(updateMsg.schemaId, updateMsg.updateSchemaId, payload);
+          LOGGER.debug(
+              "VT-merge follower case UPDATE: storeVersion={} partition={} keyLen={} "
+                  + "valueSchemaId={} updateSchemaId={} operandLen={}",
+              kafkaVersionTopic,
+              producedPartition,
+              keyBytes.length,
+              updateMsg.schemaId,
+              updateMsg.updateSchemaId,
+              payload.length);
           try {
             storageEngine.merge(producedPartition, keyBytes, ByteBuffer.wrap(operandContent));
           } catch (PersistenceFailureException e) {

@@ -2,19 +2,17 @@
 
 ## Hypothesis tested
 
-After iter-10's unit test confirmed the storage-layer fold path is correct in isolation, run
-the integration test with diagnostic logging to capture the actual stored operand bytes that
-fail to deserialize.
+After iter-10's unit test confirmed the storage-layer fold path is correct in isolation, run the integration test with
+diagnostic logging to capture the actual stored operand bytes that fail to deserialize.
 
 ## Investigation
 
-Added `SERVER-DESERIALIZE-FAIL` diagnostic to `StorageReadRequestHandler.handleSingleGetRequest`
-that captures the raw bytes returned by `storageEngine.get(...)` when downstream
-deserialization throws. Also relied on the existing `MaterializingReplicationMetadataRocksDBStoragePartition.get(ByteBuffer)`
-diagnostic that hex-dumps the raw on-disk bytes for the user store.
+Added `SERVER-DESERIALIZE-FAIL` diagnostic to `StorageReadRequestHandler.handleSingleGetRequest` that captures the raw
+bytes returned by `storageEngine.get(...)` when downstream deserialization throws. Also relied on the existing
+`MaterializingReplicationMetadataRocksDBStoragePartition.get(ByteBuffer)` diagnostic that hex-dumps the raw on-disk
+bytes for the user store.
 
-Ran the integration test (without my new logging compiled — the prior binary's diagnostics
-were sufficient).
+Ran the integration test (without my new logging compiled — the prior binary's diagnostics were sufficient).
 
 ### Counts from this run
 
@@ -37,9 +35,8 @@ Caused by: java.lang.ArrayIndexOutOfBoundsException: Index -12 out of bounds for
     at org.apache.avro.io.ResolvingDecoder.readIndex(ResolvingDecoder.java:283)
 ```
 
-The deserialization is failing on the WC OPERAND payload itself. "Index -12" comes from
-zigzag-decoding the FIRST byte of the WC payload as a union index. -12 is far outside the
-valid union range, indicating corrupted WC bytes.
+The deserialization is failing on the WC OPERAND payload itself. "Index -12" comes from zigzag-decoding the FIRST byte
+of the WC payload as a union index. -12 is far outside the valid union range, indicating corrupted WC bytes.
 
 ### Hex dump of stored bytes
 
@@ -52,16 +49,17 @@ valid union range, indicating corrupted WC bytes.
 ```
 
 Decoded:
-- `01 3a`        = kind=OPERAND, varint(58)=length of operand content
-- `00 00 00 01`  = valueSchemaId=1 (BE int)
-- `00 00 00 01`  = updateSchemaId=1 (BE int)
-- 50-byte WC payload that starts with what looks like KafkaMessageEnvelope producer-metadata
-  bytes (GUID + segment + timestamp) instead of the actual Avro WC encoding.
+
+- `01 3a` = kind=OPERAND, varint(58)=length of operand content
+- `00 00 00 01` = valueSchemaId=1 (BE int)
+- `00 00 00 01` = updateSchemaId=1 (BE int)
+- 50-byte WC payload that starts with what looks like KafkaMessageEnvelope producer-metadata bytes (GUID + segment +
+  timestamp) instead of the actual Avro WC encoding.
 
 ### Root cause
 
-`ActiveActiveStoreIngestionTask.produceUpdateOperandToVT` (iter-5 fix) snapshots the operand
-bytes via:
+`ActiveActiveStoreIngestionTask.produceUpdateOperandToVT` (iter-5 fix) snapshots the operand bytes via:
+
 ```java
 int len = src.limit();
 int off = src.arrayOffset();
@@ -69,38 +67,35 @@ operandBytesSnapshot = new byte[len];
 System.arraycopy(src.array(), off, operandBytesSnapshot, 0, len);
 ```
 
-This is wrong when `src` is a ByteBuffer constructed via
-`ByteBuffer.wrap(byte[] arr, int offset, int length)` — which is what shared-array Avro
-decoders return for a `bytes`-type field embedded in a larger record. In that case:
+This is wrong when `src` is a ByteBuffer constructed via `ByteBuffer.wrap(byte[] arr, int offset, int length)` — which
+is what shared-array Avro decoders return for a `bytes`-type field embedded in a larger record. In that case:
+
 - `arrayOffset() == 0`
 - `position() == offset` (not 0)
 - `limit() == offset + length`
 
-The iter-5 logic copies `arr[0 .. limit)` which captures `offset` bytes BEFORE the actual
-operand data. For a typical Update message in a KafkaMessageEnvelope, those preceding bytes
-are the producer-metadata (16-byte GUID + segment + timestamp ≈ 28 bytes), which is exactly
-what we see in the hex dump prefix.
+The iter-5 logic copies `arr[0 .. limit)` which captures `offset` bytes BEFORE the actual operand data. For a typical
+Update message in a KafkaMessageEnvelope, those preceding bytes are the producer-metadata (16-byte GUID + segment +
+timestamp ≈ 28 bytes), which is exactly what we see in the hex dump prefix.
 
-This corruption is NOT detected at write time — the bytes still fit the framing. It surfaces
-ONLY when the read-side fold tries to deserialize the WC payload via the WC schema.
+This corruption is NOT detected at write time — the bytes still fit the framing. It surfaces ONLY when the read-side
+fold tries to deserialize the WC payload via the WC schema.
 
 ## Fix applied (two parts)
 
 ### 1. Bypass `processActiveActiveMessage` for flag-on UPDATEs
 
-The IngestionBatchProcessor's pre-processing runs `processActiveActiveMessage` for all AA
-messages. For UPDATE under flag-on, this is wasted work AND it advances the `updateValue`
-buffer's position past the operand. Returning null early from `processActiveActiveMessage`
-when `(serverConfig.isVtUpdateOperandEnabled() && msgType == UPDATE)` skips the wasted
-work. The leader fast-path in `processMessageAndMaybeProduceToKafka` already handles this
-case without consulting the wrapper.
+The IngestionBatchProcessor's pre-processing runs `processActiveActiveMessage` for all AA messages. For UPDATE under
+flag-on, this is wasted work AND it advances the `updateValue` buffer's position past the operand. Returning null early
+from `processActiveActiveMessage` when `(serverConfig.isVtUpdateOperandEnabled() && msgType == UPDATE)` skips the wasted
+work. The leader fast-path in `processMessageAndMaybeProduceToKafka` already handles this case without consulting the
+wrapper.
 
 ### 2. Fix snapshot to use `duplicate().get()` correctly
 
-Replace the `arrayOffset()`/`limit()` arithmetic with a `duplicate().get(byte[])` call,
-which respects the buffer's `position()` and copies the correct slice
-`[arrayOffset()+position() .. arrayOffset()+limit())`. With the bypass in place, position
-is at the original (untouched) value, so `remaining()` is the operand length.
+Replace the `arrayOffset()`/`limit()` arithmetic with a `duplicate().get(byte[])` call, which respects the buffer's
+`position()` and copies the correct slice `[arrayOffset()+position() .. arrayOffset()+limit())`. With the bypass in
+place, position is at the original (untouched) value, so `remaining()` is the operand length.
 
 ## Verification
 
@@ -109,9 +104,9 @@ is at the original (untouched) value, so `remaining()` is the operand length.
 
 ## Files modified
 
-- `clients/da-vinci-client/.../ActiveActiveStoreIngestionTask.java` — early-return on UPDATE
-  in `processActiveActiveMessage`; replaced snapshot logic in `produceUpdateOperandToVT`.
-- `services/venice-server/.../StorageReadRequestHandler.java` — added
-  `SERVER-DESERIALIZE-FAIL` diagnostic (kept for future iterations).
-- `clients/da-vinci-client/.../MaterializingFraming.java` — defensive null-return when no
-  fold context (instead of returning raw bytes that fail downstream Avro decoding).
+- `clients/da-vinci-client/.../ActiveActiveStoreIngestionTask.java` — early-return on UPDATE in
+  `processActiveActiveMessage`; replaced snapshot logic in `produceUpdateOperandToVT`.
+- `services/venice-server/.../StorageReadRequestHandler.java` — added `SERVER-DESERIALIZE-FAIL` diagnostic (kept for
+  future iterations).
+- `clients/da-vinci-client/.../MaterializingFraming.java` — defensive null-return when no fold context (instead of
+  returning raw bytes that fail downstream Avro decoding).

@@ -162,6 +162,10 @@ import static com.linkedin.venice.ConfigKeys.SERVER_LOAD_CONTROLLER_WINDOW_SIZE_
 import static com.linkedin.venice.ConfigKeys.SERVER_LOCAL_CONSUMER_CONFIG_PREFIX;
 import static com.linkedin.venice.ConfigKeys.SERVER_MAX_REQUEST_SIZE;
 import static com.linkedin.venice.ConfigKeys.SERVER_MAX_WAIT_FOR_VERSION_INFO_MS_CONFIG;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_BUDGET_PER_CALL;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_DEBOUNCE_MS;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_ENABLED;
+import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_THRESHOLD;
 import static com.linkedin.venice.ConfigKeys.SERVER_NEARLINE_WORKLOAD_PRODUCER_THROUGHPUT_OPTIMIZATION_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_NETTY_GRACEFUL_SHUTDOWN_PERIOD_SECONDS;
 import static com.linkedin.venice.ConfigKeys.SERVER_NETTY_IDLE_TIME_SECONDS;
@@ -232,6 +236,7 @@ import static com.linkedin.venice.ConfigKeys.SERVER_USE_HEARTBEAT_LAG_FOR_READY_
 import static com.linkedin.venice.ConfigKeys.SERVER_USE_METRICS_BASED_POSITION_IN_LAG_COMPUTATION;
 import static com.linkedin.venice.ConfigKeys.SERVER_USE_UPSTREAM_PUBSUB_POSITIONS;
 import static com.linkedin.venice.ConfigKeys.SERVER_VERSION_SWAP_DISK_SIZE_DROP_ALERT_THRESHOLD;
+import static com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_ZSTD_DICT_COMPRESSION_LEVEL;
 import static com.linkedin.venice.ConfigKeys.SEVER_CALCULATE_QUOTA_USAGE_BASED_ON_PARTITIONS_ASSIGNMENT_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SORTED_INPUT_DRAINER_SIZE;
@@ -245,11 +250,6 @@ import static com.linkedin.venice.ConfigKeys.SYSTEM_SCHEMA_INITIALIZATION_AT_STA
 import static com.linkedin.venice.ConfigKeys.TIME_LAG_THRESHOLD_FOR_FAST_ONLINE_TRANSITION_IN_RESTART_MINUTES;
 import static com.linkedin.venice.ConfigKeys.UNREGISTER_METRIC_FOR_DELETED_STORE_ENABLED;
 import static com.linkedin.venice.ConfigKeys.UNSORTED_INPUT_DRAINER_SIZE;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_BUDGET_PER_CALL;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_DEBOUNCE_MS;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_ENABLED;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_THRESHOLD;
-import static com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED;
 import static com.linkedin.venice.ConfigKeys.USE_DA_VINCI_SPECIFIC_EXECUTION_STATUS_FOR_ERROR;
 import static com.linkedin.venice.ConfigKeys.VENICE_LOG_CONTEXT_COMPONENT;
 import static com.linkedin.venice.pubsub.PubSubConstants.PUBSUB_TOPIC_MANAGER_METADATA_FETCHER_CONSUMER_POOL_SIZE_DEFAULT_VALUE;
@@ -1184,8 +1184,8 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     // JVM system property override for the RMD timestamp cache flag. This exists because the
     // JMH benchmark harness is frozen and cannot be modified to push a new server property,
     // so we expose a -D override path that the benchmark runner can set via -jvmArgs.
-    boolean defaultRmdCacheEnabled = Boolean.parseBoolean(
-        System.getProperty("venice.server.aa.rmd.timestamp.cache.enabled", "false"));
+    boolean defaultRmdCacheEnabled =
+        Boolean.parseBoolean(System.getProperty("venice.server.aa.rmd.timestamp.cache.enabled", "false"));
     aaRmdTimestampCacheEnabled =
         serverProperties.getBoolean(SERVER_AA_RMD_TIMESTAMP_CACHE_ENABLED, defaultRmdCacheEnabled);
     aaRmdTimestampCacheTimeWindowMs = serverProperties.getLong(SERVER_AA_RMD_TIMESTAMP_CACHE_TIME_WINDOW_MS, 60_000L);
@@ -1194,15 +1194,16 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     aaRmdTimestampCacheBloomExpectedInsertions =
         serverProperties.getLong(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_EXPECTED_INSERTIONS, 1_000_000L);
     aaRmdTimestampCacheBloomFpp = serverProperties.getDouble(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_FPP, 0.01d);
-    boolean defaultBloomAuthoritative = Boolean.parseBoolean(
-        System.getProperty("venice.server.aa.rmd.timestamp.cache.bloom.authoritative", "false"));
+    boolean defaultBloomAuthoritative =
+        Boolean.parseBoolean(System.getProperty("venice.server.aa.rmd.timestamp.cache.bloom.authoritative", "false"));
     aaRmdTimestampCacheBloomAuthoritative =
         serverProperties.getBoolean(SERVER_AA_RMD_TIMESTAMP_CACHE_BLOOM_AUTHORITATIVE, defaultBloomAuthoritative);
     // VT-merge experiment flags. JVM system property override exists so the JMH benchmark harness
     // can flip the flag via -jvmArgs without modifying server config files.
     boolean defaultVtUpdateOperandEnabled =
         Boolean.parseBoolean(System.getProperty("venice.server.vt.update.operand.enabled", "false"));
-    vtUpdateOperandEnabled = serverProperties.getBoolean(SERVER_VT_UPDATE_OPERAND_ENABLED, defaultVtUpdateOperandEnabled);
+    vtUpdateOperandEnabled =
+        serverProperties.getBoolean(SERVER_VT_UPDATE_OPERAND_ENABLED, defaultVtUpdateOperandEnabled);
     boolean defaultMergeSweepEnabled =
         Boolean.parseBoolean(System.getProperty("venice.server.merge.sweep.enabled", "false"));
     mergeSweepEnabled = serverProperties.getBoolean(SERVER_MERGE_SWEEP_ENABLED, defaultMergeSweepEnabled);

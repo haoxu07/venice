@@ -74,8 +74,7 @@ public class RmdTimestampCache {
      *         FALLBACK_TO_RMD_LOOKUP, the caller must run DCR on the RMD lookup result.
      */
     public boolean newRecordWins() {
-      return this == BLOOM_NEW_KEY_WINS || this == CACHE_HIT_NEW_WINS
-          || this == ABOVE_HIGH_WATERMARK_NEW_WINS;
+      return this == BLOOM_NEW_KEY_WINS || this == CACHE_HIT_NEW_WINS || this == ABOVE_HIGH_WATERMARK_NEW_WINS;
     }
   }
 

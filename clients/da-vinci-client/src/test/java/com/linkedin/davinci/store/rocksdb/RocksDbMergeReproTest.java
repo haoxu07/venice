@@ -116,8 +116,8 @@ public class RocksDbMergeReproTest {
       db.merge(defaultCf, KEY, OP1);
       db.merge(defaultCf, KEY, OP2);
       byte[] got = db.get(defaultCf, KEY);
-      System.out.println(
-          "[V4 multi-cf, derived CfOptions Venice-style] result: " + (got == null ? "null" : new String(got)));
+      System.out
+          .println("[V4 multi-cf, derived CfOptions Venice-style] result: " + (got == null ? "null" : new String(got)));
     } finally {
       for (ColumnFamilyHandle h: handles) {
         h.close();
@@ -140,8 +140,7 @@ public class RocksDbMergeReproTest {
   public void variant5_veniceStyle_with0x01Delim_andSomeOptions() throws Exception {
     Path dir = Files.createTempDirectory("rocks-merge-v5");
     StringAppendOperator op = new StringAppendOperator((char) 0x01);
-    Options parentOpts = new Options()
-        .setCreateIfMissing(true)
+    Options parentOpts = new Options().setCreateIfMissing(true)
         .setMergeOperator(op)
         // A subset of options Venice's getStoreOptions sets:
         .setCompressionType(CompressionType.NO_COMPRESSION)
@@ -174,8 +173,8 @@ public class RocksDbMergeReproTest {
           hex.append(String.format("%02x ", b & 0xff));
         }
       }
-      System.out.println("[V5 Venice-style 0x01 delim + Venice opts] resultLen="
-          + (got == null ? -1 : got.length) + " hex=" + hex);
+      System.out.println(
+          "[V5 Venice-style 0x01 delim + Venice opts] resultLen=" + (got == null ? -1 : got.length) + " hex=" + hex);
     } finally {
       for (ColumnFamilyHandle h: handles) {
         h.close();

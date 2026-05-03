@@ -850,8 +850,7 @@ public class PartitionConsumptionState {
       // Insert the kind byte and the varint length into the checksum stream.
       this.expectedSSTFileChecksum
           .update(new byte[] { com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser.KIND_BASE });
-      byte[] varlen =
-          com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser.encodeVarint(putValue.remaining());
+      byte[] varlen = com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser.encodeVarint(putValue.remaining());
       this.expectedSSTFileChecksum.update(varlen);
     }
     this.expectedSSTFileChecksum.update(putValue.array(), putValue.position(), putValue.remaining());

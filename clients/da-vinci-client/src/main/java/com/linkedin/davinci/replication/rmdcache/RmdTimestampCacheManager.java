@@ -49,17 +49,15 @@ public class RmdTimestampCacheManager {
    * Returns the cache for the given partition, creating a new one on first access.
    */
   public RmdTimestampCache getOrCreate(int partitionId) {
-    return perPartitionCache.computeIfAbsent(
-        partitionId,
-        id -> {
-          RmdTimestampCache cache = new RmdTimestampCache(
-              id,
-              timeWindowMs,
-              maxCacheSize,
-              new PartitionBloomFilter(bloomExpectedInsertions, bloomFpp));
-          cache.setBloomFilterAuthoritative(bloomAuthoritative);
-          return cache;
-        });
+    return perPartitionCache.computeIfAbsent(partitionId, id -> {
+      RmdTimestampCache cache = new RmdTimestampCache(
+          id,
+          timeWindowMs,
+          maxCacheSize,
+          new PartitionBloomFilter(bloomExpectedInsertions, bloomFpp));
+      cache.setBloomFilterAuthoritative(bloomAuthoritative);
+      return cache;
+    });
   }
 
   public Collection<RmdTimestampCache> getAllPartitionCaches() {
@@ -149,11 +147,8 @@ public class RmdTimestampCacheManager {
           t.setDaemon(true);
           return t;
         });
-        reportTask = scheduler.scheduleAtFixedRate(
-            this::reportOnce,
-            REPORT_INTERVAL_SECONDS,
-            REPORT_INTERVAL_SECONDS,
-            TimeUnit.SECONDS);
+        reportTask = scheduler
+            .scheduleAtFixedRate(this::reportOnce, REPORT_INTERVAL_SECONDS, REPORT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         // Also emit a final report on JVM shutdown so short runs still produce at least
         // one line.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

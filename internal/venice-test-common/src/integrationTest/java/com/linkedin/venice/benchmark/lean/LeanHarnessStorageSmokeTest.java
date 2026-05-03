@@ -82,9 +82,7 @@ public class LeanHarnessStorageSmokeTest {
           "StorageEngine for region " + region + " must be opened on the version topic");
       // Confirm every configured partition was added.
       for (int p = 0; p < PARTITION_COUNT; p++) {
-        assertTrue(
-            engine.containsPartition(p),
-            "StorageEngine for region " + region + " missing partition " + p);
+        assertTrue(engine.containsPartition(p), "StorageEngine for region " + region + " missing partition " + p);
       }
       engines.add(engine);
     }
@@ -93,10 +91,8 @@ public class LeanHarnessStorageSmokeTest {
     for (int region = 0; region < REGION_COUNT; region++) {
       StorageEngine engine = engines.get(region);
       for (int partition = 0; partition < PARTITION_COUNT; partition++) {
-        byte[] key =
-            ("smoke-key-region-" + region + "-partition-" + partition).getBytes(StandardCharsets.UTF_8);
-        byte[] value =
-            ("smoke-value-region-" + region + "-partition-" + partition).getBytes(StandardCharsets.UTF_8);
+        byte[] key = ("smoke-key-region-" + region + "-partition-" + partition).getBytes(StandardCharsets.UTF_8);
+        byte[] value = ("smoke-value-region-" + region + "-partition-" + partition).getBytes(StandardCharsets.UTF_8);
         engine.put(partition, key, value);
         byte[] got = engine.get(partition, key);
         assertNotNull(got, "Region " + region + " partition " + partition + " should have a value after put");
@@ -109,9 +105,7 @@ public class LeanHarnessStorageSmokeTest {
 
     // Region isolation: region-0's key on region-1's engine must be absent (RocksDB dirs are disjoint).
     byte[] region0Key = ("smoke-key-region-0-partition-0").getBytes(StandardCharsets.UTF_8);
-    assertNull(
-        engines.get(1).get(0, region0Key),
-        "Region 0's key must not be visible on region 1's engine");
+    assertNull(engines.get(1).get(0, region0Key), "Region 0's key must not be visible on region 1's engine");
   }
 
   @Test(timeOut = 60_000)
@@ -138,9 +132,7 @@ public class LeanHarnessStorageSmokeTest {
 
     for (int region = 0; region < REGION_COUNT; region++) {
       File dir = tempDirsBeforeStop.get(region);
-      assertFalse(
-          dir.exists(),
-          "Region " + region + " temp dir must be deleted after stop(): " + dir);
+      assertFalse(dir.exists(), "Region " + region + " temp dir must be deleted after stop(): " + dir);
     }
   }
 }

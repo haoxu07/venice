@@ -20,7 +20,8 @@ import java.nio.ByteBuffer;
  *
  * <p>See {@link MaterializingFraming} for the wire-format details.
  */
-public class MaterializingReplicationMetadataRocksDBStoragePartition extends ReplicationMetadataRocksDBStoragePartition {
+public class MaterializingReplicationMetadataRocksDBStoragePartition
+    extends ReplicationMetadataRocksDBStoragePartition {
   public MaterializingReplicationMetadataRocksDBStoragePartition(
       StoragePartitionConfig storagePartitionConfig,
       RocksDBStorageEngineFactory factory,
@@ -30,8 +31,10 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
       RocksDBServerConfig rocksDBServerConfig) {
     super(storagePartitionConfig, factory, dbDir, rocksDBMemoryStats, rocksDbThrottler, rocksDBServerConfig);
     org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
-        .info("VT-merge: constructed materializing-RMD partition for storeVersion={} partition={}",
-            storeNameAndVersion, partitionId);
+        .info(
+            "VT-merge: constructed materializing-RMD partition for storeVersion={} partition={}",
+            storeNameAndVersion,
+            partitionId);
   }
 
   @Override
@@ -39,8 +42,12 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
     byte[] raw = super.get(key);
     if (raw != null && raw.length >= 5 && raw[com.linkedin.venice.utils.ByteUtils.SIZE_OF_INT] == 0x00) {
       org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
-          .debug("VT-merge: get(byte[]) called: storeVersion={} partition={} keyLen={} rawLen={}",
-              storeNameAndVersion, partitionId, key.length, raw.length);
+          .debug(
+              "VT-merge: get(byte[]) called: storeVersion={} partition={} keyLen={} rawLen={}",
+              storeNameAndVersion,
+              partitionId,
+              key.length,
+              raw.length);
     }
     return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }
@@ -76,9 +83,8 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
 
   @Override
   public synchronized void putWithReplicationMetadata(byte[] key, byte[] value, byte[] metadata) {
-    byte[] valueToWrite = MaterializingFraming.shouldBypassFraming(value)
-        ? value
-        : MaterializingFraming.frameForPut(value);
+    byte[] valueToWrite =
+        MaterializingFraming.shouldBypassFraming(value) ? value : MaterializingFraming.frameForPut(value);
     MaterializingFraming.beginFraming();
     try {
       super.putWithReplicationMetadata(key, valueToWrite, metadata);
@@ -132,8 +138,12 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition extends Rep
         hex.append(String.format("%02x ", raw[i] & 0xff));
       }
       org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
-          .debug("VT-merge: get(ByteBuffer) raw bytes: storeVersion={} partition={} rawLen={} firstBytes={}",
-              storeNameAndVersion, partitionId, raw.length, hex);
+          .debug(
+              "VT-merge: get(ByteBuffer) raw bytes: storeVersion={} partition={} rawLen={} firstBytes={}",
+              storeNameAndVersion,
+              partitionId,
+              raw.length,
+              hex);
     }
     return MaterializingFraming.materialize(raw, storeNameAndVersion);
   }

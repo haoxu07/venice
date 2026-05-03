@@ -16,7 +16,6 @@ import com.linkedin.davinci.store.StoragePartitionConfig;
 import com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser;
 import com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext;
 import com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry;
-import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.meta.PersistenceType;
 import com.linkedin.venice.meta.ReadOnlySchemaRepository;
 import com.linkedin.venice.meta.Version;
@@ -52,12 +51,12 @@ public class MaterializingPartitionSmokeTest {
 
   // A simple Avro record schema with two string fields. Used for both base put and partial-update
   // operand serialization.
-  private static final String VALUE_SCHEMA_STR =
-      "{ \"type\":\"record\", \"name\":\"User\", \"fields\":["
-          + "{\"name\":\"firstName\", \"type\":\"string\", \"default\":\"\"},"
-          + "{\"name\":\"lastName\", \"type\":\"string\", \"default\":\"\"}" + "]}";
+  private static final String VALUE_SCHEMA_STR = "{ \"type\":\"record\", \"name\":\"User\", \"fields\":["
+      + "{\"name\":\"firstName\", \"type\":\"string\", \"default\":\"\"},"
+      + "{\"name\":\"lastName\", \"type\":\"string\", \"default\":\"\"}" + "]}";
   private static final Schema VALUE_SCHEMA = new Schema.Parser().parse(VALUE_SCHEMA_STR);
-  private static final Schema WC_SCHEMA = WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(VALUE_SCHEMA);
+  private static final Schema WC_SCHEMA =
+      WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(VALUE_SCHEMA);
   private static final int VALUE_SCHEMA_ID = 1;
   private static final int WC_SCHEMA_ID = 1;
 
@@ -132,8 +131,7 @@ public class MaterializingPartitionSmokeTest {
       // Apply a partial-update operand: firstName -> "NewAlice".
       GenericRecord wcRec = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("firstName", "NewAlice").build();
       byte[] wcBytes = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec);
-      byte[] operandContent =
-          MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes);
+      byte[] operandContent = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes);
       partition.merge(keyBytes, ByteBuffer.wrap(operandContent));
 
       // Read should return the folded record with firstName=NewAlice, lastName=Smith.
@@ -146,22 +144,23 @@ public class MaterializingPartitionSmokeTest {
       MapOrderPreservingSerializer<GenericRecord> readerSer =
           MapOrderPreservingSerDeFactory.getSerializer(VALUE_SCHEMA);
       // (Re-serialize to confirm round-trip; deserialize via the SerDe factory.)
-      GenericRecord decoded = MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
+      GenericRecord decoded =
+          MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
       assertEquals(decoded.get("firstName").toString(), "NewAlice");
       assertEquals(decoded.get("lastName").toString(), "Smith");
 
       // Apply a second operand: lastName -> "NewSmith". Verify both operands are folded.
       GenericRecord wcRec2 = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("lastName", "NewSmith").build();
       byte[] wcBytes2 = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec2);
-      byte[] operandContent2 =
-          MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes2);
+      byte[] operandContent2 = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes2);
       partition.merge(keyBytes, ByteBuffer.wrap(operandContent2));
 
       byte[] readBytes2 = partition.get(keyBytes);
       assertNotNull(readBytes2);
       byte[] avroOnly2 = new byte[readBytes2.length - ByteUtils.SIZE_OF_INT];
       System.arraycopy(readBytes2, ByteUtils.SIZE_OF_INT, avroOnly2, 0, avroOnly2.length);
-      GenericRecord decoded2 = MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly2);
+      GenericRecord decoded2 =
+          MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly2);
       assertEquals(decoded2.get("firstName").toString(), "NewAlice");
       assertEquals(decoded2.get("lastName").toString(), "NewSmith");
     } finally {
@@ -198,11 +197,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -213,8 +209,7 @@ public class MaterializingPartitionSmokeTest {
       // Skip put. Go straight to merge with a partial update that sets firstName.
       GenericRecord wcRec = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("firstName", "OnlyAlice").build();
       byte[] wcBytes = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec);
-      byte[] operandContent =
-          MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes);
+      byte[] operandContent = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wcBytes);
       partition.merge(keyBytes, ByteBuffer.wrap(operandContent));
 
       // The exact reader code path from the integration test exercises three get overloads via
@@ -256,11 +251,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -311,11 +303,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -362,11 +351,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -378,7 +364,10 @@ public class MaterializingPartitionSmokeTest {
     RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
 
     com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
-        new com.linkedin.davinci.config.VeniceStoreVersionConfig(storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(
+            storeName,
+            veniceServerProperties,
+            PersistenceType.ROCKS_DB);
     com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
     int partitionId = 0;
     StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
@@ -415,9 +404,13 @@ public class MaterializingPartitionSmokeTest {
       System.arraycopy(gotByteArray, ByteUtils.SIZE_OF_INT, avroOnly, 0, avroOnly.length);
       GenericRecord decoded =
           MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
-      assertEquals(decoded.get("firstName").toString(), "EngineMerged",
+      assertEquals(
+          decoded.get("firstName").toString(),
+          "EngineMerged",
           "engine.get returned bytes that don't reflect the merged operand — fold did not run via engine path");
-      assertEquals(decoded.get("lastName").toString(), "BaseLast",
+      assertEquals(
+          decoded.get("lastName").toString(),
+          "BaseLast",
           "engine.get returned bytes that don't preserve base fields");
     } finally {
       engine.dropPartition(partitionId);
@@ -449,11 +442,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -465,7 +455,10 @@ public class MaterializingPartitionSmokeTest {
     RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
 
     com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
-        new com.linkedin.davinci.config.VeniceStoreVersionConfig(storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(
+            storeName,
+            veniceServerProperties,
+            PersistenceType.ROCKS_DB);
     com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
     int partitionId = 0;
     StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
@@ -513,9 +506,13 @@ public class MaterializingPartitionSmokeTest {
       valueBuffer.duplicate().get(avroOnly);
       GenericRecord decoded =
           MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
-      assertEquals(decoded.get("firstName").toString(), "ChunkMerged",
+      assertEquals(
+          decoded.get("firstName").toString(),
+          "ChunkMerged",
           "chunking adapter didn't return the merged firstName");
-      assertEquals(decoded.get("lastName").toString(), "ChunkLast",
+      assertEquals(
+          decoded.get("lastName").toString(),
+          "ChunkLast",
           "chunking adapter didn't preserve the base lastName");
     } finally {
       engine.dropPartition(partitionId);
@@ -537,11 +534,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -553,7 +547,10 @@ public class MaterializingPartitionSmokeTest {
     RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
 
     com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
-        new com.linkedin.davinci.config.VeniceStoreVersionConfig(storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(
+            storeName,
+            veniceServerProperties,
+            PersistenceType.ROCKS_DB);
     com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
     int partitionId = 0;
     StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
@@ -598,8 +595,10 @@ public class MaterializingPartitionSmokeTest {
 
       // With the fix applied (key wrapped on the write side AND on the chunking-aware read side),
       // both sides agree on the wrapped key and the read returns the merged value.
-      assertNotNull(result, "Read returned null after the fix — chunking-suffix wrapping should "
-          + "now match between writer and chunking-aware reader.");
+      assertNotNull(
+          result,
+          "Read returned null after the fix — chunking-suffix wrapping should "
+              + "now match between writer and chunking-aware reader.");
       ByteBuffer valueBuffer = result.value();
       assertNotNull(valueBuffer);
       byte[] avroOnly = new byte[valueBuffer.remaining()];
@@ -709,8 +708,7 @@ public class MaterializingPartitionSmokeTest {
       "{ \"type\":\"record\", \"name\":\"TestRecord\", \"namespace\":\"com.linkedin.avro\", \"fields\":["
           + "{\"name\":\"nullableMapField\", \"type\":[\"null\", {\"type\":\"map\", \"values\":{"
           + "\"type\":\"record\", \"name\":\"TestMapRecord\", \"fields\":["
-          + "{\"name\":\"longField\", \"type\":[\"null\", \"long\"], \"default\":null}"
-          + "]}}], \"default\":null}"
+          + "{\"name\":\"longField\", \"type\":[\"null\", \"long\"], \"default\":null}" + "]}}], \"default\":null}"
           + "]}";
   private static final Schema NULLABLE_MAP_VALUE_SCHEMA = new Schema.Parser().parse(NULLABLE_MAP_VALUE_SCHEMA_STR);
   private static final Schema NULLABLE_MAP_WC_SCHEMA =
@@ -741,13 +739,9 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockNullableMapSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
-    MaterializingFoldContext foldContext =
-        new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
+    MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
     Properties extraProps = new Properties();
@@ -759,7 +753,9 @@ public class MaterializingPartitionSmokeTest {
 
     com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
         new com.linkedin.davinci.config.VeniceStoreVersionConfig(
-            storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+            storeName,
+            veniceServerProperties,
+            PersistenceType.ROCKS_DB);
     com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
     int partitionId = 0;
     StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
@@ -784,15 +780,17 @@ public class MaterializingPartitionSmokeTest {
       deltaMap1.put("key1", updateRecord1);
       deltaMap1.put("key2", updateRecord2);
       GenericRecord wcRec1 =
-          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap1).build();
+          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap1)
+              .build();
       // Use FastAvro for WC serialization to mirror VeniceSystemProducer.serializeObject which is
       // what produces the WC bytes that flow through the integration test (Samza -> RT -> leader
       // bypass -> VT -> follower merge). FastAvro accepts plain HashMap (unlike
       // MapOrderPreservingSerDe which requires LinkedHashMap/IndexedHashMap/SortedMap).
       byte[] wcBytes1 = com.linkedin.venice.serializer.FastSerializerDeserializerFactory
-          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA).serialize(wcRec1);
-      byte[] op1 = MaterializingFoldContext.OperandContent.frame(
-          NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes1);
+          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA)
+          .serialize(wcRec1);
+      byte[] op1 = MaterializingFoldContext.OperandContent
+          .frame(NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes1);
       engine.merge(partitionId, wrappedKey, ByteBuffer.wrap(op1));
 
       // Read after first merge: should have a record with 2 map entries.
@@ -805,7 +803,14 @@ public class MaterializingPartitionSmokeTest {
           new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
 
       com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result1 = adapter.getWithSchemaId(
-          engine, partitionId, ByteBuffer.wrap(rawKey), true, null, null, deserializerCache, compressor,
+          engine,
+          partitionId,
+          ByteBuffer.wrap(rawKey),
+          true,
+          null,
+          null,
+          deserializerCache,
+          compressor,
           manifestContainer1);
 
       assertNotNull(result1, "After first merge, chunking-aware adapter returned null");
@@ -813,11 +818,14 @@ public class MaterializingPartitionSmokeTest {
       assertNotNull(valBuf1);
       byte[] avro1 = new byte[valBuf1.remaining()];
       valBuf1.duplicate().get(avro1);
-      GenericRecord decoded1 = MapOrderPreservingSerDeFactory
-          .getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA).deserialize(avro1);
+      GenericRecord decoded1 =
+          MapOrderPreservingSerDeFactory.getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA)
+              .deserialize(avro1);
       assertNotNull(decoded1, "Decoded record after first merge is null");
       Object mapAfterFirst = decoded1.get("nullableMapField");
-      assertNotNull(mapAfterFirst, "nullableMapField is null after first merge — fold did not apply MAP_OPS to null base");
+      assertNotNull(
+          mapAfterFirst,
+          "nullableMapField is null after first merge — fold did not apply MAP_OPS to null base");
       assertEquals(((java.util.Map<?, ?>) mapAfterFirst).size(), 2, "After first merge, map should have 2 entries");
 
       // Second UPDATE: add key3, key4.
@@ -825,30 +833,39 @@ public class MaterializingPartitionSmokeTest {
       deltaMap2.put("key3", updateRecord1);
       deltaMap2.put("key4", updateRecord2);
       GenericRecord wcRec2 =
-          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap2).build();
+          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap2)
+              .build();
       byte[] wcBytes2 = com.linkedin.venice.serializer.FastSerializerDeserializerFactory
-          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA).serialize(wcRec2);
-      byte[] op2 = MaterializingFoldContext.OperandContent.frame(
-          NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes2);
+          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA)
+          .serialize(wcRec2);
+      byte[] op2 = MaterializingFoldContext.OperandContent
+          .frame(NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes2);
       engine.merge(partitionId, wrappedKey, ByteBuffer.wrap(op2));
 
       com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer manifestContainer2 =
           new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
       com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result2 = adapter.getWithSchemaId(
-          engine, partitionId, ByteBuffer.wrap(rawKey), true, null, null, deserializerCache, compressor,
+          engine,
+          partitionId,
+          ByteBuffer.wrap(rawKey),
+          true,
+          null,
+          null,
+          deserializerCache,
+          compressor,
           manifestContainer2);
       assertNotNull(result2, "After second merge, chunking-aware adapter returned null");
       ByteBuffer valBuf2 = result2.value();
       assertNotNull(valBuf2);
       byte[] avro2 = new byte[valBuf2.remaining()];
       valBuf2.duplicate().get(avro2);
-      GenericRecord decoded2 = MapOrderPreservingSerDeFactory
-          .getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA).deserialize(avro2);
+      GenericRecord decoded2 =
+          MapOrderPreservingSerDeFactory.getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA)
+              .deserialize(avro2);
       assertNotNull(decoded2);
       Object mapAfterSecond = decoded2.get("nullableMapField");
       assertNotNull(mapAfterSecond);
-      assertEquals(((java.util.Map<?, ?>) mapAfterSecond).size(), 4,
-          "After second merge, map should have 4 entries");
+      assertEquals(((java.util.Map<?, ?>) mapAfterSecond).size(), 4, "After second merge, map should have 4 entries");
     } finally {
       engine.dropPartition(partitionId);
       MaterializingFoldContextRegistry.unregister(storeName);
@@ -878,11 +895,8 @@ public class MaterializingPartitionSmokeTest {
 
     String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
     ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
-    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
-        storeShortName,
-        schemaRepo,
-        new CollectionTimestampMergeRecordHelper(),
-        false);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
     MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
     MaterializingFoldContextRegistry.register(storeName, foldContext);
 
@@ -894,7 +908,10 @@ public class MaterializingPartitionSmokeTest {
     RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
 
     com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
-        new com.linkedin.davinci.config.VeniceStoreVersionConfig(storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(
+            storeName,
+            veniceServerProperties,
+            PersistenceType.ROCKS_DB);
     com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
     int partitionId = 0;
     StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
@@ -935,7 +952,8 @@ public class MaterializingPartitionSmokeTest {
 
       // Apply a SECOND partial update on user-1 only — exercises operand chain on real base.
       {
-        GenericRecord wcRec2 = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("lastName", "updated-last-user-1").build();
+        GenericRecord wcRec2 =
+            new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("lastName", "updated-last-user-1").build();
         byte[] wc2 = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec2);
         byte[] op2 = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wc2);
         engine.merge(partitionId, wrappedKeyByName.get("user-1"), ByteBuffer.wrap(op2));
@@ -947,7 +965,14 @@ public class MaterializingPartitionSmokeTest {
         com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer manifest =
             new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
         com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result = adapter.getWithSchemaId(
-            engine, partitionId, ByteBuffer.wrap(name.getBytes()), true, null, null, deserializerCache, compressor,
+            engine,
+            partitionId,
+            ByteBuffer.wrap(name.getBytes()),
+            true,
+            null,
+            null,
+            deserializerCache,
+            compressor,
             manifest);
         assertNotNull(result, "Read returned null for key " + name);
         ByteBuffer valBuf = result.value();

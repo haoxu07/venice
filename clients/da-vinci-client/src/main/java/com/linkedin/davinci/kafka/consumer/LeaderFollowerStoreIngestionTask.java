@@ -286,9 +286,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
               this.storeWriteComputeHandler,
               serverConfig.isComputeFastAvroEnabled(),
               this.compressor);
-      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.register(
-          getKafkaVersionTopic(),
-          foldContext);
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry
+          .register(getKafkaVersionTopic(), foldContext);
     }
     this.isNativeReplicationEnabled = version.isNativeReplicationEnabled();
 
@@ -405,8 +404,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
     // never registered). Done before super.close() so any in-flight read on this store-version
     // will fail loudly rather than silently use a stale context after close.
     if (serverConfig.isVtUpdateOperandEnabled()) {
-      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry
-          .unregister(getKafkaVersionTopic());
+      com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.unregister(getKafkaVersionTopic());
     }
     super.close();
   }

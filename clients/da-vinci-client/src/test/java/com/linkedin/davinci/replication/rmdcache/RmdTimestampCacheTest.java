@@ -32,11 +32,7 @@ public class RmdTimestampCacheTest {
   private static final double BLOOM_FPP = 0.01d;
 
   private RmdTimestampCache newCache() {
-    return new RmdTimestampCache(
-        0,
-        TIME_WINDOW_MS,
-        MAX_SIZE,
-        new PartitionBloomFilter(BLOOM_EXPECTED, BLOOM_FPP));
+    return new RmdTimestampCache(0, TIME_WINDOW_MS, MAX_SIZE, new PartitionBloomFilter(BLOOM_EXPECTED, BLOOM_FPP));
   }
 
   /**
@@ -145,7 +141,7 @@ public class RmdTimestampCacheTest {
     cache.setHighestTsInDbButNotInCacheForTest(1000L);
 
     // 2. Now decide for same key with a NEW ts strictly greater than the watermark.
-    //    Bloom says "maybe", key not in cache, ts > watermark -> B.2.a.
+    // Bloom says "maybe", key not in cache, ts > watermark -> B.2.a.
     long evictionTimeNowMs = NOW_MS + 2 * TIME_WINDOW_MS;
     RmdTimestampCache.Decision d = cache.decideAndUpdate(keyHash, 2000L, evictionTimeNowMs);
     assertEquals(d, RmdTimestampCache.Decision.ABOVE_HIGH_WATERMARK_NEW_WINS);
@@ -241,8 +237,7 @@ public class RmdTimestampCacheTest {
     assertEquals(cache.getHighestTsInDbButNotInCache(), Long.MAX_VALUE);
 
     // Any finite incoming ts is < MAX_VALUE, so B.2.a cannot fire. We fall back.
-    RmdTimestampCache.Decision d =
-        cache.decideAndUpdate(keyHash, Long.MAX_VALUE - 1L, NOW_MS + 2 * TIME_WINDOW_MS);
+    RmdTimestampCache.Decision d = cache.decideAndUpdate(keyHash, Long.MAX_VALUE - 1L, NOW_MS + 2 * TIME_WINDOW_MS);
     assertEquals(d, RmdTimestampCache.Decision.FALLBACK_TO_RMD_LOOKUP);
   }
 
@@ -349,7 +344,10 @@ public class RmdTimestampCacheTest {
       if (cacheDecidedNewWins) {
         cacheWins.incrementAndGet();
       }
-      assertEquals(cacheDecidedNewWins, serialNewWins, "Cache decision must match serial ref for op (" + kh + "," + ts + ")");
+      assertEquals(
+          cacheDecidedNewWins,
+          serialNewWins,
+          "Cache decision must match serial ref for op (" + kh + "," + ts + ")");
     }
     // Also assert the total wins match — equivalent to the above per-op check, but a
     // final cross-check for paranoia.

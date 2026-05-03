@@ -103,7 +103,8 @@ public class LeanHarnessBrokerSmokeTest {
             "Region " + region + " missing VT topic " + versionTopic.getName() + "; listed=" + listedTopics);
 
         // Confirm partition counts via PubSubAdminAdapter#containsTopicWithPartitionCheck for partition-1 (which only
-        // exists if PARTITION_COUNT>=2). For PARTITION_COUNT=2, partition-0 and partition-1 must exist; partition-2 must
+        // exists if PARTITION_COUNT>=2). For PARTITION_COUNT=2, partition-0 and partition-1 must exist; partition-2
+        // must
         // not.
         for (int p = 0; p < PARTITION_COUNT; p++) {
           assertTrue(
@@ -131,8 +132,9 @@ public class LeanHarnessBrokerSmokeTest {
       PubSubProducerAdapter producer = newProducerAdapter(harness, region);
       PubSubConsumerAdapter consumer = newConsumerAdapter(harness, region);
       try {
-        KafkaKey kafkaKey =
-            new KafkaKey(MessageType.PUT, ("smoke-key-region-" + region).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        KafkaKey kafkaKey = new KafkaKey(
+            MessageType.PUT,
+            ("smoke-key-region-" + region).getBytes(java.nio.charset.StandardCharsets.UTF_8));
         byte[] expectedPayload = ("smoke-payload-region-" + region).getBytes(java.nio.charset.StandardCharsets.UTF_8);
         KafkaMessageEnvelope kme = buildKmeWithPut(expectedPayload, /*sequenceNumber*/ 0);
 

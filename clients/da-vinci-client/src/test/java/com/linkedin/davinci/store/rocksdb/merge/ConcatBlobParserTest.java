@@ -1,7 +1,6 @@
 package com.linkedin.davinci.store.rocksdb.merge;
 
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
@@ -76,7 +75,10 @@ public class ConcatBlobParserTest {
     byte[] op2 = "second-op-with-different-len".getBytes();
     byte[] op3 = new byte[] { 0x33 };
 
-    byte[] blob = concat(delim, ConcatBlobParser.frameOperand(op1), ConcatBlobParser.frameOperand(op2),
+    byte[] blob = concat(
+        delim,
+        ConcatBlobParser.frameOperand(op1),
+        ConcatBlobParser.frameOperand(op2),
         ConcatBlobParser.frameOperand(op3));
 
     Parsed result = ConcatBlobParser.parse(blob);
@@ -95,7 +97,10 @@ public class ConcatBlobParserTest {
     byte[] op1 = "op1".getBytes();
     byte[] op2 = "op2-longer".getBytes();
 
-    byte[] blob = concat(delim, ConcatBlobParser.frameBase(101, base), ConcatBlobParser.frameOperand(op1),
+    byte[] blob = concat(
+        delim,
+        ConcatBlobParser.frameBase(101, base),
+        ConcatBlobParser.frameOperand(op1),
         ConcatBlobParser.frameOperand(op2));
 
     Parsed result = ConcatBlobParser.parse(blob);
@@ -115,8 +120,12 @@ public class ConcatBlobParserTest {
     byte[] op2 = new byte[] { 0x01, delim, 0x01 }; // operand contains kind-like bytes
     byte[] op3 = new byte[] { delim };
 
-    byte[] blob = concat(delim, ConcatBlobParser.frameBase(7, base), ConcatBlobParser.frameOperand(op1),
-        ConcatBlobParser.frameOperand(op2), ConcatBlobParser.frameOperand(op3));
+    byte[] blob = concat(
+        delim,
+        ConcatBlobParser.frameBase(7, base),
+        ConcatBlobParser.frameOperand(op1),
+        ConcatBlobParser.frameOperand(op2),
+        ConcatBlobParser.frameOperand(op3));
 
     Parsed result = ConcatBlobParser.parse(blob);
     assertEquals(result.getSchemaId(), 7);

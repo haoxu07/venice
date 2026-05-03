@@ -34,7 +34,6 @@ import com.linkedin.davinci.stats.AggVersionedIngestionStats;
 import com.linkedin.davinci.stats.AggVersionedStorageEngineStats;
 import com.linkedin.davinci.stats.ingestion.heartbeat.HeartbeatMonitoringService;
 import com.linkedin.davinci.storage.StorageEngineMetadataService;
-import com.linkedin.davinci.storage.StorageMetadataService;
 import com.linkedin.davinci.storage.StorageService;
 import com.linkedin.davinci.store.StorageEngine;
 import com.linkedin.davinci.store.view.VeniceViewWriterFactory;
@@ -79,7 +78,6 @@ import io.tehuti.metrics.MetricsRepository;
 import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
-import org.apache.avro.Schema;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -95,6 +93,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.avro.Schema;
 import org.apache.commons.io.FileUtils;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
 import org.apache.logging.log4j.LogManager;
@@ -179,12 +178,7 @@ public class MinimalAAIngestionHarness {
      * @param versionNumber the single version the harness will bring up. Must be {@code > 0}.
      * @throws IllegalArgumentException if any argument fails validation.
      */
-    public Config(
-        int regionCount,
-        int partitionCount,
-        String storeName,
-        List<String> regionNames,
-        int versionNumber) {
+    public Config(int regionCount, int partitionCount, String storeName, List<String> regionNames, int versionNumber) {
       if (regionCount <= 0) {
         throw new IllegalArgumentException("regionCount must be > 0, was " + regionCount);
       }
@@ -461,8 +455,8 @@ public class MinimalAAIngestionHarness {
       }
 
       // 9) Subscribe each task to ALL partitions of its local VT (one task per region handles every
-      //    partition, mirroring production where each Venice server runs one SIT per VT and that SIT
-      //    is subscribed to all replicas it owns).
+      // partition, mirroring production where each Venice server runs one SIT per VT and that SIT
+      // is subscribed to all replicas it owns).
       for (int i = 0; i < config.getRegionCount(); i++) {
         subscribeRegionToAllVTPartitions(i);
       }
@@ -478,10 +472,8 @@ public class MinimalAAIngestionHarness {
       }
 
       long sitElapsedMs = (System.nanoTime() - sitStartNanos) / 1_000_000L;
-      LOGGER.info(
-          "MinimalAAIngestionHarness wired {} ingestion task(s) in {} ms",
-          config.getRegionCount(),
-          sitElapsedMs);
+      LOGGER
+          .info("MinimalAAIngestionHarness wired {} ingestion task(s) in {} ms", config.getRegionCount(), sitElapsedMs);
 
       started = true;
       long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -661,8 +653,7 @@ public class MinimalAAIngestionHarness {
       throw new IllegalStateException("Harness not started; call start() first.");
     }
     if (region < 0 || region >= brokers.size()) {
-      throw new IllegalArgumentException(
-          "Region " + region + " is out of bounds [0, " + brokers.size() + ")");
+      throw new IllegalArgumentException("Region " + region + " is out of bounds [0, " + brokers.size() + ")");
     }
     return brokers.get(region);
   }
@@ -725,8 +716,7 @@ public class MinimalAAIngestionHarness {
       throw new IllegalStateException("Harness not started; call start() first.");
     }
     if (regionId < 0 || regionId >= regionTempDirs.size()) {
-      throw new IllegalArgumentException(
-          "Region " + regionId + " is out of bounds [0, " + regionTempDirs.size() + ")");
+      throw new IllegalArgumentException("Region " + regionId + " is out of bounds [0, " + regionTempDirs.size() + ")");
     }
     return regionTempDirs.get(regionId);
   }
@@ -777,8 +767,7 @@ public class MinimalAAIngestionHarness {
       throw new IllegalStateException("Harness not started; call start() first.");
     }
     if (regionId < 0 || regionId >= ingestionTasks.size()) {
-      throw new IllegalArgumentException(
-          "Region " + regionId + " is out of bounds [0, " + ingestionTasks.size() + ")");
+      throw new IllegalArgumentException("Region " + regionId + " is out of bounds [0, " + ingestionTasks.size() + ")");
     }
     return ingestionTasks.get(regionId);
   }
@@ -800,8 +789,7 @@ public class MinimalAAIngestionHarness {
       throw new IllegalStateException("Harness not started; call start() first.");
     }
     if (regionId < 0 || regionId >= rtWriters.size()) {
-      throw new IllegalArgumentException(
-          "Region " + regionId + " is out of bounds [0, " + rtWriters.size() + ")");
+      throw new IllegalArgumentException("Region " + regionId + " is out of bounds [0, " + rtWriters.size() + ")");
     }
     return rtWriters.get(regionId);
   }
@@ -892,7 +880,8 @@ public class MinimalAAIngestionHarness {
   }
 
   private StorageService createStorageService(File regionRoot, String regionName) {
-    VeniceProperties serverProps = buildServerProperties(regionRoot, brokers.get(brokerIndexForRegion(regionName)).getAddress());
+    VeniceProperties serverProps =
+        buildServerProperties(regionRoot, brokers.get(brokerIndexForRegion(regionName)).getAddress());
     VeniceConfigLoader configLoader = new VeniceConfigLoader(VeniceProperties.empty(), serverProps);
     StorageService storageService = new StorageService(
         configLoader,
@@ -993,8 +982,7 @@ public class MinimalAAIngestionHarness {
     serverConfigs.add(serverConfig);
 
     // 3. PubSubProducerAdapterFactory + PubSubClientsFactory + VeniceWriterFactory (dep-graph #1).
-    PubSubProducerAdapterFactory producerAdapterFactory =
-        broker.getPubSubClientsFactory().getProducerAdapterFactory();
+    PubSubProducerAdapterFactory producerAdapterFactory = broker.getPubSubClientsFactory().getProducerAdapterFactory();
     Properties veniceWriterProps = new Properties();
     veniceWriterProps.put(ConfigKeys.KAFKA_BOOTSTRAP_SERVERS, broker.getAddress());
     veniceWriterProps.putAll(broker.getAdditionalConfig());
@@ -1011,15 +999,16 @@ public class MinimalAAIngestionHarness {
     Properties topicMgrProps = new Properties();
     topicMgrProps.putAll(veniceWriterProps);
     final VeniceProperties topicMgrVeniceProps = new VeniceProperties(topicMgrProps);
-    TopicManagerContext topicManagerContext = new TopicManagerContext.Builder()
-        .setPubSubPropertiesSupplier(k -> topicMgrVeniceProps)
-        .setPubSubTopicRepository(pubSubTopicRepository)
-        .setPubSubPositionTypeRegistry(broker.getPubSubPositionTypeRegistry())
-        .setPubSubAdminAdapterFactory(broker.getPubSubClientsFactory().getAdminAdapterFactory())
-        .setPubSubConsumerAdapterFactory(broker.getPubSubClientsFactory().getConsumerAdapterFactory())
-        .setMetricsRepository(metricsRepo)
-        .build();
-    TopicManagerRepository topicManagerRepository = new TopicManagerRepository(topicManagerContext, broker.getAddress());
+    TopicManagerContext topicManagerContext =
+        new TopicManagerContext.Builder().setPubSubPropertiesSupplier(k -> topicMgrVeniceProps)
+            .setPubSubTopicRepository(pubSubTopicRepository)
+            .setPubSubPositionTypeRegistry(broker.getPubSubPositionTypeRegistry())
+            .setPubSubAdminAdapterFactory(broker.getPubSubClientsFactory().getAdminAdapterFactory())
+            .setPubSubConsumerAdapterFactory(broker.getPubSubClientsFactory().getConsumerAdapterFactory())
+            .setMetricsRepository(metricsRepo)
+            .build();
+    TopicManagerRepository topicManagerRepository =
+        new TopicManagerRepository(topicManagerContext, broker.getAddress());
     topicManagerRepositories.add(topicManagerRepository);
 
     // Must use the OPTIMIZED deserializer (which uses {@link OptimizedKafkaValueSerializer}) — the
@@ -1142,8 +1131,7 @@ public class MinimalAAIngestionHarness {
     VeniceViewWriterFactory veniceViewWriterFactory = new VeniceViewWriterFactory(configLoader, veniceWriterFactory);
 
     // 16. HeartbeatMonitoringService (dep-graph #2). Mock with deep stubs.
-    HeartbeatMonitoringService heartbeatMonitoringService =
-        mock(HeartbeatMonitoringService.class, RETURNS_DEEP_STUBS);
+    HeartbeatMonitoringService heartbeatMonitoringService = mock(HeartbeatMonitoringService.class, RETURNS_DEEP_STUBS);
     heartbeatMonitoringServices.add(heartbeatMonitoringService);
 
     // 17. Leader-follower notifiers queue (dep-graph #5). LogNotifier is OK for visibility.
@@ -1213,15 +1201,11 @@ public class MinimalAAIngestionHarness {
     // Default writer uses byte[] key/value/update serializers; the SIT-side decoding handles the
     // KafkaKey + KME envelope construction. We don't enable setUseKafkaKeySerializer so that callers
     // can pass raw byte[] keys via #put(byte[], byte[], int).
-    VeniceWriter<byte[], byte[], byte[]> vtWriter = veniceWriterFactory
-        .createVeniceWriter(new VeniceWriterOptions.Builder(versionTopic.getName())
-            .setPartitionCount(config.getPartitionCount())
-            .build());
+    VeniceWriter<byte[], byte[], byte[]> vtWriter = veniceWriterFactory.createVeniceWriter(
+        new VeniceWriterOptions.Builder(versionTopic.getName()).setPartitionCount(config.getPartitionCount()).build());
     vtWriters.add(vtWriter);
-    VeniceWriter<byte[], byte[], byte[]> rtWriter = veniceWriterFactory
-        .createVeniceWriter(new VeniceWriterOptions.Builder(realTimeTopic.getName())
-            .setPartitionCount(config.getPartitionCount())
-            .build());
+    VeniceWriter<byte[], byte[], byte[]> rtWriter = veniceWriterFactory.createVeniceWriter(
+        new VeniceWriterOptions.Builder(realTimeTopic.getName()).setPartitionCount(config.getPartitionCount()).build());
     rtWriters.add(rtWriter);
   }
 
@@ -1269,8 +1253,7 @@ public class MinimalAAIngestionHarness {
     StoreIngestionTask task = ingestionTasks.get(regionId);
     if (!(task instanceof LeaderFollowerStoreIngestionTask)) {
       throw new VeniceException(
-          "Region " + regionName + " task is not a LeaderFollowerStoreIngestionTask, got "
-              + task.getClass().getName());
+          "Region " + regionName + " task is not a LeaderFollowerStoreIngestionTask, got " + task.getClass().getName());
     }
     for (int partition = 0; partition < config.getPartitionCount(); partition++) {
       com.linkedin.venice.pubsub.api.PubSubTopicPartition tp =
@@ -1279,8 +1262,10 @@ public class MinimalAAIngestionHarness {
       // no Helix-driven session-id contention).
       AtomicLong sessionIdHandle = new AtomicLong(1L);
       LeaderFollowerPartitionStateModel.LeaderSessionIdChecker checker =
-          new LeaderFollowerPartitionStateModel.LeaderSessionIdChecker(/*leadershipTerm*/ 1L,
-              /*assignedSessionId*/ 1L, sessionIdHandle);
+          new LeaderFollowerPartitionStateModel.LeaderSessionIdChecker(
+              /*leadershipTerm*/ 1L,
+              /*assignedSessionId*/ 1L,
+              sessionIdHandle);
       ((LeaderFollowerStoreIngestionTask) task).promoteToLeader(tp, checker);
       LOGGER.info("Region {}: promoted task to LEADER for {}/{}", regionName, versionTopic.getName(), partition);
     }
@@ -1303,7 +1288,10 @@ public class MinimalAAIngestionHarness {
           config.getRegionName(i),
           versionTopic.getName(),
           allRtSourceServers);
-      vtWriter.broadcastTopicSwitch(allRtSourceServers, realTimeTopic.getName(), rewindStartTimestamp,
+      vtWriter.broadcastTopicSwitch(
+          allRtSourceServers,
+          realTimeTopic.getName(),
+          rewindStartTimestamp,
           Collections.emptyMap());
     }
   }
@@ -1324,9 +1312,7 @@ public class MinimalAAIngestionHarness {
         ConfigKeys.KAFKA_FETCH_MAX_BYTES_CONFIG,
         String.valueOf(serverConfig.getKafkaFetchMaxSizePerSecond()));
     p.setProperty(ConfigKeys.KAFKA_MAX_POLL_RECORDS_CONFIG, Integer.toString(serverConfig.getKafkaMaxPollRecords()));
-    p.setProperty(
-        ConfigKeys.KAFKA_FETCH_MAX_WAIT_MS_CONFIG,
-        String.valueOf(serverConfig.getKafkaFetchMaxTimeMS()));
+    p.setProperty(ConfigKeys.KAFKA_FETCH_MAX_WAIT_MS_CONFIG, String.valueOf(serverConfig.getKafkaFetchMaxTimeMS()));
     p.setProperty(
         ConfigKeys.KAFKA_MAX_PARTITION_FETCH_BYTES_CONFIG,
         String.valueOf(serverConfig.getKafkaFetchPartitionMaxSizePerSecond()));

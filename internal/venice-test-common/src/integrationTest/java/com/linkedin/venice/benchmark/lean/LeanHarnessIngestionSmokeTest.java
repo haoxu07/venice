@@ -12,7 +12,6 @@ import com.linkedin.venice.utils.TestUtils;
 import com.linkedin.venice.writer.VeniceWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -102,8 +101,8 @@ public class LeanHarnessIngestionSmokeTest {
     // Write the record to region 0's RT topic via VeniceWriter (DIV correctness).
     VeniceWriter<byte[], byte[], byte[]> rtWriter = harness.getVeniceWriterForRTTopic(0);
     rtWriter.put(keyBytes, valueBytes, /*valueSchemaId*/ 1).get(15, TimeUnit.SECONDS);
-    System.out
-        .println("[LeanHarnessIngestionSmokeTest] wrote 1 record to region 0 RT topic " + harness.getRealTimeTopic().getName());
+    System.out.println(
+        "[LeanHarnessIngestionSmokeTest] wrote 1 record to region 0 RT topic " + harness.getRealTimeTopic().getName());
 
     // The AA SIT will consume this RT message, merge it, produce to local VT, and the drainer will
     // write it to the local RocksDB. Cross-region: region 1's SIT consumes the same RT (via the
@@ -125,9 +124,7 @@ public class LeanHarnessIngestionSmokeTest {
               stored,
               "Region " + finalRegion + " RocksDB should have ingested the record under key "
                   + new String(keyBytes, StandardCharsets.UTF_8));
-          assertTrue(
-              stored.length > 0,
-              "Region " + finalRegion + " stored value bytes must be non-empty");
+          assertTrue(stored.length > 0, "Region " + finalRegion + " stored value bytes must be non-empty");
         });
       } catch (Throwable t) {
         // Print region-task state for debugging.

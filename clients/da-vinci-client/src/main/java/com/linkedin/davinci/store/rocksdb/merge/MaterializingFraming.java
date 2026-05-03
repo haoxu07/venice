@@ -208,8 +208,13 @@ public final class MaterializingFraming {
       return prependSchemaId(schemaId, avroBase);
     }
     MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
-    LOGGER.debug("VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
-        storeNameAndVersion, raw.length, avroBase.length, operands.size(), ctx == null);
+    LOGGER.debug(
+        "VT-merge materialize: storeVersion={} rawLen={} baseLen={} opCount={} ctxNull={}",
+        storeNameAndVersion,
+        raw.length,
+        avroBase.length,
+        operands.size(),
+        ctx == null);
     if (ctx == null) {
       // No fold context registered. We have a parsed base — return [schemaId][avroBase]
       // (i.e. the unfolded base bytes) so readers see the last materialized state instead of

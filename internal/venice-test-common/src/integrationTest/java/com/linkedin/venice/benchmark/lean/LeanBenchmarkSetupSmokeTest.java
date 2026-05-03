@@ -120,12 +120,14 @@ public class LeanBenchmarkSetupSmokeTest {
     GenericRecord updateRec = ub.build();
     byte[] updateKeyBytes = keySerializer.serialize(updateKey);
     int updatePartition = partitioner.getPartitionId(updateKeyBytes, PARTITION_COUNT);
-    writerDC1.update(
-        updateKeyBytes,
-        wcSerializer.serialize(updateRec),
-        VALUE_SCHEMA_ID,
-        WRITE_COMPUTE_DERIVED_SCHEMA_ID,
-        null).get(15, TimeUnit.SECONDS);
+    writerDC1
+        .update(
+            updateKeyBytes,
+            wcSerializer.serialize(updateRec),
+            VALUE_SCHEMA_ID,
+            WRITE_COMPUTE_DERIVED_SCHEMA_ID,
+            null)
+        .get(15, TimeUnit.SECONDS);
 
     TestUtils.waitForNonDeterministicAssertion(60, TimeUnit.SECONDS, () -> {
       assertNotNull(engineDC0.get(updatePartition, updateKeyBytes), "UPDATE must land on DC0 RocksDB");
@@ -151,12 +153,8 @@ public class LeanBenchmarkSetupSmokeTest {
     });
     writerDC0.delete(deleteKeyBytes, null).get(15, TimeUnit.SECONDS);
     TestUtils.waitForNonDeterministicAssertion(60, TimeUnit.SECONDS, () -> {
-      assertTrue(
-          engineDC0.get(deletePartition, deleteKeyBytes) == null,
-          "DELETE must remove value on DC0 RocksDB");
-      assertTrue(
-          engineDC1.get(deletePartition, deleteKeyBytes) == null,
-          "DELETE must remove value on DC1 RocksDB");
+      assertTrue(engineDC0.get(deletePartition, deleteKeyBytes) == null, "DELETE must remove value on DC0 RocksDB");
+      assertTrue(engineDC1.get(deletePartition, deleteKeyBytes) == null, "DELETE must remove value on DC1 RocksDB");
     });
     System.out.println("[LeanBenchmarkSetupSmokeTest] DELETE drained on both regions.");
   }

@@ -34,13 +34,9 @@ public final class KeyHasher {
     // would be cleanest but we stick to byte reads for JIT portability; the hot path is
     // still a short loop.
     while (i + 8 <= end) {
-      long k = ((long) (key[i] & 0xFF))
-          | (((long) (key[i + 1] & 0xFF)) << 8)
-          | (((long) (key[i + 2] & 0xFF)) << 16)
-          | (((long) (key[i + 3] & 0xFF)) << 24)
-          | (((long) (key[i + 4] & 0xFF)) << 32)
-          | (((long) (key[i + 5] & 0xFF)) << 40)
-          | (((long) (key[i + 6] & 0xFF)) << 48)
+      long k = ((long) (key[i] & 0xFF)) | (((long) (key[i + 1] & 0xFF)) << 8) | (((long) (key[i + 2] & 0xFF)) << 16)
+          | (((long) (key[i + 3] & 0xFF)) << 24) | (((long) (key[i + 4] & 0xFF)) << 32)
+          | (((long) (key[i + 5] & 0xFF)) << 40) | (((long) (key[i + 6] & 0xFF)) << 48)
           | (((long) (key[i + 7] & 0xFF)) << 56);
       k *= PRIME64_2;
       k = Long.rotateLeft(k, 31);
@@ -51,8 +47,7 @@ public final class KeyHasher {
     }
     // 4-byte tail.
     if (i + 4 <= end) {
-      int k =
-          (key[i] & 0xFF) | ((key[i + 1] & 0xFF) << 8) | ((key[i + 2] & 0xFF) << 16) | ((key[i + 3] & 0xFF) << 24);
+      int k = (key[i] & 0xFF) | ((key[i + 1] & 0xFF) << 8) | ((key[i + 2] & 0xFF) << 16) | ((key[i + 3] & 0xFF) << 24);
       h ^= (k & 0xFFFFFFFFL) * PRIME64_1;
       h = Long.rotateLeft(h, 23) * PRIME64_2 + PRIME64_3;
       i += 4;

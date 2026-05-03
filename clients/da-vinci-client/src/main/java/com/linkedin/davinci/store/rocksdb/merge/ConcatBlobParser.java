@@ -89,8 +89,8 @@ public final class ConcatBlobParser {
     int cursor = 0;
 
     // Discriminate between materialized-base form and operand-only form:
-    //   materialized-base: [schemaId : 4B][kind=0x00 : 1B][len : varint][avro][optional concat ops]
-    //   operand-only:      [kind=0x01 : 1B][len : varint][operand][optional more ops]
+    // materialized-base: [schemaId : 4B][kind=0x00 : 1B][len : varint][avro][optional concat ops]
+    // operand-only: [kind=0x01 : 1B][len : varint][operand][optional more ops]
     //
     // We MUST check blob[0]==KIND_OPERAND first. The previous version only checked
     // blob[SCHEMA_ID_HEADER_LEN] == KIND_BASE, which collides for operand-only blobs whose
@@ -109,8 +109,7 @@ public final class ConcatBlobParser {
       int baseLen = vlen.value;
       if (cursor + baseLen > blob.length) {
         throw new VeniceException(
-            "ConcatBlobParser: declared base length " + baseLen + " exceeds remaining bytes "
-                + (blob.length - cursor));
+            "ConcatBlobParser: declared base length " + baseLen + " exceeds remaining bytes " + (blob.length - cursor));
       }
       base = new byte[baseLen];
       System.arraycopy(blob, cursor, base, 0, baseLen);
@@ -144,8 +143,7 @@ public final class ConcatBlobParser {
         // After a base or a prior operand, StringAppendOperator inserted a delimiter byte.
         cursor++;
         if (cursor >= blob.length) {
-          throw new VeniceException(
-              "ConcatBlobParser: trailing delimiter at end of blob with no operand following");
+          throw new VeniceException("ConcatBlobParser: trailing delimiter at end of blob with no operand following");
         }
       }
       byte kind = blob[cursor];

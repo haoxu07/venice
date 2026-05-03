@@ -779,8 +779,10 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       DefaultPubSubMessage rtRecord = consumerRecordWrapper.getMessage();
       KafkaMessageEnvelope rtKafkaValue = rtRecord.getValue();
       if (MessageType.valueOf(rtKafkaValue.messageType) == MessageType.UPDATE) {
-        LOGGER.debug("VT-merge leader fast-path: storeVersion={} partition={} forwarding UPDATE -> VT",
-            kafkaVersionTopic, partition);
+        LOGGER.debug(
+            "VT-merge leader fast-path: storeVersion={} partition={} forwarding UPDATE -> VT",
+            kafkaVersionTopic,
+            partition);
         produceUpdateOperandToVT(
             rtRecord,
             partitionConsumptionState,
@@ -1029,25 +1031,26 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
     final int valueSchemaId = incomingUpdate.schemaId;
     final int derivedSchemaId = incomingUpdate.updateSchemaId;
 
-    LeaderProducedRecordContext leaderProducedRecordContext = LeaderProducedRecordContext
-        .newUpdateRecord(kafkaClusterId, rtRecord.getPosition(), keyBytes, vtUpdate);
+    LeaderProducedRecordContext leaderProducedRecordContext =
+        LeaderProducedRecordContext.newUpdateRecord(kafkaClusterId, rtRecord.getPosition(), keyBytes, vtUpdate);
 
-    BiConsumer<ChunkAwareCallback, LeaderMetadataWrapper> produceToTopicFunction = (callback, leaderMetadataWrapper) -> {
-      // VeniceWriter.update produces MessageType.UPDATE to the topic. The writeComputeSerializer
-      // for the leader writer is DefaultSerializer (byte[]→byte[] passthrough — see
-      // VeniceWriterOptions defaults), so the bytes on VT are exactly the operand bytes from RT.
-      // N.B. we do not have a writer.update() overload that takes the same LeaderMetadataWrapper;
-      // for Phase 1 the leaderMetadataWrapper's RT position bookkeeping is best-effort. The DIV
-      // path is unchanged because produced messages still go through the same VeniceWriter.
-      partitionConsumptionState.getVeniceWriterLazyRef()
-          .get()
-          .update(
-              keyBytes,
-              ByteUtils.extractByteArray(operandForProduce),
-              valueSchemaId,
-              derivedSchemaId,
-              callback);
-    };
+    BiConsumer<ChunkAwareCallback, LeaderMetadataWrapper> produceToTopicFunction =
+        (callback, leaderMetadataWrapper) -> {
+          // VeniceWriter.update produces MessageType.UPDATE to the topic. The writeComputeSerializer
+          // for the leader writer is DefaultSerializer (byte[]→byte[] passthrough — see
+          // VeniceWriterOptions defaults), so the bytes on VT are exactly the operand bytes from RT.
+          // N.B. we do not have a writer.update() overload that takes the same LeaderMetadataWrapper;
+          // for Phase 1 the leaderMetadataWrapper's RT position bookkeeping is best-effort. The DIV
+          // path is unchanged because produced messages still go through the same VeniceWriter.
+          partitionConsumptionState.getVeniceWriterLazyRef()
+              .get()
+              .update(
+                  keyBytes,
+                  ByteUtils.extractByteArray(operandForProduce),
+                  valueSchemaId,
+                  derivedSchemaId,
+                  callback);
+        };
 
     produceToLocalKafka(
         rtRecord,

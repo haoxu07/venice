@@ -83,8 +83,9 @@ public class InMemoryReadOnlySchemaRepository implements ReadOnlySchemaRepositor
     this.valueSchemaCanonicalToId = new HashMap<>();
     this.valueSchemaCanonicalToId.put(valueSchema.toString(false), VALUE_SCHEMA_ID);
     this.derivedSchemaCanonicalToId = new HashMap<>();
-    this.derivedSchemaCanonicalToId
-        .put(writeComputeSchema.toString(false), new GeneratedSchemaID(VALUE_SCHEMA_ID, WRITE_COMPUTE_PROTOCOL_VERSION));
+    this.derivedSchemaCanonicalToId.put(
+        writeComputeSchema.toString(false),
+        new GeneratedSchemaID(VALUE_SCHEMA_ID, WRITE_COMPUTE_PROTOCOL_VERSION));
   }
 
   private void requireKnownStore(String requestedStore) {
