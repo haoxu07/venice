@@ -3041,27 +3041,6 @@ public class ConfigKeys {
   public static final String SERVER_VT_UPDATE_OPERAND_ENABLED = "server.vt.update.operand.enabled";
 
   /**
-   * Enables the PartitionSweeper running on the drainer thread. Has effect only when
-   * {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is also true. Default: false. Phase 2 only.
-   */
-  public static final String SERVER_MERGE_SWEEP_ENABLED = "server.merge.sweep.enabled";
-
-  /**
-   * Number of operands per key before sweep is triggered. Default: 4. Phase 2 only.
-   */
-  public static final String SERVER_MERGE_SWEEP_THRESHOLD = "server.merge.sweep.threshold";
-
-  /**
-   * Max keys swept per drainer-loop iteration. Default: 500. Phase 2 only.
-   */
-  public static final String SERVER_MERGE_SWEEP_BUDGET_PER_CALL = "server.merge.sweep.budget.per.call";
-
-  /**
-   * Minimum interval between two sweeps of the same key. Default: 500 ms. Phase 2 only.
-   */
-  public static final String SERVER_MERGE_SWEEP_DEBOUNCE_MS = "server.merge.sweep.debounce.ms";
-
-  /**
    * Maximum operand-chain length per key before the materializing partition's merge path
    * synchronously folds the chain and writes a base PUT (chain-length backstop). Has effect only
    * when {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is on. Default: 64. A value of {@code 0} or

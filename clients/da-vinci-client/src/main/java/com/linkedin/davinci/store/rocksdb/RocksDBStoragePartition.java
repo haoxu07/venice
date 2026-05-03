@@ -7,8 +7,6 @@ import com.linkedin.davinci.stats.RocksDBMemoryStats;
 import com.linkedin.davinci.store.AbstractStorageIterator;
 import com.linkedin.davinci.store.AbstractStoragePartition;
 import com.linkedin.davinci.store.StoragePartitionConfig;
-import com.linkedin.davinci.store.rocksdb.merge.DirtyKeyTracker;
-import com.linkedin.davinci.store.rocksdb.merge.PartitionSweeper;
 import com.linkedin.venice.exceptions.DiskLimitExhaustedException;
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.meta.Version;
@@ -160,16 +158,6 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
   protected final List<ColumnFamilyDescriptor> columnFamilyDescriptors = new ArrayList<>();
   private RocksDBSstFileWriter rocksDBSstFileWriter = null;
 
-  /**
-   * VT-merge experiment Phase 2 (sweeper). Both fields are non-null only when both
-   * {@code server.vt.update.operand.enabled} AND {@code server.merge.sweep.enabled} are on AND
-   * this is the default column family (not RMD) AND we successfully opened RocksDB (i.e. we did
-   * not bail out via the {@code blobTransferInProgress} short-circuit). All access is via
-   * {@code merge()}; we intentionally do not expose a public accessor.
-   */
-  private DirtyKeyTracker dirtyKeyTracker = null;
-  private PartitionSweeper sweeper = null;
-
   protected RocksDBStoragePartition(
       StoragePartitionConfig storagePartitionConfig,
       RocksDBStorageEngineFactory factory,
@@ -305,26 +293,6 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
         replicaId,
         this.readOnly ? "read-only" : "read-write",
         this.deferredWrite ? "deferred write" : "non-deferred write");
-
-    // VT-merge experiment Phase 2 sweeper. Activate only when both flags are on AND this is the
-    // default column family (METADATA_PARTITION_ID and RMD CF should never run a sweeper).
-    boolean sweepEligible = factory.isVtUpdateOperandEnabled() && factory.isMergeSweepEnabled()
-        && this.partitionId != METADATA_PARTITION_ID;
-    if (sweepEligible) {
-      // Tracker bound: enough headroom for the largest expected dirty set; 200K covers a
-      // 100K-pool benchmark with some over-shooting tolerance.
-      this.dirtyKeyTracker = new DirtyKeyTracker(200_000);
-      this.sweeper = new PartitionSweeper(
-          this.dirtyKeyTracker,
-          this,
-          factory.getMergeSweepBudgetPerCall(),
-          factory.getMergeSweepDebounceMs());
-      LOGGER.info(
-          "VT-merge sweeper enabled for replica: {} budget={} debounceMs={}",
-          replicaId,
-          factory.getMergeSweepBudgetPerCall(),
-          factory.getMergeSweepDebounceMs());
-    }
   }
 
   public RocksDBStoragePartition(
@@ -621,12 +589,6 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
     } catch (RocksDBException e) {
       checkAndThrowDiskLimitException(e);
       throw new VeniceException("Failed to merge operand into RocksDB: " + replicaId, e);
-    }
-    // Phase 2 sweeper: record dirty + opportunistically trigger sweep. Both fields are null
-    // when sweeper is disabled, in which case this is a no-op.
-    if (dirtyKeyTracker != null) {
-      dirtyKeyTracker.recordMerge(key);
-      sweeper.maybeSweep();
     }
   }
 

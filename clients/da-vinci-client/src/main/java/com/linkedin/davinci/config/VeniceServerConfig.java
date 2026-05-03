@@ -162,10 +162,6 @@ import static com.linkedin.venice.ConfigKeys.SERVER_LOAD_CONTROLLER_WINDOW_SIZE_
 import static com.linkedin.venice.ConfigKeys.SERVER_LOCAL_CONSUMER_CONFIG_PREFIX;
 import static com.linkedin.venice.ConfigKeys.SERVER_MAX_REQUEST_SIZE;
 import static com.linkedin.venice.ConfigKeys.SERVER_MAX_WAIT_FOR_VERSION_INFO_MS_CONFIG;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_BUDGET_PER_CALL;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_DEBOUNCE_MS;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_ENABLED;
-import static com.linkedin.venice.ConfigKeys.SERVER_MERGE_SWEEP_THRESHOLD;
 import static com.linkedin.venice.ConfigKeys.SERVER_NEARLINE_WORKLOAD_PRODUCER_THROUGHPUT_OPTIMIZATION_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_NETTY_GRACEFUL_SHUTDOWN_PERIOD_SECONDS;
 import static com.linkedin.venice.ConfigKeys.SERVER_NETTY_IDLE_TIME_SECONDS;
@@ -689,10 +685,6 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final boolean aaRmdTimestampCacheBloomAuthoritative;
   // VT-merge experiment fields. See ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED for description.
   private final boolean vtUpdateOperandEnabled;
-  private final boolean mergeSweepEnabled;
-  private final int mergeSweepThreshold;
-  private final int mergeSweepBudgetPerCall;
-  private final long mergeSweepDebounceMs;
   /**
    * VT-merge experiment Phase B: per-key chain-length backstop. {@code <= 0} disables the
    * backstop. See {@link com.linkedin.venice.ConfigKeys#SERVER_VT_MERGE_MAX_CHAIN_LENGTH}.
@@ -1210,12 +1202,6 @@ public class VeniceServerConfig extends VeniceClusterConfig {
         Boolean.parseBoolean(System.getProperty("venice.server.vt.update.operand.enabled", "false"));
     vtUpdateOperandEnabled =
         serverProperties.getBoolean(SERVER_VT_UPDATE_OPERAND_ENABLED, defaultVtUpdateOperandEnabled);
-    boolean defaultMergeSweepEnabled =
-        Boolean.parseBoolean(System.getProperty("venice.server.merge.sweep.enabled", "false"));
-    mergeSweepEnabled = serverProperties.getBoolean(SERVER_MERGE_SWEEP_ENABLED, defaultMergeSweepEnabled);
-    mergeSweepThreshold = serverProperties.getInt(SERVER_MERGE_SWEEP_THRESHOLD, 4);
-    mergeSweepBudgetPerCall = serverProperties.getInt(SERVER_MERGE_SWEEP_BUDGET_PER_CALL, 500);
-    mergeSweepDebounceMs = serverProperties.getLong(SERVER_MERGE_SWEEP_DEBOUNCE_MS, 500L);
     // VT-merge Phase B chain-length backstop. JVM-property override matches the pattern used for
     // the other VT-merge flags so the JMH harness can flip it via -jvmArgs.
     int defaultVtMergeMaxChainLength =
@@ -2174,22 +2160,6 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public boolean isVtUpdateOperandEnabled() {
     return vtUpdateOperandEnabled;
-  }
-
-  public boolean isMergeSweepEnabled() {
-    return mergeSweepEnabled;
-  }
-
-  public int getMergeSweepThreshold() {
-    return mergeSweepThreshold;
-  }
-
-  public int getMergeSweepBudgetPerCall() {
-    return mergeSweepBudgetPerCall;
-  }
-
-  public long getMergeSweepDebounceMs() {
-    return mergeSweepDebounceMs;
   }
 
   /**

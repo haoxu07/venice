@@ -116,18 +116,22 @@ public class LeanActiveActiveIngestionBenchmark {
 
   /**
    * VT-merge experiment design mode. {@code BASELINE} runs the existing AA partial-update path
-   * (RMW at the leader, full-record PUT to VT). {@code MERGE_OPERAND} flips
-   * {@code server.vt.update.operand.enabled=true} so the leader skips RMW and produces UPDATE
-   * operand bytes directly to VT, where the follower routes them to {@code storageEngine.merge()}.
-   * {@code MERGE_OPERAND_SWEPT} additionally enables the Phase 2 {@code PartitionSweeper} via
-   * {@code server.merge.sweep.enabled=true}.
+   * (RMW at the leader, full-record PUT to VT). {@code MERGE_OPERAND} and {@code MERGE_OPERAND_SWEPT}
+   * both flip {@code server.vt.update.operand.enabled=true} so the leader skips RMW and produces
+   * UPDATE operand bytes directly to VT, where the follower routes them to
+   * {@code storageEngine.merge()}.
+   *
+   * <p>The two MERGE modes are kept distinct for benchmark continuity (the historical
+   * {@code MERGE_OPERAND_SWEPT} mode previously enabled a separate Phase-2 sweeper, now retired
+   * in favor of the Phase B chain-length backstop). They are functionally equivalent today;
+   * future divergence is reserved for follow-up experiments.
    *
    * <p>The flag is propagated to every region's {@code VeniceServerConfig} via JVM system
    * property (see {@code VeniceServerConfig} which falls back to
    * {@code venice.server.vt.update.operand.enabled} when not in {@code VeniceProperties}). The
    * JMH harness sets the sysprop in {@code @Setup(Level.Trial)} before constructing the harness.
    *
-   * <p>See {@code autoresearch/vt-rocksdb-merge/GOAL.md} §3 Phase 1 / §3 Phase 2.
+   * <p>See {@code autoresearch/vt-merge-compaction-fold/GOAL.md} for the current design.
    */
   public enum DesignMode {
     BASELINE, MERGE_OPERAND, MERGE_OPERAND_SWEPT
@@ -218,16 +222,13 @@ public class LeanActiveActiveIngestionBenchmark {
     Utils.thisIsLocalhost();
     long setupStartNanos = System.nanoTime();
 
-    // VT-merge experiment: propagate the design mode to the server-side flags via JVM system
-    // properties. VeniceServerConfig consults these properties as the default when the property
-    // is not present in VeniceProperties — see VeniceServerConfig#~line 1204.
+    // VT-merge experiment: propagate the design mode to the server-side flag via JVM system
+    // property. VeniceServerConfig consults this property as the default when the property is not
+    // present in VeniceProperties — see VeniceServerConfig#~line 1204.
     boolean vtUpdateOperand = (designMode == DesignMode.MERGE_OPERAND || designMode == DesignMode.MERGE_OPERAND_SWEPT);
-    boolean mergeSweep = (designMode == DesignMode.MERGE_OPERAND_SWEPT);
     System.setProperty("venice.server.vt.update.operand.enabled", Boolean.toString(vtUpdateOperand));
-    System.setProperty("venice.server.merge.sweep.enabled", Boolean.toString(mergeSweep));
     System.err.println(
-        "[LeanActiveActiveIngestionBenchmark] designMode=" + designMode + " (vtUpdateOperand=" + vtUpdateOperand
-            + ", mergeSweep=" + mergeSweep + ")");
+        "[LeanActiveActiveIngestionBenchmark] designMode=" + designMode + " (vtUpdateOperand=" + vtUpdateOperand + ")");
 
     storeName = Utils.getUniqueString("lean-aa-benchmark-store");
     MinimalAAIngestionHarness.Config config =
@@ -1002,8 +1003,8 @@ public class LeanActiveActiveIngestionBenchmark {
    *
    * <p>This is the H2 (operand-chain growth) signal: if per-key operand counts shift right
    * monotonically across iterations, the merge-operator's fold-on-read is doing more work per
-   * read each iteration. If the distribution is flat near 0 (PartitionSweeper keeping it pruned),
-   * H2 is ruled out and the degradation must come from H1 (compaction churn).
+   * read each iteration. If the distribution is flat near 0 (Phase B chain-length backstop
+   * keeping it pruned), H2 is ruled out and the degradation must come from H1 (compaction churn).
    */
   private OperandStats sampleOperandCountDistribution() {
     OperandStats stats = new OperandStats();

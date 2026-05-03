@@ -272,22 +272,6 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
   }
 
   /**
-   * @return whether the Phase 2 sweeper flag {@code server.merge.sweep.enabled} is on. Has effect
-   *         only when {@code server.vt.update.operand.enabled} is also on.
-   */
-  public boolean isMergeSweepEnabled() {
-    return serverConfig.isMergeSweepEnabled();
-  }
-
-  public int getMergeSweepBudgetPerCall() {
-    return serverConfig.getMergeSweepBudgetPerCall();
-  }
-
-  public long getMergeSweepDebounceMs() {
-    return serverConfig.getMergeSweepDebounceMs();
-  }
-
-  /**
    * @return the VT-merge Phase B chain-length backstop threshold. {@code <= 0} disables the
    *         backstop. The materializing partitions read this on each {@code merge()} call to
    *         decide whether to fold-and-PUT before issuing the merge.
