@@ -854,4 +854,130 @@ public class MaterializingPartitionSmokeTest {
       MaterializingFoldContextRegistry.unregister(storeName);
     }
   }
+
+  /**
+   * Multi-key version-push scenario: simulate a batch push that populates several keys with full
+   * records, then RT partial updates target a SUBSET of those keys. Reads via the chunking
+   * adapter (isChunked=true) must return:
+   *   - Updated keys: base + applied operand (folded)
+   *   - Untouched keys: original base record (no fold needed, no concat blob)
+   *
+   * <p>This catches failure modes the single-key tests don't:
+   * <ul>
+   *   <li>Cross-key state pollution (operand for key A leaking into key B's read)
+   *   <li>Mixed read shapes — folded + non-folded — handled correctly within one engine
+   *   <li>Multiple partial updates on the same key after a base PUT (operand chain on real base)
+   * </ul>
+   *
+   * <p>Closer to the integration-test scenario than the empty-push case our currently-passing
+   * test exercises.
+   */
+  @Test
+  public void versionPushBaseThenSelectivePartialUpdatesFoldCorrectly() throws Exception {
+    String storeName = Version.composeKafkaTopic("store-vp-" + System.nanoTime(), 1);
+
+    String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
+    ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
+    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
+        storeShortName,
+        schemaRepo,
+        new CollectionTimestampMergeRecordHelper(),
+        false);
+    MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
+    MaterializingFoldContextRegistry.register(storeName, foldContext);
+
+    Properties extraProps = new Properties();
+    extraProps.put(SERVER_VT_UPDATE_OPERAND_ENABLED, "true");
+    VeniceProperties veniceServerProperties =
+        AbstractStorageEngineTest.getServerProperties(PersistenceType.ROCKS_DB, extraProps);
+    VeniceServerConfig serverConfig = new VeniceServerConfig(veniceServerProperties);
+    RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
+
+    com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+    com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
+    int partitionId = 0;
+    StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
+    new File(RocksDBUtils.composePartitionDbDir(DATA_BASE_DIR, storeName, partitionId)).getParentFile().mkdirs();
+    engine.addStoragePartition(partitionConfig);
+
+    com.linkedin.davinci.storage.chunking.RawBytesChunkingAdapter adapter =
+        com.linkedin.davinci.storage.chunking.RawBytesChunkingAdapter.INSTANCE;
+    com.linkedin.venice.serialization.StoreDeserializerCache<ByteBuffer> deserializerCache =
+        com.linkedin.venice.serialization.RawBytesStoreDeserializerCache.getInstance();
+    com.linkedin.venice.compression.NoopCompressor compressor = new com.linkedin.venice.compression.NoopCompressor();
+
+    try {
+      // ----- "Version push": write 5 base records at wrapped keys via engine.put -----
+      // (Mirrors what the production batch-push pipeline produces after Phase C iter 8/9 fixes:
+      // VeniceWriter.put wraps the key with chunking-suffix; drainer's case PUT calls
+      // engine.put which lands on MaterializingRocksDBStoragePartition.put → kind-byte framing.)
+      java.util.Map<String, byte[]> wrappedKeyByName = new java.util.HashMap<>();
+      String[] keyNames = { "user-1", "user-2", "user-3", "user-4", "user-5" };
+      for (String name: keyNames) {
+        byte[] rawKey = name.getBytes();
+        byte[] wrappedKey = com.linkedin.davinci.storage.chunking.ChunkingUtils.KEY_WITH_CHUNKING_SUFFIX_SERIALIZER
+            .serializeNonChunkedKey(rawKey);
+        wrappedKeyByName.put(name, wrappedKey);
+        byte[] putBytes = encodeValueWithHeader(VALUE_SCHEMA_ID, recordOf("base-first-" + name, "base-last-" + name));
+        engine.put(partitionId, wrappedKey, putBytes);
+      }
+
+      // ----- RT partial-updates: only target user-1, user-3, user-5 (skip user-2 and user-4) -----
+      String[] updatedNames = { "user-1", "user-3", "user-5" };
+      for (String name: updatedNames) {
+        GenericRecord wcRec =
+            new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("firstName", "updated-first-" + name).build();
+        byte[] wc = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec);
+        byte[] op = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wc);
+        engine.merge(partitionId, wrappedKeyByName.get(name), ByteBuffer.wrap(op));
+      }
+
+      // Apply a SECOND partial update on user-1 only — exercises operand chain on real base.
+      {
+        GenericRecord wcRec2 = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("lastName", "updated-last-user-1").build();
+        byte[] wc2 = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec2);
+        byte[] op2 = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wc2);
+        engine.merge(partitionId, wrappedKeyByName.get("user-1"), ByteBuffer.wrap(op2));
+      }
+
+      // ----- Reads via chunking adapter (isChunked=true), one per key -----
+      java.util.Map<String, GenericRecord> readBack = new java.util.HashMap<>();
+      for (String name: keyNames) {
+        com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer manifest =
+            new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
+        com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result = adapter.getWithSchemaId(
+            engine, partitionId, ByteBuffer.wrap(name.getBytes()), true, null, null, deserializerCache, compressor,
+            manifest);
+        assertNotNull(result, "Read returned null for key " + name);
+        ByteBuffer valBuf = result.value();
+        assertNotNull(valBuf, "Read value buffer null for key " + name);
+        byte[] avro = new byte[valBuf.remaining()];
+        valBuf.duplicate().get(avro);
+        GenericRecord decoded =
+            MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avro);
+        readBack.put(name, decoded);
+      }
+
+      // ----- Assertions -----
+      // user-1: TWO partial updates applied (firstName + lastName), so both fields are updated
+      assertEquals(readBack.get("user-1").get("firstName").toString(), "updated-first-user-1");
+      assertEquals(readBack.get("user-1").get("lastName").toString(), "updated-last-user-1");
+
+      // user-3, user-5: ONE partial update each (firstName overwrite). lastName stays from base.
+      assertEquals(readBack.get("user-3").get("firstName").toString(), "updated-first-user-3");
+      assertEquals(readBack.get("user-3").get("lastName").toString(), "base-last-user-3");
+      assertEquals(readBack.get("user-5").get("firstName").toString(), "updated-first-user-5");
+      assertEquals(readBack.get("user-5").get("lastName").toString(), "base-last-user-5");
+
+      // user-2, user-4: NO partial update — both fields unchanged from version-push base.
+      assertEquals(readBack.get("user-2").get("firstName").toString(), "base-first-user-2");
+      assertEquals(readBack.get("user-2").get("lastName").toString(), "base-last-user-2");
+      assertEquals(readBack.get("user-4").get("firstName").toString(), "base-first-user-4");
+      assertEquals(readBack.get("user-4").get("lastName").toString(), "base-last-user-4");
+    } finally {
+      engine.dropPartition(partitionId);
+      MaterializingFoldContextRegistry.unregister(storeName);
+    }
+  }
 }
