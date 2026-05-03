@@ -692,4 +692,166 @@ public class MaterializingPartitionSmokeTest {
     Mockito.when(repo.getDerivedSchema(storeName, VALUE_SCHEMA_ID, WC_SCHEMA_ID)).thenReturn(wcEntry);
     return repo;
   }
+
+  // -------- Iter-10: integration-test-shaped operand-only collection-merge case --------
+  //
+  // Schema mirrors PartialUpdateWithRecordMapField.avsc: a single field nullableMapField, which is
+  // a UNION of [null, map<TestMapRecord>]. Default value: null. The integration test
+  // testActiveActivePartialUpdateWithRecordMapField does an empty push (no base) + UPDATE that
+  // adds entries via setEntriesToAddToMapField. The flag-OFF path handles this fine because
+  // MergeConflictResolver.update creates an empty value record from the schema before applying WC.
+  // The flag-ON path goes through MaterializingFoldContext.foldOperandOnly, which invokes
+  // StoreWriteComputeProcessor.applyWriteCompute(currValue=null, ...). This test exercises that
+  // exact code path against real serializers/deserializers and verifies the materialized output
+  // round-trips through the chunking adapter — which is where the integration test fails ("could
+  // not deserialize bytes back into Avro object").
+  private static final String NULLABLE_MAP_VALUE_SCHEMA_STR =
+      "{ \"type\":\"record\", \"name\":\"TestRecord\", \"namespace\":\"com.linkedin.avro\", \"fields\":["
+          + "{\"name\":\"nullableMapField\", \"type\":[\"null\", {\"type\":\"map\", \"values\":{"
+          + "\"type\":\"record\", \"name\":\"TestMapRecord\", \"fields\":["
+          + "{\"name\":\"longField\", \"type\":[\"null\", \"long\"], \"default\":null}"
+          + "]}}], \"default\":null}"
+          + "]}";
+  private static final Schema NULLABLE_MAP_VALUE_SCHEMA = new Schema.Parser().parse(NULLABLE_MAP_VALUE_SCHEMA_STR);
+  private static final Schema NULLABLE_MAP_WC_SCHEMA =
+      WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(NULLABLE_MAP_VALUE_SCHEMA);
+  private static final int NULLABLE_MAP_VALUE_SCHEMA_ID = 1;
+  private static final int NULLABLE_MAP_WC_SCHEMA_ID = 1;
+
+  private static ReadOnlySchemaRepository mockNullableMapSchemaRepo(String storeName) {
+    ReadOnlySchemaRepository repo = Mockito.mock(ReadOnlySchemaRepository.class);
+    SchemaEntry valueEntry = new SchemaEntry(NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_VALUE_SCHEMA);
+    Mockito.when(repo.getValueSchema(storeName, NULLABLE_MAP_VALUE_SCHEMA_ID)).thenReturn(valueEntry);
+    DerivedSchemaEntry wcEntry =
+        new DerivedSchemaEntry(NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA);
+    Mockito.when(repo.getDerivedSchema(storeName, NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID))
+        .thenReturn(wcEntry);
+    return repo;
+  }
+
+  /**
+   * Iter-10: reproduce {@code testActiveActivePartialUpdateWithRecordMapField} at the storage
+   * layer. Empty store (no PUT). Two MAP_OPS UPDATEs that each add 2 entries to a NULLABLE map
+   * field. After the merges, the chunking adapter should return bytes that deserialize to a
+   * record with 4 entries in nullableMapField.
+   */
+  @Test
+  public void mergeOnlyMapOpsOnNullableMapFieldFoldsToCorrectRecord() throws Exception {
+    String storeName = Version.composeKafkaTopic("store-mapops-" + System.nanoTime(), 1);
+
+    String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
+    ReadOnlySchemaRepository schemaRepo = mockNullableMapSchemaRepo(storeShortName);
+    StoreWriteComputeProcessor wcProcessor = new StoreWriteComputeProcessor(
+        storeShortName,
+        schemaRepo,
+        new CollectionTimestampMergeRecordHelper(),
+        false);
+    MaterializingFoldContext foldContext =
+        new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
+    MaterializingFoldContextRegistry.register(storeName, foldContext);
+
+    Properties extraProps = new Properties();
+    extraProps.put(SERVER_VT_UPDATE_OPERAND_ENABLED, "true");
+    VeniceProperties veniceServerProperties =
+        AbstractStorageEngineTest.getServerProperties(PersistenceType.ROCKS_DB, extraProps);
+    VeniceServerConfig serverConfig = new VeniceServerConfig(veniceServerProperties);
+    RocksDBStorageEngineFactory factory = new RocksDBStorageEngineFactory(serverConfig);
+
+    com.linkedin.davinci.config.VeniceStoreVersionConfig storeVersionConfig =
+        new com.linkedin.davinci.config.VeniceStoreVersionConfig(
+            storeName, veniceServerProperties, PersistenceType.ROCKS_DB);
+    com.linkedin.davinci.store.StorageEngine engine = factory.getStorageEngine(storeVersionConfig);
+    int partitionId = 0;
+    StoragePartitionConfig partitionConfig = new StoragePartitionConfig(storeName, partitionId);
+    new File(RocksDBUtils.composePartitionDbDir(DATA_BASE_DIR, storeName, partitionId)).getParentFile().mkdirs();
+    engine.addStoragePartition(partitionConfig);
+
+    try {
+      // Mirror the integration test: chunking enabled => keys are wrapped on both write and read.
+      byte[] rawKey = "testKey".getBytes();
+      byte[] wrappedKey = com.linkedin.davinci.storage.chunking.ChunkingUtils.KEY_WITH_CHUNKING_SUFFIX_SERIALIZER
+          .serializeNonChunkedKey(rawKey);
+
+      Schema mapValueRecordSchema =
+          NULLABLE_MAP_VALUE_SCHEMA.getField("nullableMapField").schema().getTypes().get(1).getValueType();
+
+      // First UPDATE: add key1, key2.
+      GenericRecord updateRecord1 = new GenericData.Record(mapValueRecordSchema);
+      updateRecord1.put("longField", 1L);
+      GenericRecord updateRecord2 = new GenericData.Record(mapValueRecordSchema);
+      updateRecord2.put("longField", 2L);
+      java.util.Map<String, GenericRecord> deltaMap1 = new java.util.HashMap<>();
+      deltaMap1.put("key1", updateRecord1);
+      deltaMap1.put("key2", updateRecord2);
+      GenericRecord wcRec1 =
+          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap1).build();
+      // Use FastAvro for WC serialization to mirror VeniceSystemProducer.serializeObject which is
+      // what produces the WC bytes that flow through the integration test (Samza -> RT -> leader
+      // bypass -> VT -> follower merge). FastAvro accepts plain HashMap (unlike
+      // MapOrderPreservingSerDe which requires LinkedHashMap/IndexedHashMap/SortedMap).
+      byte[] wcBytes1 = com.linkedin.venice.serializer.FastSerializerDeserializerFactory
+          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA).serialize(wcRec1);
+      byte[] op1 = MaterializingFoldContext.OperandContent.frame(
+          NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes1);
+      engine.merge(partitionId, wrappedKey, ByteBuffer.wrap(op1));
+
+      // Read after first merge: should have a record with 2 map entries.
+      com.linkedin.davinci.storage.chunking.RawBytesChunkingAdapter adapter =
+          com.linkedin.davinci.storage.chunking.RawBytesChunkingAdapter.INSTANCE;
+      com.linkedin.venice.serialization.StoreDeserializerCache<ByteBuffer> deserializerCache =
+          com.linkedin.venice.serialization.RawBytesStoreDeserializerCache.getInstance();
+      com.linkedin.venice.compression.NoopCompressor compressor = new com.linkedin.venice.compression.NoopCompressor();
+      com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer manifestContainer1 =
+          new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
+
+      com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result1 = adapter.getWithSchemaId(
+          engine, partitionId, ByteBuffer.wrap(rawKey), true, null, null, deserializerCache, compressor,
+          manifestContainer1);
+
+      assertNotNull(result1, "After first merge, chunking-aware adapter returned null");
+      ByteBuffer valBuf1 = result1.value();
+      assertNotNull(valBuf1);
+      byte[] avro1 = new byte[valBuf1.remaining()];
+      valBuf1.duplicate().get(avro1);
+      GenericRecord decoded1 = MapOrderPreservingSerDeFactory
+          .getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA).deserialize(avro1);
+      assertNotNull(decoded1, "Decoded record after first merge is null");
+      Object mapAfterFirst = decoded1.get("nullableMapField");
+      assertNotNull(mapAfterFirst, "nullableMapField is null after first merge — fold did not apply MAP_OPS to null base");
+      assertEquals(((java.util.Map<?, ?>) mapAfterFirst).size(), 2, "After first merge, map should have 2 entries");
+
+      // Second UPDATE: add key3, key4.
+      java.util.Map<String, GenericRecord> deltaMap2 = new java.util.HashMap<>();
+      deltaMap2.put("key3", updateRecord1);
+      deltaMap2.put("key4", updateRecord2);
+      GenericRecord wcRec2 =
+          new UpdateBuilderImpl(NULLABLE_MAP_WC_SCHEMA).setEntriesToAddToMapField("nullableMapField", deltaMap2).build();
+      byte[] wcBytes2 = com.linkedin.venice.serializer.FastSerializerDeserializerFactory
+          .<GenericRecord>getFastAvroGenericSerializer(NULLABLE_MAP_WC_SCHEMA).serialize(wcRec2);
+      byte[] op2 = MaterializingFoldContext.OperandContent.frame(
+          NULLABLE_MAP_VALUE_SCHEMA_ID, NULLABLE_MAP_WC_SCHEMA_ID, wcBytes2);
+      engine.merge(partitionId, wrappedKey, ByteBuffer.wrap(op2));
+
+      com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer manifestContainer2 =
+          new com.linkedin.davinci.storage.chunking.ChunkedValueManifestContainer();
+      com.linkedin.davinci.store.record.ByteBufferValueRecord<ByteBuffer> result2 = adapter.getWithSchemaId(
+          engine, partitionId, ByteBuffer.wrap(rawKey), true, null, null, deserializerCache, compressor,
+          manifestContainer2);
+      assertNotNull(result2, "After second merge, chunking-aware adapter returned null");
+      ByteBuffer valBuf2 = result2.value();
+      assertNotNull(valBuf2);
+      byte[] avro2 = new byte[valBuf2.remaining()];
+      valBuf2.duplicate().get(avro2);
+      GenericRecord decoded2 = MapOrderPreservingSerDeFactory
+          .getDeserializer(NULLABLE_MAP_VALUE_SCHEMA, NULLABLE_MAP_VALUE_SCHEMA).deserialize(avro2);
+      assertNotNull(decoded2);
+      Object mapAfterSecond = decoded2.get("nullableMapField");
+      assertNotNull(mapAfterSecond);
+      assertEquals(((java.util.Map<?, ?>) mapAfterSecond).size(), 4,
+          "After second merge, map should have 4 entries");
+    } finally {
+      engine.dropPartition(partitionId);
+      MaterializingFoldContextRegistry.unregister(storeName);
+    }
+  }
 }
