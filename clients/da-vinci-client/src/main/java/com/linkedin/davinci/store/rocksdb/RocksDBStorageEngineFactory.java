@@ -287,6 +287,15 @@ public class RocksDBStorageEngineFactory extends StorageEngineFactory {
     return serverConfig.getMergeSweepDebounceMs();
   }
 
+  /**
+   * @return the VT-merge Phase B chain-length backstop threshold. {@code <= 0} disables the
+   *         backstop. The materializing partitions read this on each {@code merge()} call to
+   *         decide whether to fold-and-PUT before issuing the merge.
+   */
+  public int getVtMergeMaxChainLength() {
+    return serverConfig.getVtMergeMaxChainLength();
+  }
+
   @Override
   public synchronized StorageEngine getStorageEngine(VeniceStoreVersionConfig storeConfig)
       throws StorageInitializationException {

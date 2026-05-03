@@ -3062,6 +3062,21 @@ public class ConfigKeys {
   public static final String SERVER_MERGE_SWEEP_DEBOUNCE_MS = "server.merge.sweep.debounce.ms";
 
   /**
+   * Maximum operand-chain length per key before the materializing partition's merge path
+   * synchronously folds the chain and writes a base PUT (chain-length backstop). Has effect only
+   * when {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is on. Default: 64. A value of {@code 0} or
+   * negative disables the backstop (chain length is unbounded — the original behavior).
+   *
+   * <p>Per the VT-merge experiment {@code GOAL.md} §3 Phase B. The backstop reads the current
+   * raw blob, counts operands via {@link com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser},
+   * and if {@code operandCount >= MAX_CHAIN}, applies the chain via
+   * {@link com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext} and writes the
+   * folded base back as a single framed PUT before issuing the new merge. This bounds chain
+   * length under any sustained workload regardless of RocksDB compaction cadence.
+   */
+  public static final String SERVER_VT_MERGE_MAX_CHAIN_LENGTH = "server.vt.merge.max.chain.length";
+
+  /**
    * This config is used to control the RocksDB lookup concurrency when handling AA/WC workload with parallel processing enabled.
    * Check {@link #SERVER_AA_WC_WORKLOAD_PARALLEL_PROCESSING_ENABLED} for more details.
    */

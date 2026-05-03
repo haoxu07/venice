@@ -2,6 +2,7 @@ package com.linkedin.davinci.store.rocksdb;
 
 import com.linkedin.davinci.stats.RocksDBMemoryStats;
 import com.linkedin.davinci.store.StoragePartitionConfig;
+import com.linkedin.davinci.store.rocksdb.merge.ChainLengthBackstop;
 import com.linkedin.davinci.store.rocksdb.merge.MaterializingFraming;
 import com.linkedin.venice.utils.ByteUtils;
 import java.nio.ByteBuffer;
@@ -18,6 +19,13 @@ import java.nio.ByteBuffer;
  * in the in-scope tests), see {@code MaterializingReplicationMetadataRocksDBStoragePartition}.
  */
 public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartition {
+  /**
+   * VT-merge experiment Phase B: per-key chain-length backstop threshold. {@code <= 0} disables
+   * the backstop. Cached at construction so each {@code merge()} call avoids re-resolving from
+   * the factory.
+   */
+  private final int vtMergeMaxChainLength;
+
   public MaterializingRocksDBStoragePartition(
       StoragePartitionConfig storagePartitionConfig,
       RocksDBStorageEngineFactory factory,
@@ -26,6 +34,7 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
       RocksDBThrottler rocksDbThrottler,
       RocksDBServerConfig rocksDBServerConfig) {
     super(storagePartitionConfig, factory, dbDir, rocksDBMemoryStats, rocksDbThrottler, rocksDBServerConfig);
+    this.vtMergeMaxChainLength = factory.getVtMergeMaxChainLength();
   }
 
   // -------- WRITE PATH --------
@@ -52,6 +61,22 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
 
   @Override
   public synchronized void merge(byte[] key, ByteBuffer operand) {
+    // Phase B chain-length backstop: if the existing chain at this key has reached
+    // vtMergeMaxChainLength, fold + PUT before the new merge. Bounds chain depth to
+    // [0, maxChainLength] before any merge, [1, maxChainLength + 1] immediately after.
+    ChainLengthBackstop.maybeBackstop(storeNameAndVersion, vtMergeMaxChainLength, () -> super.get(key), framedBytes -> {
+      // The reframed bytes are already in [schemaId][0x00][len][avro] form. Bypass the
+      // partition's framing override by going directly through super.put — this writes raw
+      // bytes to RocksDB. We MUST set the framing-in-progress flag because super.put forwards
+      // through put(byte[], byte[]) → put(byte[], ByteBuffer) and the latter is overridden on
+      // this class; without the guard, the override would re-frame our already-framed bytes.
+      MaterializingFraming.beginFraming();
+      try {
+        super.put(key, ByteBuffer.wrap(framedBytes));
+      } finally {
+        MaterializingFraming.endFraming();
+      }
+    });
     byte[] framed = MaterializingFraming.frameForMerge(operand);
     MaterializingFraming.beginFraming();
     try {

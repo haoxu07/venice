@@ -1,10 +1,12 @@
 package com.linkedin.davinci.store.rocksdb;
 
 import static com.linkedin.venice.ConfigKeys.PERSISTENCE_TYPE;
+import static com.linkedin.venice.ConfigKeys.SERVER_VT_MERGE_MAX_CHAIN_LENGTH;
 import static com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 import com.linkedin.davinci.config.VeniceServerConfig;
 import com.linkedin.davinci.kafka.consumer.StoreWriteComputeProcessor;
@@ -612,6 +614,142 @@ public class MaterializingPartitionSmokeTest {
     }
   }
 
+  /**
+   * Phase B hot-key test. With {@code maxChainLength=8}, do 200 merges at the same key. The
+   * backstop must hold the on-disk chain depth strictly below {@code maxChainLength + 2}
+   * (one slot for the chain just before backstop fires, one for the new operand merged on top
+   * of the freshly-written base PUT). Also assert read-back semantics: the final read folds to
+   * the last-merged firstName.
+   */
+  @Test
+  public void hotKeyChainBackstopBoundsChainDepth() throws Exception {
+    String storeName = Version.composeKafkaTopic("store-hotkey-" + System.nanoTime(), 1);
+    int partitionId = 0;
+    int maxChain = 8;
+    int totalMerges = 200;
+
+    String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
+    ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
+    MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
+    MaterializingFoldContextRegistry.register(storeName, foldContext);
+
+    MaterializingRocksDBStoragePartition partition = openPartitionWithMaxChain(storeName, partitionId, maxChain);
+    try {
+      byte[] keyBytes = "hot-key".getBytes();
+
+      // Initial base PUT to give the chain a base to fold onto.
+      byte[] putBytes = encodeValueWithHeader(VALUE_SCHEMA_ID, recordOf("Init", "InitLast"));
+      partition.put(keyBytes, putBytes);
+
+      // 200 merges, each setting firstName to "F<i>"
+      for (int i = 0; i < totalMerges; i++) {
+        GenericRecord wcRec = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("firstName", "F" + i).build();
+        byte[] wc = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec);
+        byte[] op = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wc);
+        partition.merge(keyBytes, ByteBuffer.wrap(op));
+      }
+
+      // Inspect raw on-disk blob: chain must be bounded.
+      byte[] raw = partition.getRaw(keyBytes);
+      assertNotNull(raw, "raw read returned null after 200 merges");
+      ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(raw);
+      int onDiskOperandCount = parsed.getOperands().size();
+      // Tightest bound: the backstop fires when chainDepth == maxChain. On the (maxChain)-th
+      // merge, just before issuing rocksDB.merge, the chain has maxChain operands. The
+      // backstop reads, folds, and PUTs a fresh base — wiping the chain. Then the merge adds
+      // 1 operand. So the post-merge chain has exactly 1 operand. After that, the chain
+      // grows again until depth maxChain at which point backstop fires once more. Therefore
+      // the chain at any post-merge moment is in [1, maxChain]. The +1 slack is for the
+      // moment immediately before the backstop on the (maxChain+1)-th merge — which we don't
+      // observe here because we observe AFTER all 200 merges. The strict bound at observation
+      // time is operandCount <= maxChain.
+      assertTrue(
+          onDiskOperandCount <= maxChain,
+          "On-disk chain depth " + onDiskOperandCount + " > maxChain " + maxChain
+              + " — backstop did not bound chain length");
+      // Backstop should have fired at least totalMerges/maxChain times — i.e. roughly 25 times
+      // for the parameters above. We just assert it fired at least once via the proxy that
+      // the chain is < totalMerges.
+      assertTrue(
+          onDiskOperandCount < totalMerges,
+          "Chain length " + onDiskOperandCount + " == total merges " + totalMerges
+              + " — backstop never fired (chain unbounded)");
+
+      // Read fold should still return the last-merged value.
+      byte[] readBytes = partition.get(keyBytes);
+      assertNotNull(readBytes);
+      byte[] avroOnly = new byte[readBytes.length - ByteUtils.SIZE_OF_INT];
+      System.arraycopy(readBytes, ByteUtils.SIZE_OF_INT, avroOnly, 0, avroOnly.length);
+      GenericRecord decoded =
+          MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
+      assertEquals(
+          decoded.get("firstName").toString(),
+          "F" + (totalMerges - 1),
+          "Final firstName should be the last-merged value F" + (totalMerges - 1));
+      assertEquals(decoded.get("lastName").toString(), "InitLast", "lastName from base PUT should remain");
+    } finally {
+      partition.drop();
+      MaterializingFoldContextRegistry.unregister(storeName);
+    }
+  }
+
+  /**
+   * Phase B hot-key with operand-only chain (no preceding PUT). Same bound applies: the
+   * backstop's foldOperandOnly path replaces the chain with a single base PUT.
+   */
+  @Test
+  public void hotKeyChainBackstopBoundsOperandOnlyChain() throws Exception {
+    String storeName = Version.composeKafkaTopic("store-hotkey-oo-" + System.nanoTime(), 1);
+    int partitionId = 0;
+    int maxChain = 4;
+    int totalMerges = 50;
+
+    String storeShortName = Version.parseStoreFromKafkaTopicName(storeName);
+    ReadOnlySchemaRepository schemaRepo = mockSchemaRepo(storeShortName);
+    StoreWriteComputeProcessor wcProcessor =
+        new StoreWriteComputeProcessor(storeShortName, schemaRepo, new CollectionTimestampMergeRecordHelper(), false);
+    MaterializingFoldContext foldContext = new MaterializingFoldContext(storeShortName, schemaRepo, wcProcessor, false);
+    MaterializingFoldContextRegistry.register(storeName, foldContext);
+
+    MaterializingRocksDBStoragePartition partition = openPartitionWithMaxChain(storeName, partitionId, maxChain);
+    try {
+      byte[] keyBytes = "hot-key-oo".getBytes();
+
+      // No PUT — go straight to merges.
+      for (int i = 0; i < totalMerges; i++) {
+        GenericRecord wcRec = new UpdateBuilderImpl(WC_SCHEMA).setNewFieldValue("firstName", "OO" + i).build();
+        byte[] wc = MapOrderPreservingSerDeFactory.<GenericRecord>getSerializer(WC_SCHEMA).serialize(wcRec);
+        byte[] op = MaterializingFoldContext.OperandContent.frame(VALUE_SCHEMA_ID, WC_SCHEMA_ID, wc);
+        partition.merge(keyBytes, ByteBuffer.wrap(op));
+      }
+
+      byte[] raw = partition.getRaw(keyBytes);
+      assertNotNull(raw);
+      ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(raw);
+      int onDiskOperandCount = parsed.getOperands().size();
+      assertTrue(
+          onDiskOperandCount <= maxChain,
+          "operand-only on-disk chain depth " + onDiskOperandCount + " > maxChain " + maxChain);
+
+      // After 50 merges with maxChain=4, the backstop should have fired ≈ 50/4 = ~12 times.
+      // First fire would be on the 4th merge (chain = 4), at which point foldOperandOnly is
+      // invoked. After that, the chain has a base, so subsequent backstops use the base+ops
+      // path. Both should leave the same final readable state.
+      byte[] readBytes = partition.get(keyBytes);
+      assertNotNull(readBytes);
+      byte[] avroOnly = new byte[readBytes.length - ByteUtils.SIZE_OF_INT];
+      System.arraycopy(readBytes, ByteUtils.SIZE_OF_INT, avroOnly, 0, avroOnly.length);
+      GenericRecord decoded =
+          MapOrderPreservingSerDeFactory.getDeserializer(VALUE_SCHEMA, VALUE_SCHEMA).deserialize(avroOnly);
+      assertEquals(decoded.get("firstName").toString(), "OO" + (totalMerges - 1));
+    } finally {
+      partition.drop();
+      MaterializingFoldContextRegistry.unregister(storeName);
+    }
+  }
+
   @Test
   public void chunkWriteIsBypassed() throws Exception {
     String storeName = Version.composeKafkaTopic("store-" + System.nanoTime(), 1);
@@ -638,6 +776,13 @@ public class MaterializingPartitionSmokeTest {
   // -------- helpers --------
 
   private MaterializingRocksDBStoragePartition openPartition(String storeName, int partitionId) {
+    return openPartitionWithMaxChain(storeName, partitionId, 0 /* backstop disabled */);
+  }
+
+  private MaterializingRocksDBStoragePartition openPartitionWithMaxChain(
+      String storeName,
+      int partitionId,
+      int maxChainLength) {
     File dbBaseDir = new File(DATA_BASE_DIR);
     if (!dbBaseDir.exists()) {
       dbBaseDir.mkdirs();
@@ -647,6 +792,11 @@ public class MaterializingPartitionSmokeTest {
     Properties extraProps = new Properties();
     extraProps.put(SERVER_VT_UPDATE_OPERAND_ENABLED, "true");
     extraProps.put(PERSISTENCE_TYPE, PersistenceType.ROCKS_DB.toString());
+    if (maxChainLength > 0) {
+      extraProps.put(SERVER_VT_MERGE_MAX_CHAIN_LENGTH, Integer.toString(maxChainLength));
+    } else {
+      extraProps.put(SERVER_VT_MERGE_MAX_CHAIN_LENGTH, "0");
+    }
     VeniceProperties veniceServerProperties =
         AbstractStorageEngineTest.getServerProperties(PersistenceType.ROCKS_DB, extraProps);
     RocksDBServerConfig rocksDBServerConfig = new RocksDBServerConfig(veniceServerProperties);

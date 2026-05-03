@@ -1,0 +1,4 @@
+iter	jmh_score	e2e_score	bp_wait_ms	engine_bytes_dc0	engine_bytes_dc1	total_write_amp	compaction_stall_count	max_running_compactions_during_iter	estimate_keys_end	operand_count_p50	operand_count_p90	operand_count_p99	operand_count_max
+1	57096.810	53500.76	105719	NA	NA	1.00	0	0	2481423	3	4	4	4
+2	64948.665	62818.61	92457	NA	NA	1.20	0	2	1706403	56	56	57	57
+3	63703.564	60636.80	96378	NA	NA	1.10	0	0	3308217	43	43	43	43

@@ -236,6 +236,7 @@ import static com.linkedin.venice.ConfigKeys.SERVER_USE_HEARTBEAT_LAG_FOR_READY_
 import static com.linkedin.venice.ConfigKeys.SERVER_USE_METRICS_BASED_POSITION_IN_LAG_COMPUTATION;
 import static com.linkedin.venice.ConfigKeys.SERVER_USE_UPSTREAM_PUBSUB_POSITIONS;
 import static com.linkedin.venice.ConfigKeys.SERVER_VERSION_SWAP_DISK_SIZE_DROP_ALERT_THRESHOLD;
+import static com.linkedin.venice.ConfigKeys.SERVER_VT_MERGE_MAX_CHAIN_LENGTH;
 import static com.linkedin.venice.ConfigKeys.SERVER_VT_UPDATE_OPERAND_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_ZSTD_DICT_COMPRESSION_LEVEL;
 import static com.linkedin.venice.ConfigKeys.SEVER_CALCULATE_QUOTA_USAGE_BASED_ON_PARTITIONS_ASSIGNMENT_ENABLED;
@@ -692,6 +693,11 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final int mergeSweepThreshold;
   private final int mergeSweepBudgetPerCall;
   private final long mergeSweepDebounceMs;
+  /**
+   * VT-merge experiment Phase B: per-key chain-length backstop. {@code <= 0} disables the
+   * backstop. See {@link com.linkedin.venice.ConfigKeys#SERVER_VT_MERGE_MAX_CHAIN_LENGTH}.
+   */
+  private final int vtMergeMaxChainLength;
   private final boolean crossTpParallelProcessingEnabled;
   private final int crossTpParallelProcessingThreadPoolSize;
   private final boolean crossTpParallelProcessingCurrentVersionAAWCLeaderOnly;
@@ -1210,6 +1216,11 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     mergeSweepThreshold = serverProperties.getInt(SERVER_MERGE_SWEEP_THRESHOLD, 4);
     mergeSweepBudgetPerCall = serverProperties.getInt(SERVER_MERGE_SWEEP_BUDGET_PER_CALL, 500);
     mergeSweepDebounceMs = serverProperties.getLong(SERVER_MERGE_SWEEP_DEBOUNCE_MS, 500L);
+    // VT-merge Phase B chain-length backstop. JVM-property override matches the pattern used for
+    // the other VT-merge flags so the JMH harness can flip it via -jvmArgs.
+    int defaultVtMergeMaxChainLength =
+        Integer.parseInt(System.getProperty("venice.server.vt.merge.max.chain.length", "64"));
+    vtMergeMaxChainLength = serverProperties.getInt(SERVER_VT_MERGE_MAX_CHAIN_LENGTH, defaultVtMergeMaxChainLength);
     crossTpParallelProcessingEnabled = serverProperties.getBoolean(SERVER_CROSS_TP_PARALLEL_PROCESSING_ENABLED, false);
     crossTpParallelProcessingThreadPoolSize =
         serverProperties.getInt(SERVER_CROSS_TP_PARALLEL_PROCESSING_THREAD_POOL_SIZE, 4);
@@ -2179,6 +2190,15 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public long getMergeSweepDebounceMs() {
     return mergeSweepDebounceMs;
+  }
+
+  /**
+   * @return the VT-merge Phase B chain-length backstop threshold. {@code <= 0} disables the
+   *         backstop (chain length unbounded). See
+   *         {@link com.linkedin.venice.ConfigKeys#SERVER_VT_MERGE_MAX_CHAIN_LENGTH}.
+   */
+  public int getVtMergeMaxChainLength() {
+    return vtMergeMaxChainLength;
   }
 
   public boolean isCrossTpParallelProcessingEnabled() {

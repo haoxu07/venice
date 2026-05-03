@@ -2,6 +2,7 @@ package com.linkedin.davinci.store.rocksdb;
 
 import com.linkedin.davinci.stats.RocksDBMemoryStats;
 import com.linkedin.davinci.store.StoragePartitionConfig;
+import com.linkedin.davinci.store.rocksdb.merge.ChainLengthBackstop;
 import com.linkedin.davinci.store.rocksdb.merge.MaterializingFraming;
 import com.linkedin.venice.utils.ByteUtils;
 import java.nio.ByteBuffer;
@@ -22,6 +23,13 @@ import java.nio.ByteBuffer;
  */
 public class MaterializingReplicationMetadataRocksDBStoragePartition
     extends ReplicationMetadataRocksDBStoragePartition {
+  /**
+   * VT-merge experiment Phase B: per-key chain-length backstop threshold. {@code <= 0} disables
+   * the backstop. Cached at construction so each {@code merge()} call avoids re-resolving from
+   * the factory.
+   */
+  private final int vtMergeMaxChainLength;
+
   public MaterializingReplicationMetadataRocksDBStoragePartition(
       StoragePartitionConfig storagePartitionConfig,
       RocksDBStorageEngineFactory factory,
@@ -30,6 +38,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
       RocksDBThrottler rocksDbThrottler,
       RocksDBServerConfig rocksDBServerConfig) {
     super(storagePartitionConfig, factory, dbDir, rocksDBMemoryStats, rocksDbThrottler, rocksDBServerConfig);
+    this.vtMergeMaxChainLength = factory.getVtMergeMaxChainLength();
     org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
         .info(
             "VT-merge: constructed materializing-RMD partition for storeVersion={} partition={}",
@@ -95,6 +104,17 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
 
   @Override
   public synchronized void merge(byte[] key, ByteBuffer operand) {
+    // Phase B chain-length backstop. See MaterializingRocksDBStoragePartition.merge for the
+    // detailed contract; this RMD-aware partition uses the same backstop logic since the value
+    // column family carries the concat blobs.
+    ChainLengthBackstop.maybeBackstop(storeNameAndVersion, vtMergeMaxChainLength, () -> super.get(key), framedBytes -> {
+      MaterializingFraming.beginFraming();
+      try {
+        super.put(key, ByteBuffer.wrap(framedBytes));
+      } finally {
+        MaterializingFraming.endFraming();
+      }
+    });
     byte[] framed = MaterializingFraming.frameForMerge(operand);
     MaterializingFraming.beginFraming();
     try {
