@@ -270,6 +270,12 @@ public class LeanActiveActiveIngestionBenchmark {
         System.err.println("[READ-LAT] Capture failed: " + t);
         t.printStackTrace(System.err);
       }
+      try {
+        verifyReadCorrectness();
+      } catch (Throwable t) {
+        System.err.println("[READ-VERIFY] Capture failed: " + t);
+        t.printStackTrace(System.err);
+      }
     }
     if (harness != null) {
       try {
@@ -358,6 +364,121 @@ public class LeanActiveActiveIngestionBenchmark {
         String.format(
             "[READ-LAT] samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
             captured, dc0p50, dc0p99, dc1p50, dc1p99));
+  }
+
+  /**
+   * Read-correctness check: pick a sample of pool keys, fetch from both regions' storage engines,
+   * Avro-decode the returned bytes against the value schema, and assert invariants that hold
+   * regardless of which random workload operation hit a given key.
+   *
+   * <p>The workload {@link #runPartialUpdateWorkload} picks one of 3 ops per record (set name /
+   * set age / addToMap on tags). The fields that change are workload-dependent and key-specific.
+   * The only invariants that hold across ALL keys are:
+   * <ul>
+   *   <li><b>Decode succeeds</b> — bytes are valid Avro per the value schema.</li>
+   *   <li><b>{@code score} == 0.0</b> — never modified by the partial-update workload, set to
+   *       0.0 by {@code buildPartialUpdatePoolInitRecord} during pre-populate.</li>
+   *   <li><b>{@code tags} is a non-null Map of size {@code TAGS_MAP_SIZE}</b> — workload uses
+   *       bounded map keys 0..TAGS_MAP_SIZE-1, so AddToMap operations overwrite existing
+   *       entries rather than growing the map.</li>
+   * </ul>
+   *
+   * <p>Reports counts of decode failures and invariant violations per region. This catches bugs
+   * the VT consistency check cannot — e.g., the materializing fold producing un-decodable bytes,
+   * the read path returning wrong-shaped bytes, a missing/wrong schemaId prefix, or fields lost
+   * during the operand fold. {@code VT-CHECK} verifies cross-region byte agreement; this
+   * verifies application-level correctness.
+   */
+  private void verifyReadCorrectness() {
+    if (workloadType != WorkloadType.PARTIAL_UPDATE) {
+      return;
+    }
+    final int sampleCount = 1_000;
+    final int strideOverPool = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / sampleCount);
+    org.apache.avro.io.DatumReader<org.apache.avro.generic.GenericRecord> reader =
+        new org.apache.avro.generic.GenericDatumReader<>(valueSchema);
+
+    int dc0Decoded = 0, dc0DecodeFailures = 0, dc0InvariantViolations = 0, dc0Null = 0;
+    int dc1Decoded = 0, dc1DecodeFailures = 0, dc1InvariantViolations = 0, dc1Null = 0;
+    String firstViolationSample = null;
+
+    for (int i = 0; i < sampleCount && i * strideOverPool < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+      int poolIdx = i * strideOverPool;
+      String key = partialUpdatePoolPrePopulateKey(poolIdx);
+      byte[] keyBytes = keySerializer.serialize(key);
+      int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
+
+      String dc0Outcome = decodeAndCheck(reader, engineDC0.get(partition, keyBytes));
+      String dc1Outcome = decodeAndCheck(reader, engineDC1.get(partition, keyBytes));
+
+      switch (dc0Outcome) {
+        case "OK": dc0Decoded++; break;
+        case "NULL": dc0Null++; break;
+        case "DECODE_FAIL": dc0DecodeFailures++; break;
+        default:
+          dc0InvariantViolations++;
+          if (firstViolationSample == null) firstViolationSample = "dc0 key=" + key + ": " + dc0Outcome;
+      }
+      switch (dc1Outcome) {
+        case "OK": dc1Decoded++; break;
+        case "NULL": dc1Null++; break;
+        case "DECODE_FAIL": dc1DecodeFailures++; break;
+        default:
+          dc1InvariantViolations++;
+          if (firstViolationSample == null) firstViolationSample = "dc1 key=" + key + ": " + dc1Outcome;
+      }
+    }
+
+    System.err.println(
+        String.format(
+            "[READ-VERIFY] sampled=%d  dc0: ok=%d null=%d decodeFail=%d invariantViolation=%d  "
+                + "dc1: ok=%d null=%d decodeFail=%d invariantViolation=%d  firstViolation=%s",
+            dc0Decoded + dc0Null + dc0DecodeFailures + dc0InvariantViolations,
+            dc0Decoded, dc0Null, dc0DecodeFailures, dc0InvariantViolations,
+            dc1Decoded, dc1Null, dc1DecodeFailures, dc1InvariantViolations,
+            firstViolationSample == null ? "none" : firstViolationSample));
+  }
+
+  /**
+   * Decode {@code raw} and check workload-independent invariants:
+   * {@code score == 0.0} (never modified) and {@code tags.size() == TAGS_MAP_SIZE} (bounded).
+   * Returns "OK" on success, "NULL" if input is null, "DECODE_FAIL: ..." if Avro decode throws,
+   * or a specific invariant-violation description.
+   */
+  private String decodeAndCheck(
+      org.apache.avro.io.DatumReader<org.apache.avro.generic.GenericRecord> reader,
+      byte[] raw) {
+    if (raw == null) {
+      return "NULL";
+    }
+    // raw bytes from engine.get are [schemaId : 4B BE][avro-bytes]. Strip the schemaId prefix.
+    if (raw.length < 4) {
+      return "DECODE_FAIL: raw too short " + raw.length;
+    }
+    org.apache.avro.generic.GenericRecord rec;
+    try {
+      org.apache.avro.io.BinaryDecoder decoder = org.apache.avro.io.DecoderFactory.get()
+          .binaryDecoder(raw, 4, raw.length - 4, null);
+      rec = reader.read(null, decoder);
+    } catch (Throwable t) {
+      return "DECODE_FAIL: " + t.getClass().getSimpleName() + ":" + t.getMessage();
+    }
+    if (rec == null) {
+      return "DECODE_FAIL: null record";
+    }
+    Object score = rec.get("score");
+    if (!(score instanceof Double) || ((Double) score) != 0.0) {
+      return "score invariant violated: expected=0.0 got=" + score;
+    }
+    Object tags = rec.get("tags");
+    if (!(tags instanceof java.util.Map)) {
+      return "tags wrong type: " + (tags == null ? "null" : tags.getClass().getName());
+    }
+    int tagsSize = ((java.util.Map<?, ?>) tags).size();
+    if (tagsSize != TAGS_MAP_SIZE) {
+      return "tags size invariant violated: expected=" + TAGS_MAP_SIZE + " got=" + tagsSize;
+    }
+    return "OK";
   }
 
   /**
