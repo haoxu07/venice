@@ -1,0 +1,62 @@
+=== region=dc1 partition=0 iter=3 ===
+
+** Compaction Stats [default] **
+Level    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  L0     13/0   136.67 MB   0.3      0.0     0.0      0.0       0.6      0.6       0.0   1.0      0.0     68.7      8.34              6.81        53    0.157       0      0       0.0       0.0
+  L6      7/0   414.52 MB   0.0      0.4     0.4      0.0       0.4      0.4       0.0   1.0     53.6     51.0      8.13              1.94         1    8.128   2061K  1748K       0.0       0.0
+ Sum     20/0   551.19 MB   0.0      0.4     0.4      0.0       1.0      1.0       0.0   1.7     26.5     59.9     16.47              8.75        54    0.305   2061K  1748K       0.0       0.0
+ Int      0/0    0.00 KB   0.0      0.4     0.4      0.0       1.0      1.0       0.0   1.7     26.5     59.9     16.47              8.75        54    0.305   2061K  1748K       0.0       0.0
+
+** Compaction Stats [default] **
+Priority    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Low      0/0    0.00 KB   0.0      0.4     0.4      0.0       0.4      0.4       0.0   0.0     53.6     51.0      8.13              1.94         1    8.128   2061K  1748K       0.0       0.0
+High      0/0    0.00 KB   0.0      0.0     0.0      0.0       0.6      0.6       0.0   0.0      0.0     68.7      8.34              6.81        53    0.157       0      0       0.0       0.0
+
+Blob file count: 0, total size: 0.0 GB, garbage size: 0.0 GB, space amp: 0.0
+
+Uptime(secs): 417.7 total, 417.7 interval
+Flush(GB): cumulative 0.559, interval 0.559
+AddFile(GB): cumulative 0.000, interval 0.000
+AddFile(Total Files): cumulative 0, interval 0
+AddFile(L0 Files): cumulative 0, interval 0
+AddFile(Keys): cumulative 0, interval 0
+Cumulative compaction: 0.96 GB write, 2.36 MB/s write, 0.43 GB read, 1.04 MB/s read, 16.5 seconds
+Interval compaction: 0.96 GB write, 2.36 MB/s write, 0.43 GB read, 1.04 MB/s read, 16.5 seconds
+Estimated pending compaction bytes: 0
+Write Stall (count): cf-l0-file-count-limit-delays-with-ongoing-compaction: 0, cf-l0-file-count-limit-stops-with-ongoing-compaction: 0, l0-file-count-limit-delays: 0, l0-file-count-limit-stops: 0, memtable-limit-delays: 0, memtable-limit-stops: 0, pending-compaction-bytes-delays: 0, pending-compaction-bytes-stops: 0, total-delays: 0, total-stops: 0
+
+** File Read Latency Histogram By Level [default] **
+
+=== region=dc1 partition=1 iter=3 ===
+
+** Compaction Stats [default] **
+Level    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  L0     14/0   149.55 MB   0.3      0.0     0.0      0.0       0.6      0.6       0.0   1.0      0.0     67.1      8.72              7.20        54    0.162       0      0       0.0       0.0
+  L6      7/0   414.55 MB   0.0      0.4     0.4      0.0       0.4      0.4       0.0   1.0     60.9     57.9      7.16              2.06         1    7.157   2062K  1751K       0.0       0.0
+ Sum     21/0   564.10 MB   0.0      0.4     0.4      0.0       1.0      1.0       0.0   1.7     27.5     63.0     15.88              9.26        55    0.289   2062K  1751K       0.0       0.0
+ Int      0/0    0.00 KB   0.0      0.4     0.4      0.0       1.0      1.0       0.0   1.7     27.5     63.0     15.88              9.26        55    0.289   2062K  1751K       0.0       0.0
+
+** Compaction Stats [default] **
+Priority    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Low      0/0    0.00 KB   0.0      0.4     0.4      0.0       0.4      0.4       0.0   0.0     60.9     57.9      7.16              2.06         1    7.157   2062K  1751K       0.0       0.0
+High      0/0    0.00 KB   0.0      0.0     0.0      0.0       0.6      0.6       0.0   0.0      0.0     67.1      8.72              7.20        54    0.162       0      0       0.0       0.0
+
+Blob file count: 0, total size: 0.0 GB, garbage size: 0.0 GB, space amp: 0.0
+
+Uptime(secs): 413.9 total, 413.9 interval
+Flush(GB): cumulative 0.572, interval 0.572
+AddFile(GB): cumulative 0.000, interval 0.000
+AddFile(Total Files): cumulative 0, interval 0
+AddFile(L0 Files): cumulative 0, interval 0
+AddFile(Keys): cumulative 0, interval 0
+Cumulative compaction: 0.98 GB write, 2.42 MB/s write, 0.43 GB read, 1.05 MB/s read, 15.9 seconds
+Interval compaction: 0.98 GB write, 2.42 MB/s write, 0.43 GB read, 1.05 MB/s read, 15.9 seconds
+Estimated pending compaction bytes: 0
+Write Stall (count): cf-l0-file-count-limit-delays-with-ongoing-compaction: 0, cf-l0-file-count-limit-stops-with-ongoing-compaction: 0, l0-file-count-limit-delays: 0, l0-file-count-limit-stops: 0, memtable-limit-delays: 0, memtable-limit-stops: 0, pending-compaction-bytes-delays: 0, pending-compaction-bytes-stops: 0, total-delays: 0, total-stops: 0
+
+** File Read Latency Histogram By Level [default] **
+

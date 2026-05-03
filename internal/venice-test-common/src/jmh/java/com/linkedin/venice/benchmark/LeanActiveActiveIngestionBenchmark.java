@@ -3,7 +3,6 @@ package com.linkedin.venice.benchmark;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.NUM_RECORDS_PER_INVOCATION;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.PARTIAL_UPDATE_KEY_POOL_SIZE;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.PARTIAL_UPDATE_SENTINEL_COUNT;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.PUT_KEY_POOL_SIZE;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.TAGS_MAP_SIZE;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.VT_CHECK_SENTINEL_COUNT;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.buildCanaryRecord;
@@ -23,6 +22,8 @@ import static com.linkedin.venice.utils.TestUtils.waitForNonDeterministicAsserti
 import com.linkedin.davinci.kafka.consumer.PartitionConsumptionState;
 import com.linkedin.davinci.kafka.consumer.StoreIngestionTask;
 import com.linkedin.davinci.store.StorageEngine;
+import com.linkedin.davinci.store.rocksdb.RocksDBStoragePartition;
+import com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser;
 import com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.WorkloadType;
 import com.linkedin.venice.benchmark.lean.MinimalAAIngestionHarness;
 import com.linkedin.venice.meta.Version;
@@ -129,9 +130,7 @@ public class LeanActiveActiveIngestionBenchmark {
    * <p>See {@code autoresearch/vt-rocksdb-merge/GOAL.md} §3 Phase 1 / §3 Phase 2.
    */
   public enum DesignMode {
-    BASELINE,
-    MERGE_OPERAND,
-    MERGE_OPERAND_SWEPT
+    BASELINE, MERGE_OPERAND, MERGE_OPERAND_SWEPT
   }
 
   @Param({ "BASELINE" })
@@ -193,6 +192,27 @@ public class LeanActiveActiveIngestionBenchmark {
    */
   private final AtomicLong backpressureWaitNanos = new AtomicLong(0);
 
+  // ---------------- RocksDB internal stats forensics ----------------
+  // GOAL: discriminate compaction churn (H1) vs operand-chain growth (H2). See
+  // autoresearch/jmh-backpressure/phase-C-rocksdb-NOTES.md.
+  /** Monotonic iteration counter (1-based, including warmup). Bumped at iteration start. */
+  private final AtomicLong iterationOrdinal = new AtomicLong(0);
+  /** Wall-clock start of the current iteration (used for relative timestamps in the timeline TSV). */
+  private volatile long timelineIterStartNanos;
+  /** Per-iteration max running-compactions seen so far (across both regions, summed). */
+  private final AtomicLong maxRunningCompactionsThisIter = new AtomicLong(0);
+  /** Last sampled estimate-num-keys (DC0+DC1, summed across partitions) at end of iteration. */
+  private volatile long lastEstimateKeysDc0 = 0L;
+  private volatile long lastEstimateKeysDc1 = 0L;
+  /** Periodic compaction/key-count poller (separate from back-pressure poller). */
+  private ScheduledExecutorService rocksdbStatsPoller;
+  /** Per-iteration timeline writer; rotated at iteration start. */
+  private volatile java.io.PrintWriter timelineWriter;
+  private static final String ROCKSDB_TIMELINE_DIR = "/tmp/jmh-rocksdb-timeline";
+  private static final String ROCKSDB_CFSTATS_DIR = "/tmp/jmh-rocksdb-cfstats";
+  /** Number of keys to sample for operand-count distribution at end of each iteration. */
+  private static final int OPERAND_SAMPLE_SIZE = 200;
+
   @Setup(Level.Trial)
   public void setUp() throws Exception {
     Utils.thisIsLocalhost();
@@ -217,17 +237,16 @@ public class LeanActiveActiveIngestionBenchmark {
     long harnessStartNanos = System.nanoTime();
     harness.start();
     long harnessStartElapsedMs = (System.nanoTime() - harnessStartNanos) / 1_000_000L;
-    System.err.println(
-        "[LeanActiveActiveIngestionBenchmark] harness.start() took " + harnessStartElapsedMs + " ms");
+    System.err.println("[LeanActiveActiveIngestionBenchmark] harness.start() took " + harnessStartElapsedMs + " ms");
 
     versionTopicName = Version.composeKafkaTopic(storeName, VERSION_NUMBER);
 
     // Schemas come from the harness's in-memory schema repo (which is pre-loaded with the same
     // BenchmarkRecord value schema + RMD + WC schemas as the full benchmark).
     valueSchema = harness.getSchemaRepository().getValueSchema(storeName, VALUE_SCHEMA_ID).getSchema();
-    writeComputeSchema =
-        harness.getSchemaRepository().getDerivedSchema(storeName, VALUE_SCHEMA_ID, WRITE_COMPUTE_DERIVED_SCHEMA_ID)
-            .getSchema();
+    writeComputeSchema = harness.getSchemaRepository()
+        .getDerivedSchema(storeName, VALUE_SCHEMA_ID, WRITE_COMPUTE_DERIVED_SCHEMA_ID)
+        .getSchema();
 
     keySerializer = new AvroSerializer<>(Schema.create(Schema.Type.STRING));
     valueSerializer = new AvroSerializer<>(valueSchema);
@@ -251,6 +270,18 @@ public class LeanActiveActiveIngestionBenchmark {
     });
     backpressurePoller.scheduleAtFixedRate(this::updateLastSeenStorageCount, 100, 100, TimeUnit.MILLISECONDS);
 
+    // RocksDB stats poller: every 1000ms, sample num-running-compactions + estimate-num-keys for
+    // both regions and stream to a per-iteration TSV. Separate from the back-pressure poller so
+    // their tick rates and failure modes don't conflate. See phase-C-rocksdb-NOTES.md.
+    new java.io.File(ROCKSDB_TIMELINE_DIR).mkdirs();
+    new java.io.File(ROCKSDB_CFSTATS_DIR).mkdirs();
+    rocksdbStatsPoller = Executors.newSingleThreadScheduledExecutor(r -> {
+      Thread t = new Thread(r, "jmh-rocksdb-stats-poller");
+      t.setDaemon(true);
+      return t;
+    });
+    rocksdbStatsPoller.scheduleAtFixedRate(this::sampleRocksDBStats, 1000, 1000, TimeUnit.MILLISECONDS);
+
     // Verify the pipeline is working with a canary record. This is the lean-harness equivalent of
     // the full benchmark's "wait for canary visible on router" step, but uses RocksDB directly.
     GenericRecord canary = buildCanaryRecord(valueSchema);
@@ -268,8 +299,7 @@ public class LeanActiveActiveIngestionBenchmark {
     TestUtils.restoreSystemExit();
 
     long setupElapsedMs = (System.nanoTime() - setupStartNanos) / 1_000_000L;
-    System.err
-        .println("[LeanActiveActiveIngestionBenchmark] setUp() complete in " + setupElapsedMs + " ms");
+    System.err.println("[LeanActiveActiveIngestionBenchmark] setUp() complete in " + setupElapsedMs + " ms");
   }
 
   private void prePopulatePartialUpdatePool() throws Exception {
@@ -302,6 +332,21 @@ public class LeanActiveActiveIngestionBenchmark {
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
       }
+    }
+    if (rocksdbStatsPoller != null) {
+      try {
+        rocksdbStatsPoller.shutdownNow();
+        rocksdbStatsPoller.awaitTermination(2, TimeUnit.SECONDS);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    if (timelineWriter != null) {
+      try {
+        timelineWriter.close();
+      } catch (Throwable ignored) {
+      }
+      timelineWriter = null;
     }
     // For PARTIAL_UPDATE, run the Spark-based VT consistency check across both regions before
     // stopping the harness. Reports counts of VALUE_MISMATCH and MISSING rows to stderr.
@@ -353,8 +398,11 @@ public class LeanActiveActiveIngestionBenchmark {
       java.io.File rocksdbRoot = new java.io.File(regionRoot, "rocksdb");
       long bytes = directorySize(rocksdbRoot);
       System.err.println(
-          String.format("[STORAGE] region=dc-%d rocksdb_bytes=%d rocksdb_path=%s",
-              regionId, bytes, rocksdbRoot.getAbsolutePath()));
+          String.format(
+              "[STORAGE] region=dc-%d rocksdb_bytes=%d rocksdb_path=%s",
+              regionId,
+              bytes,
+              rocksdbRoot.getAbsolutePath()));
     }
   }
 
@@ -420,7 +468,11 @@ public class LeanActiveActiveIngestionBenchmark {
     System.err.println(
         String.format(
             "[READ-LAT] samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
-            captured, dc0p50, dc0p99, dc1p50, dc1p99));
+            captured,
+            dc0p50,
+            dc0p99,
+            dc1p50,
+            dc1p99));
   }
 
   /**
@@ -469,20 +521,34 @@ public class LeanActiveActiveIngestionBenchmark {
       String dc1Outcome = decodeAndCheck(reader, engineDC1.get(partition, keyBytes));
 
       switch (dc0Outcome) {
-        case "OK": dc0Decoded++; break;
-        case "NULL": dc0Null++; break;
-        case "DECODE_FAIL": dc0DecodeFailures++; break;
+        case "OK":
+          dc0Decoded++;
+          break;
+        case "NULL":
+          dc0Null++;
+          break;
+        case "DECODE_FAIL":
+          dc0DecodeFailures++;
+          break;
         default:
           dc0InvariantViolations++;
-          if (firstViolationSample == null) firstViolationSample = "dc0 key=" + key + ": " + dc0Outcome;
+          if (firstViolationSample == null)
+            firstViolationSample = "dc0 key=" + key + ": " + dc0Outcome;
       }
       switch (dc1Outcome) {
-        case "OK": dc1Decoded++; break;
-        case "NULL": dc1Null++; break;
-        case "DECODE_FAIL": dc1DecodeFailures++; break;
+        case "OK":
+          dc1Decoded++;
+          break;
+        case "NULL":
+          dc1Null++;
+          break;
+        case "DECODE_FAIL":
+          dc1DecodeFailures++;
+          break;
         default:
           dc1InvariantViolations++;
-          if (firstViolationSample == null) firstViolationSample = "dc1 key=" + key + ": " + dc1Outcome;
+          if (firstViolationSample == null)
+            firstViolationSample = "dc1 key=" + key + ": " + dc1Outcome;
       }
     }
 
@@ -491,8 +557,14 @@ public class LeanActiveActiveIngestionBenchmark {
             "[READ-VERIFY] sampled=%d  dc0: ok=%d null=%d decodeFail=%d invariantViolation=%d  "
                 + "dc1: ok=%d null=%d decodeFail=%d invariantViolation=%d  firstViolation=%s",
             dc0Decoded + dc0Null + dc0DecodeFailures + dc0InvariantViolations,
-            dc0Decoded, dc0Null, dc0DecodeFailures, dc0InvariantViolations,
-            dc1Decoded, dc1Null, dc1DecodeFailures, dc1InvariantViolations,
+            dc0Decoded,
+            dc0Null,
+            dc0DecodeFailures,
+            dc0InvariantViolations,
+            dc1Decoded,
+            dc1Null,
+            dc1DecodeFailures,
+            dc1InvariantViolations,
             firstViolationSample == null ? "none" : firstViolationSample));
   }
 
@@ -514,8 +586,8 @@ public class LeanActiveActiveIngestionBenchmark {
     }
     org.apache.avro.generic.GenericRecord rec;
     try {
-      org.apache.avro.io.BinaryDecoder decoder = org.apache.avro.io.DecoderFactory.get()
-          .binaryDecoder(raw, 4, raw.length - 4, null);
+      org.apache.avro.io.BinaryDecoder decoder =
+          org.apache.avro.io.DecoderFactory.get().binaryDecoder(raw, 4, raw.length - 4, null);
       rec = reader.read(null, decoder);
     } catch (Throwable t) {
       return "DECODE_FAIL: " + t.getClass().getSimpleName() + ":" + t.getMessage();
@@ -572,9 +644,8 @@ public class LeanActiveActiveIngestionBenchmark {
       Properties jobProps = new Properties();
       jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.DC0_BROKER_URL, dc0Broker);
       jobProps.setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.DC1_BROKER_URL, dc1Broker);
-      jobProps.setProperty(
-          com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.VERSION_TOPIC,
-          versionTopicName);
+      jobProps
+          .setProperty(com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.VERSION_TOPIC, versionTopicName);
       jobProps.setProperty(
           com.linkedin.venice.spark.consistency.VTConsistencyCheckerJob.OUTPUT_PATH,
           outputDir.getAbsolutePath());
@@ -636,6 +707,30 @@ public class LeanActiveActiveIngestionBenchmark {
     backpressureWaitNanos.set(0);
     iterationStorageBaseline = readSlowerRegionVtOffsetSum();
     lastSeenStorageCount = 0L;
+
+    // Rotate per-iteration RocksDB-stats timeline file.
+    long ordinal = iterationOrdinal.incrementAndGet();
+    timelineIterStartNanos = iterationStartNanos;
+    maxRunningCompactionsThisIter.set(0);
+    if (timelineWriter != null) {
+      try {
+        timelineWriter.close();
+      } catch (Throwable ignored) {
+      }
+      timelineWriter = null;
+    }
+    try {
+      java.io.File timelineFile =
+          new java.io.File(ROCKSDB_TIMELINE_DIR, String.format("iter-%d-%s.tsv", ordinal, designMode));
+      java.io.PrintWriter pw =
+          new java.io.PrintWriter(new java.io.BufferedWriter(new java.io.FileWriter(timelineFile)));
+      pw.println(
+          "t_ms_since_iter_start\tdc0_running_compactions\tdc1_running_compactions\tdc0_estimate_keys\tdc1_estimate_keys");
+      pw.flush();
+      timelineWriter = pw;
+    } catch (Throwable t) {
+      System.err.println("[ROCKSDB-STATS] Failed to open timeline file for iter " + ordinal + ": " + t);
+    }
   }
 
   @Benchmark
@@ -679,6 +774,22 @@ public class LeanActiveActiveIngestionBenchmark {
     long bpWaitMs = backpressureWaitNanos.get() / 1_000_000L;
     long produced = producedCount.get();
     long consumed = lastSeenStorageCount;
+
+    // ----- RocksDB forensics: dump cfstats + sample operand-count distribution. -----
+    long ordinal = iterationOrdinal.get();
+    CfStatsSummary dc0Cf = dumpCfStatsToFile(engineDC0, 0, ordinal);
+    CfStatsSummary dc1Cf = dumpCfStatsToFile(engineDC1, 1, ordinal);
+    long maxRunComp = maxRunningCompactionsThisIter.get();
+    long estKeysDc0 = lastEstimateKeysDc0;
+    long estKeysDc1 = lastEstimateKeysDc1;
+    OperandStats opStats = sampleOperandCountDistribution();
+    if (timelineWriter != null) {
+      try {
+        timelineWriter.flush();
+      } catch (Throwable ignored) {
+      }
+    }
+
     System.err.println(
         String.format(
             "[E2E] workload=%s records=%d elapsed_ms=%d e2e_throughput_ops_per_sec=%.2f"
@@ -692,6 +803,333 @@ public class LeanActiveActiveIngestionBenchmark {
             consumed,
             produced - consumed,
             maxBacklog));
+    System.err.println(
+        String.format(
+            "[E2E-ROCKSDB] iter=%d designMode=%s dc0_writeAmp=%.2f dc1_writeAmp=%.2f"
+                + " dc0_stallCount=%d dc1_stallCount=%d dc0_pendingComp=%d dc1_pendingComp=%d"
+                + " maxRunningCompactionsThisIter=%d estimateKeys_dc0=%d estimateKeys_dc1=%d"
+                + " operandCount_n=%d min=%d p50=%d p90=%d p99=%d max=%d mean=%.2f",
+            ordinal,
+            designMode,
+            dc0Cf.writeAmp,
+            dc1Cf.writeAmp,
+            dc0Cf.stallCount,
+            dc1Cf.stallCount,
+            dc0Cf.pendingCompactions,
+            dc1Cf.pendingCompactions,
+            maxRunComp,
+            estKeysDc0,
+            estKeysDc1,
+            opStats.n,
+            opStats.min,
+            opStats.p50,
+            opStats.p90,
+            opStats.p99,
+            opStats.max,
+            opStats.mean));
+  }
+
+  /**
+   * Iterate every partition on the given engine, fetch {@code rocksdb.cfstats} as a string, write
+   * to a per-iteration file, and parse out three summary numbers.
+   */
+  private CfStatsSummary dumpCfStatsToFile(StorageEngine engine, int regionId, long iter) {
+    CfStatsSummary summary = new CfStatsSummary();
+    java.io.File outFile = new java.io.File(ROCKSDB_CFSTATS_DIR, String.format("iter-%d-dc%d.txt", iter, regionId));
+    StringBuilder all = new StringBuilder();
+    for (int p = 0; p < PARTITION_COUNT; p++) {
+      try {
+        Object part = engine.getPartitionOrThrow(p);
+        if (part instanceof RocksDBStoragePartition) {
+          RocksDBStoragePartition rp = (RocksDBStoragePartition) part;
+          String cfstats = rp.getRocksDBStringProperty("rocksdb.cfstats");
+          all.append("=== region=dc")
+              .append(regionId)
+              .append(" partition=")
+              .append(p)
+              .append(" iter=")
+              .append(iter)
+              .append(" ===\n");
+          if (cfstats != null) {
+            all.append(cfstats);
+            parseCfStatsAccumulating(cfstats, summary);
+          } else {
+            all.append("(null)\n");
+          }
+          all.append("\n");
+        } else {
+          all.append("=== region=dc")
+              .append(regionId)
+              .append(" partition=")
+              .append(p)
+              .append(" not RocksDBStoragePartition: ")
+              .append(part == null ? "null" : part.getClass().getName())
+              .append(" ===\n\n");
+        }
+      } catch (Throwable t) {
+        all.append("=== region=dc")
+            .append(regionId)
+            .append(" partition=")
+            .append(p)
+            .append(" cfstats threw: ")
+            .append(t)
+            .append(" ===\n\n");
+      }
+    }
+    try {
+      java.nio.file.Files.write(outFile.toPath(), all.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    } catch (Throwable t) {
+      System.err.println("[ROCKSDB-STATS] Failed to write cfstats file " + outFile + ": " + t);
+    }
+    return summary;
+  }
+
+  /** Parsed-summary accumulator for cfstats text. Numbers are summed across partitions. */
+  private static final class CfStatsSummary {
+    /** Latest "Sum" row's W-Amp column (write amplification). Across-partition: max wins. */
+    double writeAmp = 0.0;
+    /**
+     * Sum of all "Write Stall (count): ..." individual category counts (delays + stops
+     * across cf-l0, l0, memtable, pending-compaction-bytes), excluding the redundant
+     * total-delays/total-stops aggregates.
+     */
+    long stallCount = 0L;
+    /** rocksdb.cfstats's "pending compactions" line, summed. */
+    long pendingCompactions = 0L;
+  }
+
+  /**
+   * Best-effort cfstats-text parser. RocksDB's cfstats text has a "Compaction Stats" table where
+   * the last row begins with "Sum" and contains a W-Amp column. Below it, a "Stalls(count):" line
+   * lists various stall categories with their counts. We pull:
+   *   - Sum row's W-Amp value
+   *   - Stalls(count): ... write-amp count (a count, NOT micros — the property name is the only
+   *     stall metric easily available from cfstats. We treat the count as the "stall signal"; if a
+   *     "stall-micros" line exists we prefer that.)
+   *   - "Pending Compaction Bytes" / "pending-compactions" value if present.
+   * The exact text format depends on RocksDB version; this parser is permissive and accumulates
+   * what it can find.
+   */
+  private static void parseCfStatsAccumulating(String text, CfStatsSummary out) {
+    if (text == null) {
+      return;
+    }
+    java.util.regex.Matcher sumMatcher = java.util.regex.Pattern.compile("(?m)^\\s*Sum\\s+.*$").matcher(text);
+    while (sumMatcher.find()) {
+      String row = sumMatcher.group();
+      String[] cols = row.trim().split("\\s+");
+      // Try heuristic: W-Amp column is around index ~10 in default layout. Pick the first numeric
+      // value > 0 and < 100 found scanning right-to-left from middle that *could* be a write-amp.
+      // To be more robust: locate "W-Amp" header location by row above; but this iterates over the
+      // text without context. We'll pick the value at index 11 if present and parseable, else any
+      // double-looking column.
+      if (cols.length > 11) {
+        try {
+          double w = Double.parseDouble(cols[11]);
+          if (w > out.writeAmp) {
+            out.writeAmp = w;
+          }
+        } catch (NumberFormatException ignored) {
+          // fall through to scan
+        }
+      }
+    }
+    // Pending compactions: match "Estimated pending compaction bytes: N" (RocksDB cfstats format).
+    java.util.regex.Matcher pcm =
+        java.util.regex.Pattern.compile("(?i)Estimated pending compaction bytes:?\\s*([0-9]+)").matcher(text);
+    while (pcm.find()) {
+      try {
+        out.pendingCompactions += Long.parseLong(pcm.group(1));
+      } catch (NumberFormatException ignored) {
+      }
+    }
+    // Stalls: RocksDB cfstats line is
+    // "Write Stall (count): foo: 0, bar: 1, ..., total-delays: 0, total-stops: 0"
+    // We sum every "X: N" pair in that line — but skip "total-delays" / "total-stops" since they
+    // are aggregates over the other entries (would double-count). Cleanest: extract the entire
+    // "Write Stall (count):" line then sum the components except the "total-*" ones.
+    java.util.regex.Matcher stallLine =
+        java.util.regex.Pattern.compile("(?m)^Write Stall \\(count\\):\\s*(.*)$").matcher(text);
+    while (stallLine.find()) {
+      String body = stallLine.group(1);
+      // Pull "name: N" pairs.
+      java.util.regex.Matcher kv = java.util.regex.Pattern.compile("([a-zA-Z0-9_-]+)\\s*:\\s*([0-9]+)").matcher(body);
+      while (kv.find()) {
+        String name = kv.group(1);
+        if (name.equals("total-delays") || name.equals("total-stops")) {
+          continue; // these are aggregates of the others
+        }
+        try {
+          out.stallCount += Long.parseLong(kv.group(2));
+        } catch (NumberFormatException ignored) {
+        }
+      }
+    }
+    // Try the "Cumulative stall:" line if present (older format), summing micros.
+    java.util.regex.Matcher cum =
+        java.util.regex.Pattern.compile("(?i)Cumulative stall:\\s*([0-9]+):([0-9]+):([0-9]+(?:\\.[0-9]+)?)")
+            .matcher(text);
+    if (cum.find()) {
+      try {
+        long h = Long.parseLong(cum.group(1));
+        long m = Long.parseLong(cum.group(2));
+        double s = Double.parseDouble(cum.group(3));
+        long micros = (long) ((h * 3600 + m * 60 + s) * 1_000_000.0);
+        out.stallCount += micros;
+      } catch (NumberFormatException ignored) {
+      }
+    }
+  }
+
+  /** Result of {@link #sampleOperandCountDistribution()}. */
+  private static final class OperandStats {
+    int n = 0;
+    int min = 0;
+    int max = 0;
+    int p50 = 0;
+    int p90 = 0;
+    int p99 = 0;
+    double mean = 0.0;
+  }
+
+  /**
+   * Sample {@link #OPERAND_SAMPLE_SIZE} keys from the partial-update key pool. For each, fetch the
+   * raw on-disk blob from DC0 — bypassing the merge-operator fold via the materializing
+   * partition's {@code getRaw(byte[])} method (called reflectively because there are two such
+   * classes — one per parent: {@code MaterializingRocksDBStoragePartition} and
+   * {@code MaterializingReplicationMetadataRocksDBStoragePartition} — with no shared interface).
+   * Parse with {@link ConcatBlobParser#parse(byte[])} to count operands. Compute distribution.
+   *
+   * <p>This is the H2 (operand-chain growth) signal: if per-key operand counts shift right
+   * monotonically across iterations, the merge-operator's fold-on-read is doing more work per
+   * read each iteration. If the distribution is flat near 0 (PartitionSweeper keeping it pruned),
+   * H2 is ruled out and the degradation must come from H1 (compaction churn).
+   */
+  private OperandStats sampleOperandCountDistribution() {
+    OperandStats stats = new OperandStats();
+    if (workloadType != WorkloadType.PARTIAL_UPDATE) {
+      return stats;
+    }
+    if (designMode == DesignMode.BASELINE) {
+      // BASELINE has no operand chains — engine path is full-record PUT. Skip sampling.
+      return stats;
+    }
+    int[] counts = new int[OPERAND_SAMPLE_SIZE];
+    int captured = 0;
+    int decodeFailures = 0;
+    int nullBlobs = 0;
+    int notMaterializing = 0;
+    int stride = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / OPERAND_SAMPLE_SIZE);
+    String firstError = null;
+    for (int i = 0; i < OPERAND_SAMPLE_SIZE && i * stride < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+      int poolIdx = i * stride;
+      String key = partialUpdatePoolPrePopulateKey(poolIdx);
+      byte[] keyBytes = keySerializer.serialize(key);
+      int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
+      try {
+        Object part = engineDC0.getPartitionOrThrow(partition);
+        // Both MaterializingRocksDBStoragePartition and
+        // MaterializingReplicationMetadataRocksDBStoragePartition expose a public byte[] getRaw(
+        // byte[]) method that bypasses the merge-operator fold, returning the on-disk concat blob.
+        // They have no shared interface, so duck-type via reflection.
+        byte[] blob;
+        try {
+          java.lang.reflect.Method m = part.getClass().getMethod("getRaw", byte[].class);
+          blob = (byte[]) m.invoke(part, (Object) keyBytes);
+        } catch (NoSuchMethodException nsme) {
+          notMaterializing++;
+          continue;
+        }
+        if (blob == null) {
+          nullBlobs++;
+          continue;
+        }
+        ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(blob);
+        int n = parsed.getOperands() == null ? 0 : parsed.getOperands().size();
+        counts[captured++] = n;
+      } catch (Throwable t) {
+        decodeFailures++;
+        if (firstError == null) {
+          firstError = t.getClass().getSimpleName() + ":" + t.getMessage();
+        }
+      }
+    }
+    if (decodeFailures > 0 || nullBlobs > 0 || notMaterializing > 0) {
+      System.err.println(
+          String.format(
+              "[OPERAND-SAMPLE] captured=%d decodeFailures=%d nullBlobs=%d notMaterializing=%d firstError=%s",
+              captured,
+              decodeFailures,
+              nullBlobs,
+              notMaterializing,
+              firstError == null ? "none" : firstError));
+    }
+    if (captured == 0) {
+      return stats;
+    }
+    int[] trim = java.util.Arrays.copyOf(counts, captured);
+    java.util.Arrays.sort(trim);
+    long sum = 0;
+    for (int v: trim) {
+      sum += v;
+    }
+    stats.n = captured;
+    stats.min = trim[0];
+    stats.max = trim[captured - 1];
+    stats.p50 = trim[Math.min(captured - 1, (int) (captured * 0.50))];
+    stats.p90 = trim[Math.min(captured - 1, (int) (captured * 0.90))];
+    stats.p99 = trim[Math.min(captured - 1, (int) (captured * 0.99))];
+    stats.mean = (double) sum / captured;
+    return stats;
+  }
+
+  /**
+   * RocksDB-stats poller tick. Sums {@code rocksdb.num-running-compactions} and
+   * {@code rocksdb.estimate-num-keys} across partitions for both regions. Updates max-counter and
+   * appends a row to the per-iteration timeline TSV.
+   */
+  private void sampleRocksDBStats() {
+    try {
+      long t0 = timelineIterStartNanos;
+      if (t0 == 0) {
+        return;
+      }
+      long dc0Comp = sumNumericProperty(engineDC0, "rocksdb.num-running-compactions");
+      long dc1Comp = sumNumericProperty(engineDC1, "rocksdb.num-running-compactions");
+      long dc0Keys = sumNumericProperty(engineDC0, "rocksdb.estimate-num-keys");
+      long dc1Keys = sumNumericProperty(engineDC1, "rocksdb.estimate-num-keys");
+      lastEstimateKeysDc0 = dc0Keys;
+      lastEstimateKeysDc1 = dc1Keys;
+      long combined = dc0Comp + dc1Comp;
+      long prev = maxRunningCompactionsThisIter.get();
+      while (combined > prev && !maxRunningCompactionsThisIter.compareAndSet(prev, combined)) {
+        prev = maxRunningCompactionsThisIter.get();
+      }
+      java.io.PrintWriter pw = timelineWriter;
+      if (pw != null) {
+        long tMs = (System.nanoTime() - t0) / 1_000_000L;
+        pw.println(tMs + "\t" + dc0Comp + "\t" + dc1Comp + "\t" + dc0Keys + "\t" + dc1Keys);
+      }
+    } catch (Throwable ignored) {
+      // Don't let poller exceptions kill the executor.
+    }
+  }
+
+  private long sumNumericProperty(StorageEngine engine, String name) {
+    if (engine == null) {
+      return 0L;
+    }
+    long sum = 0L;
+    for (int p = 0; p < PARTITION_COUNT; p++) {
+      try {
+        Object part = engine.getPartitionOrThrow(p);
+        if (part instanceof RocksDBStoragePartition) {
+          sum += ((RocksDBStoragePartition) part).getRocksDBStatValue(name);
+        }
+      } catch (Throwable ignored) {
+      }
+    }
+    return sum;
   }
 
   // ---------------- Workload methods (mirror ActiveActiveIngestionBenchmark) ----------------
@@ -817,10 +1255,7 @@ public class LeanActiveActiveIngestionBenchmark {
     writer.put(keyBytes, valueBytes, VALUE_SCHEMA_ID);
   }
 
-  private void sendUpdateWithoutFlush(
-      VeniceWriter<byte[], byte[], byte[]> writer,
-      String key,
-      GenericRecord update) {
+  private void sendUpdateWithoutFlush(VeniceWriter<byte[], byte[], byte[]> writer, String key, GenericRecord update) {
     byte[] keyBytes = keySerializer.serialize(key);
     byte[] updateBytes = writeComputeSerializer.serialize(update);
     writer.update(keyBytes, updateBytes, VALUE_SCHEMA_ID, WRITE_COMPUTE_DERIVED_SCHEMA_ID, null);

@@ -1019,6 +1019,26 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
     }
   }
 
+  /**
+   * String-property variant of {@link #getRocksDBStatValue(String)} for properties whose value is
+   * a multi-line text blob (e.g., {@code rocksdb.cfstats}, {@code rocksdb.stats}). RocksDB exposes
+   * these via {@code rocksDB.getProperty(name)}, which returns a String. Use
+   * {@link #getRocksDBStatValue(String)} for numeric properties (those returned via
+   * {@code getLongProperty}).
+   */
+  public String getRocksDBStringProperty(String name) {
+    readCloseRWLock.readLock().lock();
+    try {
+      return rocksDB.getProperty(name);
+    } catch (RocksDBException e) {
+      throw new VeniceException(
+          "Failed to get string property from RocksDB: " + replicaId + " for property: " + name,
+          e);
+    } finally {
+      readCloseRWLock.readLock().unlock();
+    }
+  }
+
   public Map<MemoryUsageType, Long> getApproximateMemoryUsageByType(final Set<Cache> caches) {
     readCloseRWLock.readLock().lock();
     try {
