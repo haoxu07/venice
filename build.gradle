@@ -445,6 +445,11 @@ subprojects {
     if (System.getProperty('venice.jni.bridge.lib.path') != null) {
       systemProperty 'venice.jni.bridge.lib.path', System.getProperty('venice.jni.bridge.lib.path')
     }
+    // VT-merge native A2 Phase B: forward the production native fold library path so
+    // NativeCompactionFoldRoundTripTest / NativeFilterByteEquivalenceTest can load it.
+    if (System.getProperty('venice.rocksdb.fold.lib.path') != null) {
+      systemProperty 'venice.rocksdb.fold.lib.path', System.getProperty('venice.rocksdb.fold.lib.path')
+    }
 
     System.getProperty('jvmArgs')?.eachMatch(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/) { jvmArgs it }
 

@@ -7,6 +7,7 @@ import com.linkedin.davinci.stats.RocksDBMemoryStats;
 import com.linkedin.davinci.store.AbstractStorageIterator;
 import com.linkedin.davinci.store.AbstractStoragePartition;
 import com.linkedin.davinci.store.StoragePartitionConfig;
+import com.linkedin.davinci.store.rocksdb.merge.jnibridge.NativeFoldFilterWiring;
 import com.linkedin.venice.exceptions.DiskLimitExhaustedException;
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.meta.Version;
@@ -120,6 +121,13 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
    */
   private final Options options;
   protected RocksDB rocksDB;
+  /**
+   * VT-merge native A2 Phase B: optional native compaction filter handle. Non-null only
+   * when {@code vt.merge.native.compaction.filter.enabled} is set on partition open AND
+   * the partition opted in via {@code factory.isVtUpdateOperandEnabled()}. Closed in
+   * {@link #close()}.
+   */
+  private com.linkedin.davinci.store.rocksdb.merge.jnibridge.VeniceConcatFoldFilter nativeFoldFilter;
   private final RocksDBServerConfig rocksDBServerConfig;
   private final RocksDBStorageEngineFactory factory;
   private final RocksDBThrottler rocksDBThrottler;
@@ -260,6 +268,14 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
         // options directly. Without this, rocksDB.merge fails or silently no-ops.
         if (factory.isVtUpdateOperandEnabled()) {
           columnFamilyOptions.setMergeOperator(new StringAppendOperator((char) 0x01));
+          // VT-merge native A2 Phase B: optionally wire the native compaction filter that
+          // folds operand chains at compaction time. Guarded by the system property
+          // {@code vt.merge.native.compaction.filter.enabled} so production deployments can
+          // flip it on without a config-key change. The filter handle is owned by the
+          // partition (see {@link #closeNativeFoldFilter()}), NOT by the rocksdbjni Options.
+          if (NativeFoldFilterWiring.isEnabled()) {
+            this.nativeFoldFilter = NativeFoldFilterWiring.maybeAttach(columnFamilyOptions);
+          }
         }
       }
       columnFamilyDescriptors.add(new ColumnFamilyDescriptor(name, columnFamilyOptions));
@@ -921,6 +937,12 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
     options.close();
     if (writeOptions != null) {
       writeOptions.close();
+    }
+    // VT-merge native A2 Phase B: release the native compaction filter handle (if any).
+    // RocksDB stops calling FilterV2 once the DB is closed, so it's safe to delete here.
+    if (nativeFoldFilter != null) {
+      nativeFoldFilter.close();
+      nativeFoldFilter = null;
     }
     LOGGER.info(
         "RocksDB close for replica: {} took {} ms.",

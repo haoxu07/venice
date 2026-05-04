@@ -13,7 +13,9 @@
 // cost measured here is a lower bound on Phase B's per-call cost.
 
 #include <jni.h>
+#include <dlfcn.h>
 #include <string>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -123,6 +125,27 @@ Java_com_linkedin_davinci_store_rocksdb_merge_jnibridge_VeniceJniBridge_nativeRo
     }
   }
   return totalBytes;
+}
+
+// Promote an already-loaded shared library (e.g. librocksdbjni) from RTLD_LOCAL
+// to RTLD_GLOBAL so its symbols become visible to subsequently-loaded libs.
+// Used by VeniceConcatFoldNative.loadFromAbsolutePath to expose rocksdbjni's
+// internal Customizable/Configurable methods to libvenice_rocksdb_fold.so.
+//
+// Returns 0 on success, -1 if the path could not be opened.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_linkedin_davinci_store_rocksdb_merge_jnibridge_VeniceJniBridge_nativePromoteLibraryToGlobal(
+    JNIEnv* env, jclass /*clazz*/, jstring path) {
+  const char* path_c = env->GetStringUTFChars(path, nullptr);
+  void* h = dlopen(path_c, RTLD_NOW | RTLD_GLOBAL | RTLD_NOLOAD);
+  jint rc = (h != nullptr) ? 0 : -1;
+  if (h == nullptr) {
+    // Surface the error message into the JVM's stderr for diagnostics.
+    fprintf(stderr, "venice_jni_bridge: dlopen RTLD_GLOBAL|RTLD_NOLOAD failed for %s: %s\n",
+            path_c, dlerror());
+  }
+  env->ReleaseStringUTFChars(path, path_c);
+  return rc;
 }
 
 // Exception-handling correctness probe — Java throws, C++ recovers cleanly.

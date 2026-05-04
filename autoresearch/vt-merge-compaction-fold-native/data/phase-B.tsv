@@ -1,0 +1,41 @@
+## Phase B — Working filter with correctness gates
+## Source: ./gradlew :clients:da-vinci-client:test --tests com.linkedin.davinci.store.rocksdb.merge.jnibridge.*
+
+## Per-suite test results
+suite	tests	failures	skipped	gate	pass
+VeniceJniBridgeTest	5	0	0	all_pass	true
+VeniceConcatFoldNativeCallbackTest	6	0	0	all_pass	true
+NativeCompactionFoldRoundTripTest	1	0	0	all_pass	true
+NativeFilterByteEquivalenceTest	4	0	0	all_pass	true
+
+## Round-trip integration test counters (RocksDB compactRange triggered)
+metric	value	expected	pass
+filter_calls	1	>=1	true
+filter_change_value	1	>=1	true
+filter_keep	0	>=0	true
+filter_jni_exceptions	0	0	true
+post_compact_has_base	true	true	true
+post_compact_operand_count	0	0	true
+
+## Byte-equivalence test (native filter vs Java callback)
+operand_count	java_result_bytes	native_result_bytes	bytewise_equal
+1	29	29	true
+2	29	29	true
+4	29	29	true
+8	29	29	true
+16	29	29	true
+32	29	29	true
+64	29	29	true
+
+## ABI-compatibility findings (binary attributes of libvenice_rocksdb_fold.so)
+attribute	value	required_for_rocksdbjni_compat	pass
+glibcxx_cxx11_abi	0	0	true
+fno_rtti	true	true	true
+hidden_visibility	true	true	true
+filter_register_path	setCompactionFilter	(NOT setCompactionFilterFactory)	true
+size_bytes	25328	<= 2000000	true
+
+## Native footprint
+file	bytes	limit_bytes	pass
+libvenice_rocksdb_fold.so	25328	2000000	true
+libvenice_jni_bridge.so	17784	2000000	true

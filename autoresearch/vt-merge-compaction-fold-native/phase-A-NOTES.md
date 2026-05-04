@@ -177,4 +177,4 @@ confirms that **if** Phase B can be wired, the JNI cost will be acceptable.
 
 ## Commit hash
 
-(filled in after commit)
+`0933e3a74` — `[chore][bench][dvc] Native A2 Phase A: JNI bridge round-trip <500 ns`

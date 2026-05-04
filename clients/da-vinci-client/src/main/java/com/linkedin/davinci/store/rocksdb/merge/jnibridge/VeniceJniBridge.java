@@ -109,4 +109,15 @@ public final class VeniceJniBridge {
    * else returns {@code 0}.
    */
   public static native int nativeProbeException(byte[] input);
+
+  /**
+   * Promote an already-loaded shared library from {@code RTLD_LOCAL} to
+   * {@code RTLD_GLOBAL} so its symbols become visible to subsequently-loaded
+   * libraries. Required because the JVM's {@code System.load} uses
+   * {@code RTLD_LOCAL}, which hides rocksdbjni's internal C++ symbols (e.g.
+   * {@code rocksdb::Customizable::GetOption}) from our Phase B native filter.
+   *
+   * <p>Returns 0 on success, -1 if the path could not be opened.
+   */
+  public static native int nativePromoteLibraryToGlobal(String absolutePath);
 }
