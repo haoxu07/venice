@@ -440,6 +440,11 @@ subprojects {
     if (System.getProperty('vt.update.operand.flag') != null) {
       systemProperty 'vt.update.operand.flag', System.getProperty('vt.update.operand.flag')
     }
+    // VT-merge native A2 Phase A: forward the JNI bridge native-library path to test JVMs so
+    // VeniceJniBridgeTest can locate libvenice_jni_bridge.so. Without this the test self-skips.
+    if (System.getProperty('venice.jni.bridge.lib.path') != null) {
+      systemProperty 'venice.jni.bridge.lib.path', System.getProperty('venice.jni.bridge.lib.path')
+    }
 
     System.getProperty('jvmArgs')?.eachMatch(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/) { jvmArgs it }
 

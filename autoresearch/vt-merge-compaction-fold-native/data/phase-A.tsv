@@ -1,0 +1,28 @@
+## Phase A — JNI bridge per-call cost
+## Source: VeniceJniBridgeTest.microBenchSteadyStateUnder2Microseconds (TestNG, in-C++ tight loop)
+## Method: nativeRoundTripLoop reuses staging buffer once, calls Java foldConcatBlob N=500k times
+## Phase A gate: per-call cost <= 2000 ns. Measured: max 467 ns (4.3x under gate).
+valueSize_bytes	round	ns_per_call	iterations	gate_ns	pass
+64	1	314.3	500000	2000	true
+64	2	309.3	500000	2000	true
+64	3	330.1	500000	2000	true
+256	1	467.3	500000	2000	true
+256	2	465.3	500000	2000	true
+256	3	374.6	500000	2000	true
+1024	1	417.9	500000	2000	true
+1024	2	416.6	500000	2000	true
+1024	3	408.1	500000	2000	true
+
+## Stress test (1M iterations, 64B input): nativeRoundTripLoop returns total bytes.
+## Pass criterion: 1M iterations complete with no JVM crash and totalBytes == iterations * valueSize.
+test	iterations	value_size	total_bytes	expected	jvm_crashes	pass
+stressMillionIterations	1000000	64	64000000	64000000	0	true
+
+## Exception-handling probe: callback throws on empty input.
+## Pass criterion: native code clears the exception and returns -2; no JVM crash.
+test	probe_input_len	return_code	expected	pass
+exceptionPathRecoversCleanly	0	-2	-2	true
+
+## Native library footprint
+file	bytes	limit_bytes	pass
+libvenice_jni_bridge.so	17464	2000000	true
