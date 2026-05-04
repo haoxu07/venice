@@ -156,4 +156,4 @@ production workloads the chain bound is non-negotiable, so the realistic operati
 
 ## Commit hash
 
-(filled in after commit)
+`45e3d39ab` — `[chore][bench][dvc] Native A2 Phase C: throughput PARTIAL, backstop NOT redundant`

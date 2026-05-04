@@ -100,7 +100,7 @@ For future maintainers — the rocksdbjni 9.11.2 ABI traps we hit, in order:
 
 - `0933e3a74` — `[chore][bench][dvc] Native A2 Phase A: JNI bridge round-trip <500 ns`
 - `bd50452f6` — `[chore][bench][dvc] Native A2 Phase B: native CompactionFilter folds operand chains`
-- (Phase C: see commit at end of this work-stream)
+- `45e3d39ab` — `[chore][bench][dvc] Native A2 Phase C: throughput PARTIAL, backstop NOT redundant`
 
 ## Follow-up work (out of scope for this work-stream)
 
