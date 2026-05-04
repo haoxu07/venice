@@ -2,6 +2,7 @@ package com.linkedin.davinci.store.rocksdb.merge.jnibridge;
 
 import com.linkedin.davinci.store.rocksdb.merge.ConcatBlobParser;
 import com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext;
+import com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry;
 import com.linkedin.venice.exceptions.VeniceException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -27,13 +28,41 @@ import java.util.List;
  * the engine.
  */
 public final class VeniceConcatFoldNativeCallback {
-  private final MaterializingFoldContext foldContext;
+  /**
+   * Optional fixed fold context. Non-null when the callback was constructed with an
+   * explicit context (test path); null when the callback delegates to the
+   * {@link MaterializingFoldContextRegistry} for per-store dispatch.
+   */
+  private final MaterializingFoldContext fixedFoldContext;
 
+  /**
+   * Test/single-store constructor: the callback always uses {@code foldContext}.
+   */
   public VeniceConcatFoldNativeCallback(MaterializingFoldContext foldContext) {
     if (foldContext == null) {
       throw new VeniceException("VeniceConcatFoldNativeCallback: foldContext is null");
     }
-    this.foldContext = foldContext;
+    this.fixedFoldContext = foldContext;
+  }
+
+  /**
+   * Production constructor: the callback delegates to the
+   * {@link MaterializingFoldContextRegistry}. RocksDB's compaction filter does not
+   * surface a store-version key, so this constructor uses the FIRST registered fold
+   * context — fine for benchmarks and single-store-per-JVM deployments. Multi-store
+   * production wiring would need a registry-keyed dispatch layer (out of scope for
+   * the Phase C performance gate).
+   */
+  public VeniceConcatFoldNativeCallback() {
+    this.fixedFoldContext = null;
+  }
+
+  /** Look up the active fold context, falling back to the registry's first entry. */
+  private MaterializingFoldContext resolveContext() {
+    if (fixedFoldContext != null) {
+      return fixedFoldContext;
+    }
+    return MaterializingFoldContextRegistry.firstRegistered();
   }
 
   /**
@@ -73,8 +102,15 @@ public final class VeniceConcatFoldNativeCallback {
     if (operands.isEmpty()) {
       return null; // KEEP
     }
+    MaterializingFoldContext context = resolveContext();
+    if (context == null) {
+      // No fold context registered yet — leave the value untouched. This can
+      // happen in early bootstrap before ingestion tasks have wired up the
+      // registry.
+      return null;
+    }
     if (parsed.hasBase()) {
-      byte[] folded = foldContext.foldOperands(parsed.getSchemaId(), parsed.getBase(), operands);
+      byte[] folded = context.foldOperands(parsed.getSchemaId(), parsed.getBase(), operands);
       if (folded == null) {
         // WC-delete tombstone — leave the value to RocksDB's delete handling.
         return null;
@@ -82,7 +118,7 @@ public final class VeniceConcatFoldNativeCallback {
       return ConcatBlobParser.frameBase(parsed.getSchemaId(), folded);
     }
     // Operand-only: fold against an empty base.
-    MaterializingFoldContext.FoldOnlyResult result = foldContext.foldOperandOnly(operands);
+    MaterializingFoldContext.FoldOnlyResult result = context.foldOperandOnly(operands);
     if (result.getBytes() == null) {
       return null;
     }

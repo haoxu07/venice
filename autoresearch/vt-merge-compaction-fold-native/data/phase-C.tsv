@@ -1,0 +1,64 @@
+## Phase C — JMH MERGE_OPERAND_SWEPT, native filter ON, two backstop variants
+## Run command:
+##   java -Xms16G -Xmx16G $JVM_OPENS \
+##     -Dvt.merge.native.compaction.filter.enabled=true \
+##     -Dvenice.jni.bridge.lib.path=.../libvenice_jni_bridge.so \
+##     -Dvenice.rocksdb.fold.lib.path=.../libvenice_rocksdb_fold.so \
+##     [-Dvenice.server.vt.merge.max.chain.length=0  for C-2] \
+##     -jar venice-test-common-jmh.jar LeanActiveActiveIngestionBenchmark \
+##     -p workloadType=PARTIAL_UPDATE -p designMode=MERGE_OPERAND_SWEPT \
+##     -f 1 -wi 1 -w 30s -i 3 -r 180s -foe true
+
+## ---- Phase C-1: filter ON, backstop ON (vt.merge.max.chain.length=64 default) ----
+phase	iter	jmh_ops_per_sec	e2e_ops_per_sec	bp_wait_ms_per_180s	operand_p99	operand_max	dc0_writeAmp	dc1_writeAmp	notes
+C1	warmup	100905	NA	NA	NA	NA	NA	NA	30s warmup - hits 100K but does not sustain
+C1	1	72848	70459	83664	34	34	1.00	1.00	bounded chain p99=34
+C1	2	77907	75352	72959	46	46	1.00	1.00	chain p99=46 - within MAX_CHAIN=64
+C1	3	71254	68917	87634	47	47	1.20	1.20	chain p99=47
+C1	mean	74003	NA	NA	NA	NA	NA	NA	JMH 3-iter mean
+
+## C-1 vs Phase D baseline (for reference)
+metric	C1_native_filter_on	D_no_filter	delta
+iter_1_ops_per_sec	72848	71615	+1.7%
+mean_ops_per_sec	74003	67338	+9.9%
+iter_1_chain_p99	34	31	close
+iter_3_chain_p99	47	11	worse_but_bounded
+vt_check	0_0_0	0_0_0	pass
+read_verify	1000_1000	1000_1000	pass
+
+## C-1 gate evaluation
+gate	target	measured	pass
+iter_1_ops_per_sec	>=100000	72848	NO
+mean_ops_per_sec	>=90000	74003	NO
+chain_p99_max_across_iters	<=50	47	YES
+vt_check	0_0_0	0_0_0	YES
+read_verify	1000_per_dc	1000_per_dc	YES
+
+## ---- Phase C-2: filter ON, backstop OFF (-Dvenice.server.vt.merge.max.chain.length=0) ----
+phase	iter	jmh_ops_per_sec	e2e_ops_per_sec	bp_wait_ms_per_180s	operand_p99	operand_max	dc0_writeAmp	dc1_writeAmp	notes
+C2	warmup	127163	121068	0	39	39	NA	NA	30s warmup
+C2	1	144047	142854	0	299	299	1.00	1.00	UNBOUNDED chain p99 = 299
+C2	2	140803	139637	0	551	551	1.90	1.90	chain p99 = 551 - climbing
+C2	3	140558	140558	3830	807	807	1.50	1.50	chain p99 = 807 - climbing further
+C2	mean	142194	NA	NA	NA	NA	NA	NA	JMH 3-iter mean = 142194 +/- 30476 ops/s
+
+## C-2 gate evaluation (the "is the backstop redundant?" question)
+gate	target	measured	pass
+iter_1_ops_per_sec	>=105000	144047	YES_if_we_only_count_throughput
+mean_ops_per_sec	>=95000	~141000	YES_if_we_only_count_throughput
+chain_p99_<=50_across_iters	<=50	39_then_299_then_551_then_807	NO_clearly_unbounded
+vt_check	0_0_0	0_0_0	YES
+read_verify	1000_per_dc	1000_per_dc	YES
+
+## Decision: backstop is NOT redundant
+## Without the backstop, throughput is dramatically higher (~140K vs ~74K) BUT operand chain p99 grows
+## monotonically (39 -> 299 -> 551 -> 807) over the 3-iter run. The native compaction filter alone
+## cannot keep chains bounded because compaction runs on RocksDB's natural schedule, not on demand.
+## The synchronous backstop is the only mechanism that bounds chain depth deterministically.
+## Recommendation: keep ChainLengthBackstop. Do NOT delete it as Phase C-2 was meant to evaluate.
+
+## ---- Final native footprint ----
+artifact	bytes	limit_bytes	pass
+libvenice_rocksdb_fold.so	25328	2000000	YES
+libvenice_jni_bridge.so	17784	2000000	YES
+total_native	43112	4000000	YES

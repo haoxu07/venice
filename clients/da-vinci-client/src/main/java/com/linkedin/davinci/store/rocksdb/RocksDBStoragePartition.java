@@ -274,6 +274,9 @@ public class RocksDBStoragePartition extends AbstractStoragePartition {
           // flip it on without a config-key change. The filter handle is owned by the
           // partition (see {@link #closeNativeFoldFilter()}), NOT by the rocksdbjni Options.
           if (NativeFoldFilterWiring.isEnabled()) {
+            // Register the default callback once per JVM. The callback delegates to
+            // MaterializingFoldContextRegistry, which the ingestion task populates lazily.
+            NativeFoldFilterWiring.ensureDefaultCallbackRegistered();
             this.nativeFoldFilter = NativeFoldFilterWiring.maybeAttach(columnFamilyOptions);
           }
         }

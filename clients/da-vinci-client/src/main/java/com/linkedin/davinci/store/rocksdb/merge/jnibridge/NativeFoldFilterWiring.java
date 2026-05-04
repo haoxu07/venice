@@ -134,4 +134,24 @@ public final class NativeFoldFilterWiring {
     VeniceConcatFoldNative.nativeRegisterCallback(callback);
     LOGGER.info("VT-merge native filter: registered Java callback {}", callback);
   }
+
+  /**
+   * Idempotent registration of a default callback that delegates to
+   * {@link com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry}.
+   * Calling this multiple times is harmless — the underlying global ref in C++ is
+   * replaced atomically. Suitable for single-store-per-JVM deployments (e.g. JMH).
+   */
+  private static volatile boolean defaultCallbackRegistered = false;
+
+  public static synchronized void ensureDefaultCallbackRegistered() {
+    if (defaultCallbackRegistered) {
+      return;
+    }
+    if (!ensureLibrariesLoaded()) {
+      return;
+    }
+    VeniceConcatFoldNative.nativeRegisterCallback(new VeniceConcatFoldNativeCallback());
+    defaultCallbackRegistered = true;
+    LOGGER.info("VT-merge native filter: registered default registry-backed callback");
+  }
 }

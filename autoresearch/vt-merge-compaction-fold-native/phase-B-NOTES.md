@@ -166,4 +166,4 @@ For future maintainers — the ABI traps we hit in order:
 
 ## Commit hash
 
-(filled in after commit)
+`bd50452f6` — `[chore][bench][dvc] Native A2 Phase B: native CompactionFilter folds operand chains`

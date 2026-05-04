@@ -56,4 +56,18 @@ public final class MaterializingFoldContextRegistry {
   public static void clearForTest() {
     REGISTRY.clear();
   }
+
+  /**
+   * Return the first registered context, or {@code null} if none. Used by the native
+   * compaction filter callback's bootstrap path: in single-store-per-JVM deployments
+   * (benchmarks, da-vinci-client embedded servers), the compaction filter only ever
+   * sees values from one store-version, so any registered context is correct.
+   * Multi-store production deployments need a different dispatch layer.
+   */
+  public static MaterializingFoldContext firstRegistered() {
+    if (REGISTRY.isEmpty()) {
+      return null;
+    }
+    return REGISTRY.values().iterator().next();
+  }
 }
