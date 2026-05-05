@@ -431,6 +431,10 @@ public class LeanActiveActiveIngestionBenchmark {
    * regions for symmetry. Sample size is bounded so this doesn't stretch teardown by minutes.
    */
   private void captureReadLatencyMetrics() {
+    captureReadLatencyMetrics("trial-end");
+  }
+
+  private void captureReadLatencyMetrics(String context) {
     if (workloadType != WorkloadType.PARTIAL_UPDATE) {
       return;
     }
@@ -468,7 +472,8 @@ public class LeanActiveActiveIngestionBenchmark {
     long dc1p99 = dc1Trim[(int) (captured * 0.99)];
     System.err.println(
         String.format(
-            "[READ-LAT] samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
+            "[READ-LAT] context=%s samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
+            context,
             captured,
             dc0p50,
             dc0p99,
@@ -828,6 +833,10 @@ public class LeanActiveActiveIngestionBenchmark {
             opStats.p99,
             opStats.max,
             opStats.mean));
+
+    // Per-iter read-latency probe — captures p50/p99 at end of measurement iter, when chain
+    // depth distribution is at its working-state worst (before next iter's setup runs).
+    captureReadLatencyMetrics("iter-end-" + ordinal);
   }
 
   /**
