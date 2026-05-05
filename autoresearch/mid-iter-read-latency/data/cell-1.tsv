@@ -1,0 +1,9 @@
+[READ-LAT] context=mid-iter-1 samples=951 dc0_p50_ns=42780 dc0_p99_ns=190357 dc1_p50_ns=22121 dc1_p99_ns=155241
+[READ-LAT] context=iter-end-1 samples=5000 dc0_p50_ns=18024 dc0_p99_ns=41798 dc1_p50_ns=18024 dc1_p99_ns=40997
+[READ-LAT] context=mid-iter-2 samples=5955 dc0_p50_ns=45815 dc0_p99_ns=96391 dc1_p50_ns=25819 dc1_p99_ns=87634
+[READ-LAT] context=iter-end-2 samples=5000 dc0_p50_ns=15800 dc0_p99_ns=36778 dc1_p50_ns=15469 dc1_p99_ns=30437
+[READ-LAT] context=mid-iter-3 samples=5965 dc0_p50_ns=45255 dc0_p99_ns=104235 dc1_p50_ns=23053 dc1_p99_ns=74008
+[READ-LAT] context=iter-end-3 samples=5000 dc0_p50_ns=14638 dc0_p99_ns=35206 dc1_p50_ns=14667 dc1_p99_ns=35197
+[READ-LAT] context=mid-iter-4 samples=5956 dc0_p50_ns=41437 dc0_p99_ns=101039 dc1_p50_ns=26409 dc1_p99_ns=89187
+[READ-LAT] context=iter-end-4 samples=5000 dc0_p50_ns=15790 dc0_p99_ns=29996 dc1_p50_ns=15680 dc1_p99_ns=29345
+[READ-LAT] context=trial-end samples=5000 dc0_p50_ns=4158 dc0_p99_ns=9297 dc1_p50_ns=4278 dc1_p99_ns=9147

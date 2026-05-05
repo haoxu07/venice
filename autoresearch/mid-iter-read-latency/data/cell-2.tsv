@@ -1,0 +1,9 @@
+[READ-LAT] context=mid-iter-1 samples=951 dc0_p50_ns=114554 dc0_p99_ns=349013 dc1_p50_ns=84779 dc1_p99_ns=208631
+[READ-LAT] context=iter-end-1 samples=5000 dc0_p50_ns=67316 dc0_p99_ns=128771 dc1_p50_ns=67326 dc1_p99_ns=125194
+[READ-LAT] context=mid-iter-2 samples=5952 dc0_p50_ns=207639 dc0_p99_ns=308657 dc1_p50_ns=183344 dc1_p99_ns=278692
+[READ-LAT] context=iter-end-2 samples=5000 dc0_p50_ns=187661 dc0_p99_ns=205104 dc1_p50_ns=187460 dc1_p99_ns=204392
+[READ-LAT] context=mid-iter-3 samples=5951 dc0_p50_ns=163857 dc0_p99_ns=394829 dc1_p50_ns=142076 dc1_p99_ns=361016
+[READ-LAT] context=iter-end-3 samples=5000 dc0_p50_ns=116469 dc0_p99_ns=147466 dc1_p50_ns=116278 dc1_p99_ns=147957
+[READ-LAT] context=mid-iter-4 samples=5951 dc0_p50_ns=267180 dc0_p99_ns=448479 dc1_p50_ns=244868 dc1_p99_ns=424726
+[READ-LAT] context=iter-end-4 samples=5000 dc0_p50_ns=19046 dc0_p99_ns=40115 dc1_p50_ns=18685 dc1_p99_ns=39143
+[READ-LAT] context=trial-end samples=5000 dc0_p50_ns=18815 dc0_p99_ns=29364 dc1_p50_ns=18515 dc1_p99_ns=27521
