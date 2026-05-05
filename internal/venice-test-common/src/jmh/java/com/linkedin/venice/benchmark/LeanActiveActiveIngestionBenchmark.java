@@ -36,7 +36,9 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -166,6 +168,20 @@ public class LeanActiveActiveIngestionBenchmark {
   @Param({ "16" })
   private int fieldUpdateSizeBytes;
 
+  /**
+   * Mid-iter read-latency sampler rate (Hz). The sampler runs a single-thread daemon scheduled
+   * executor that, at this rate, picks a random pool key and times a {@code engine.get} on both
+   * regions while the @Benchmark write window is active — measuring read latency under concurrent
+   * write pressure (vs the existing iter-end probe which fires at quiescent teardown).
+   *
+   * <p>Default 100 Hz = 10 ms period. At a 60-s measurement window that's ~6,000 samples per iter,
+   * sufficient for stable p50/p99. PARTIAL_UPDATE only; other workloads skip the sampler.
+   *
+   * <p>See {@code autoresearch/mid-iter-read-latency/GOAL.md}.
+   */
+  @Param({ "100" })
+  private int midIterReadSampleRateHz;
+
   // Derived in @Setup(Level.Trial) from recordSizeBytes / fieldUpdateSizeBytes.
   private int derivedTagsMapSize;
 
@@ -241,6 +257,20 @@ public class LeanActiveActiveIngestionBenchmark {
   private static final String ROCKSDB_CFSTATS_DIR = "/tmp/jmh-rocksdb-cfstats";
   /** Number of keys to sample for operand-count distribution at end of each iteration. */
   private static final int OPERAND_SAMPLE_SIZE = 200;
+
+  // ---------------- Mid-iter read-latency sampler ----------------
+  // GOAL: autoresearch/mid-iter-read-latency/GOAL.md §4. A daemon scheduled executor times
+  // engine.get(...) calls on random pool keys throughout the @Benchmark write window so we can
+  // see read latency under concurrent write pressure (vs the iter-end probe which fires after
+  // writes have stopped and the back-pressure backlog has drained). Both probes coexist so we
+  // can compare quiescent-vs-concurrent ratios per cell.
+  private ScheduledExecutorService midIterReadSampler;
+  /** Pre-allocated per-iter histograms — reset, not reallocated, at @Setup(Level.Iteration). */
+  private long[] midIterLatNanosDc0;
+  private long[] midIterLatNanosDc1;
+  /** Sample-write index. Bounded by {@link #MID_ITER_MAX_SAMPLES}; further samples are dropped. */
+  private final AtomicInteger midIterSampleIdx = new AtomicInteger(0);
+  private static final int MID_ITER_MAX_SAMPLES = 20_000;
 
   @Setup(Level.Trial)
   public void setUp() throws Exception {
@@ -372,6 +402,17 @@ public class LeanActiveActiveIngestionBenchmark {
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
       }
+    }
+    // Defensive: the per-iter teardown should have stopped the mid-iter sampler, but if a
+    // benchmark exits early (e.g., -foe) the executor may still be live.
+    if (midIterReadSampler != null) {
+      try {
+        midIterReadSampler.shutdownNow();
+        midIterReadSampler.awaitTermination(2, TimeUnit.SECONDS);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+      midIterReadSampler = null;
     }
     if (timelineWriter != null) {
       try {
@@ -770,6 +811,143 @@ public class LeanActiveActiveIngestionBenchmark {
     }
   }
 
+  /**
+   * Starts the mid-iter read-latency sampler at the beginning of each warmup/measurement iteration.
+   * The sampler is a single-thread daemon ScheduledExecutorService that, at fixed rate
+   * {@code 1000 / midIterReadSampleRateHz} ms, picks a random pool key and times
+   * {@code engine.get(...)} on both regions, recording the deltas in {@link #midIterLatNanosDc0}
+   * and {@link #midIterLatNanosDc1}. PARTIAL_UPDATE only.
+   *
+   * <p>First-fire delay: 500 ms (let the @Benchmark workload warm up before starting to sample).
+   *
+   * <p>Stopped at the very start of {@link #finishIterationAndReportE2E()} (before
+   * {@code waitForKeysVisibleOnBothRegions} drains the iter), so all samples reflect the
+   * concurrent-write window.
+   */
+  @Setup(Level.Iteration)
+  public void startMidIterReadSampler() {
+    if (workloadType != WorkloadType.PARTIAL_UPDATE) {
+      return;
+    }
+    if (midIterLatNanosDc0 == null) {
+      midIterLatNanosDc0 = new long[MID_ITER_MAX_SAMPLES];
+      midIterLatNanosDc1 = new long[MID_ITER_MAX_SAMPLES];
+    } else {
+      java.util.Arrays.fill(midIterLatNanosDc0, 0L);
+      java.util.Arrays.fill(midIterLatNanosDc1, 0L);
+    }
+    midIterSampleIdx.set(0);
+
+    long periodMs = Math.max(1L, 1000L / Math.max(1, midIterReadSampleRateHz));
+    midIterReadSampler = Executors.newSingleThreadScheduledExecutor(r -> {
+      Thread t = new Thread(r, "jmh-mid-iter-read-sampler");
+      t.setDaemon(true);
+      return t;
+    });
+    // First delay 500 ms so the @Benchmark loop has time to enter steady state before we add
+    // sampling pressure; period from @Param.
+    midIterReadSampler.scheduleAtFixedRate(this::sampleOneMidIterRead, 500L, periodMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * One mid-iter sample tick. Picks a random pool index, computes the partition, and times
+   * {@code engineDC0.get} + {@code engineDC1.get}. Records the deltas if both returned non-null
+   * (a null implies the key wasn't visible on a region — skip rather than record a misleading
+   * 0). Bounded by {@link #MID_ITER_MAX_SAMPLES}; samples beyond the bound are dropped.
+   *
+   * <p>Wrapped in try/catch — the sampler must never throw, since an exception would terminate
+   * the scheduled executor and silently kill the probe.
+   */
+  private void sampleOneMidIterRead() {
+    try {
+      int idx = midIterSampleIdx.getAndIncrement();
+      if (idx >= MID_ITER_MAX_SAMPLES) {
+        return; // bound reached; drop
+      }
+      int poolIdx = ThreadLocalRandom.current().nextInt(Math.max(1, partialUpdateKeyPoolSize));
+      String key = partialUpdatePoolPrePopulateKey(poolIdx);
+      byte[] keyBytes = keySerializer.serialize(key);
+      int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
+
+      long t0 = System.nanoTime();
+      byte[] dc0 = engineDC0.get(partition, keyBytes);
+      long t1 = System.nanoTime();
+      byte[] dc1 = engineDC1.get(partition, keyBytes);
+      long t2 = System.nanoTime();
+
+      if (dc0 != null && dc1 != null) {
+        midIterLatNanosDc0[idx] = t1 - t0;
+        midIterLatNanosDc1[idx] = t2 - t1;
+      }
+    } catch (Throwable ignored) {
+      // Never let the sampler throw — would terminate the ScheduledExecutorService silently.
+    }
+  }
+
+  /**
+   * Stops the mid-iter sampler (with a 2-sec drain bound), then sorts the histograms and emits
+   * a {@code [READ-LAT] context=mid-iter-{ordinal}} line in the same shape as
+   * {@link #captureReadLatencyMetrics(String)}. Called at the very start of
+   * {@link #finishIterationAndReportE2E()} so the captured samples reflect only the
+   * concurrent-write window (before the iter-end drain).
+   */
+  private void stopMidIterSamplerAndEmit(long ordinal) {
+    if (midIterReadSampler == null) {
+      return;
+    }
+    try {
+      midIterReadSampler.shutdownNow();
+      midIterReadSampler.awaitTermination(2, TimeUnit.SECONDS);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    } finally {
+      midIterReadSampler = null;
+    }
+    if (midIterLatNanosDc0 == null || midIterLatNanosDc1 == null) {
+      return;
+    }
+    int writeCount = midIterSampleIdx.get();
+    int captureLimit = Math.min(writeCount, MID_ITER_MAX_SAMPLES);
+    // Filter out the (idx, idx) slots where one of the engines returned null (we left them as 0).
+    int captured = 0;
+    long[] dc0Trim = new long[captureLimit];
+    long[] dc1Trim = new long[captureLimit];
+    for (int i = 0; i < captureLimit; i++) {
+      long a = midIterLatNanosDc0[i];
+      long b = midIterLatNanosDc1[i];
+      if (a > 0 && b > 0) {
+        dc0Trim[captured] = a;
+        dc1Trim[captured] = b;
+        captured++;
+      }
+    }
+    if (captured == 0) {
+      System.err.println(
+          String.format(
+              "[READ-LAT] context=mid-iter-%d samples=0 dropped=%d (sampler returned no non-null pairs)",
+              ordinal,
+              writeCount));
+      return;
+    }
+    long[] dc0 = java.util.Arrays.copyOf(dc0Trim, captured);
+    long[] dc1 = java.util.Arrays.copyOf(dc1Trim, captured);
+    java.util.Arrays.sort(dc0);
+    java.util.Arrays.sort(dc1);
+    long dc0p50 = dc0[(int) (captured * 0.50)];
+    long dc0p99 = dc0[(int) (captured * 0.99)];
+    long dc1p50 = dc1[(int) (captured * 0.50)];
+    long dc1p99 = dc1[(int) (captured * 0.99)];
+    System.err.println(
+        String.format(
+            "[READ-LAT] context=mid-iter-%d samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d",
+            ordinal,
+            captured,
+            dc0p50,
+            dc0p99,
+            dc1p50,
+            dc1p99));
+  }
+
   @Benchmark
   @OperationsPerInvocation(NUM_RECORDS_PER_INVOCATION)
   public void benchmarkAAIngestion() {
@@ -799,6 +977,18 @@ public class LeanActiveActiveIngestionBenchmark {
    */
   @TearDown(Level.Iteration)
   public void finishIterationAndReportE2E() {
+    // Stop the mid-iter sampler FIRST and emit its histogram, before we drain the iter. The
+    // sampler's samples reflect only the concurrent-write window; once we wait on the sentinel
+    // drain below, the workload thread is idle and any post-drain reads would skew the
+    // histogram toward the quiescent regime (which the existing iter-end probe already
+    // captures).
+    long ordinalAtStart = iterationOrdinal.get();
+    try {
+      stopMidIterSamplerAndEmit(ordinalAtStart);
+    } catch (Throwable t) {
+      System.err.println("[READ-LAT] stopMidIterSamplerAndEmit threw: " + t);
+    }
+
     String keysToVerify = lastProducedKey;
     long records = iterationRecordCount.get();
     if (keysToVerify == null || records == 0) {

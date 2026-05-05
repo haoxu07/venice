@@ -1,0 +1,9 @@
+[READ-LAT] context=mid-iter-1 samples=451 dc0_p50_ns=17082 dc0_p99_ns=60664 dc1_p50_ns=7684 dc1_p99_ns=43292
+[READ-LAT] context=iter-end-1 samples=2000 dc0_p50_ns=2234 dc0_p99_ns=16431 dc1_p50_ns=2164 dc1_p99_ns=14938
+[READ-LAT] context=mid-iter-2 samples=2951 dc0_p50_ns=14988 dc0_p99_ns=59171 dc1_p50_ns=8255 dc1_p99_ns=54792
+[READ-LAT] context=iter-end-2 samples=2000 dc0_p50_ns=2675 dc0_p99_ns=24916 dc1_p50_ns=1834 dc1_p99_ns=16421
+[VT-CHECK] versionTopic=lean-aa-benchmark-store_54098ab211fb_ce48cbe9_v1 mismatches=0 missing=0 errors=0
+[READ-LAT] context=trial-end samples=2000 dc0_p50_ns=2896 dc0_p99_ns=6582 dc1_p50_ns=1844 dc1_p99_ns=4328
+[READ-VERIFY] sampled=1000  dc0: ok=1000 null=0 decodeFail=0 invariantViolation=0  dc1: ok=1000 null=0 decodeFail=0 invariantViolation=0  firstViolation=none
+Benchmark                                                (designMode)  (fieldUpdateSizeBytes)  (maxBacklog)  (midIterReadSampleRateHz)  (partialUpdateKeyPoolSize)  (recordSizeBytes)  (workloadType)   Mode  Cnt      Score   Error  Units
+LeanActiveActiveIngestionBenchmark.benchmarkAAIngestion      BASELINE                      16        100000                        100                        2000               1600  PARTIAL_UPDATE  thrpt       80042.832          ops/s
