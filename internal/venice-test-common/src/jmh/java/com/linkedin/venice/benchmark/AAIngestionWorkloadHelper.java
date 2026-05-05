@@ -99,16 +99,50 @@ public final class AAIngestionWorkloadHelper {
    * the map.
    */
   public static GenericRecord buildPartialUpdatePoolInitRecord(Schema valueSchema, int poolIdx) {
+    return buildPartialUpdatePoolInitRecord(valueSchema, poolIdx, TAGS_MAP_SIZE, "");
+  }
+
+  /**
+   * Parameterized variant of {@link #buildPartialUpdatePoolInitRecord(Schema, int)}. Lets the
+   * benchmark control tags map size and per-tag-value padding to scale total record size from
+   * the default ~1.6 KB up to ~100 KB (or anywhere in between).
+   *
+   * @param valueSchema the BenchmarkRecord schema
+   * @param poolIdx pool key index for the {@code name} field
+   * @param tagsMapSize number of entries in the {@code tags} map
+   * @param tagValuePadding string appended to each {@code tags} value to pad to the desired size
+   */
+  public static GenericRecord buildPartialUpdatePoolInitRecord(
+      Schema valueSchema,
+      int poolIdx,
+      int tagsMapSize,
+      String tagValuePadding) {
     GenericRecord rec = new GenericData.Record(valueSchema);
     rec.put("name", "init-" + poolIdx);
     rec.put("age", 0);
     rec.put("score", 0.0);
-    Map<String, String> initTags = new HashMap<>(TAGS_MAP_SIZE * 2);
-    for (int m = 0; m < TAGS_MAP_SIZE; m++) {
-      initTags.put("k-" + m, "init-v-" + m);
+    Map<String, String> initTags = new HashMap<>(tagsMapSize * 2);
+    String padding = tagValuePadding == null ? "" : tagValuePadding;
+    for (int m = 0; m < tagsMapSize; m++) {
+      initTags.put("k-" + m, "init-v-" + m + padding);
     }
     rec.put("tags", initTags);
     return rec;
+  }
+
+  /**
+   * Build a per-key padding string of approximately {@code targetBytes} characters. Used by the
+   * benchmark to pre-allocate a single padding payload reused across all writes within a Trial.
+   * Returns the empty string if {@code targetBytes <= 0} or below the smallest meaningful size.
+   */
+  public static String makeTagValuePadding(int targetBytes) {
+    int padSize = targetBytes - 16; // leave room for "init-v-{m}" or "v-{seq}" prefix
+    if (padSize <= 0) {
+      return "";
+    }
+    char[] chars = new char[padSize];
+    java.util.Arrays.fill(chars, 'x');
+    return new String(chars);
   }
 
   /**
@@ -145,7 +179,12 @@ public final class AAIngestionWorkloadHelper {
 
   /** Compute the bounded-pool key for the i-th invocation step of a PARTIAL_UPDATE workload. */
   public static String partialUpdatePoolKey(long seq) {
-    return "pu-pool-" + (seq % PARTIAL_UPDATE_KEY_POOL_SIZE);
+    return partialUpdatePoolKey(seq, PARTIAL_UPDATE_KEY_POOL_SIZE);
+  }
+
+  /** Parameterized variant — caller supplies the pool size. */
+  public static String partialUpdatePoolKey(long seq, int poolSize) {
+    return "pu-pool-" + (seq % poolSize);
   }
 
   /** Compute the pre-populate key for pool index {@code poolIdx} (0..PARTIAL_UPDATE_KEY_POOL_SIZE). */
@@ -185,6 +224,25 @@ public final class AAIngestionWorkloadHelper {
    * to ensure all partitions have drained before the benchmark starts measuring.
    */
   public static int[] partialUpdatePoolCheckIndices() {
-    return new int[] { 0, 1234, 2345, 3456, 4567, 5678, 6789, 7890, PARTIAL_UPDATE_KEY_POOL_SIZE - 1 };
+    return partialUpdatePoolCheckIndices(PARTIAL_UPDATE_KEY_POOL_SIZE);
+  }
+
+  /** Parameterized variant — caller supplies the pool size; clamps fixed indices to {@code poolSize - 1}. */
+  public static int[] partialUpdatePoolCheckIndices(int poolSize) {
+    int last = Math.max(0, poolSize - 1);
+    int[] candidates = new int[] { 0, 1234, 2345, 3456, 4567, 5678, 6789, 7890, last };
+    java.util.LinkedHashSet<Integer> dedup = new java.util.LinkedHashSet<>();
+    for (int c: candidates) {
+      if (c < poolSize) {
+        dedup.add(c);
+      }
+    }
+    dedup.add(last);
+    int[] out = new int[dedup.size()];
+    int idx = 0;
+    for (Integer v: dedup) {
+      out[idx++] = v;
+    }
+    return out;
   }
 }

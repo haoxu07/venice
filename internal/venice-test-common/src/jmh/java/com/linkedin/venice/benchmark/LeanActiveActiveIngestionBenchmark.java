@@ -1,18 +1,13 @@
 package com.linkedin.venice.benchmark;
 
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.NUM_RECORDS_PER_INVOCATION;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.PARTIAL_UPDATE_KEY_POOL_SIZE;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.PARTIAL_UPDATE_SENTINEL_COUNT;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.TAGS_MAP_SIZE;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.VT_CHECK_SENTINEL_COUNT;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.buildCanaryRecord;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.buildPartialUpdatePoolInitRecord;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.buildPutRecord;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.buildPutSentinelRecord;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.mixedKey;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.partialUpdateFinalSentinelKeys;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.partialUpdatePoolCheckIndices;
-import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.partialUpdatePoolKey;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.partialUpdatePoolPrePopulateKey;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.partialUpdateSentinelKey;
 import static com.linkedin.venice.benchmark.AAIngestionWorkloadHelper.putPoolKey;
@@ -148,6 +143,36 @@ public class LeanActiveActiveIngestionBenchmark {
   @Param({ "100000" })
   private long maxBacklog;
 
+  /**
+   * Workload-shape parameters (PARTIAL_UPDATE only). Defaults reproduce the historical workload
+   * (100K keys × ~1.6 KB record × ~16 B per-update payload) so prior benchmark results stay
+   * reproducible. Override via {@code -p partialUpdateKeyPoolSize=N -p recordSizeBytes=N
+   * -p fieldUpdateSizeBytes=N} to scale the workload (e.g., {@code -p partialUpdateKeyPoolSize=50000
+   * -p recordSizeBytes=102400 -p fieldUpdateSizeBytes=1024} for the 100 KB record / 1 KB update
+   * regime).
+   *
+   * <p>{@code tagsMapSize} is derived as {@code max(1, recordSizeBytes / fieldUpdateSizeBytes)}.
+   * The {@code tags} map size is what gives the record its bulk; per-update payload size is
+   * applied to both the {@code AddToMap} branch and the {@code setName} branch so per-update
+   * bytes track {@code fieldUpdateSizeBytes} on average. The {@code setAge} branch always writes
+   * a small int regardless of the param.
+   */
+  @Param({ "100000" })
+  private int partialUpdateKeyPoolSize;
+
+  @Param({ "1600" })
+  private int recordSizeBytes;
+
+  @Param({ "16" })
+  private int fieldUpdateSizeBytes;
+
+  // Derived in @Setup(Level.Trial) from recordSizeBytes / fieldUpdateSizeBytes.
+  private int derivedTagsMapSize;
+
+  // Pre-computed in @Setup(Level.Trial); the per-update payload prefix is concatenated with
+  // a sequence number so each write produces unique bytes.
+  private String derivedTagValuePadding;
+
   private MinimalAAIngestionHarness harness;
   private String storeName;
   private String versionTopicName;
@@ -254,6 +279,11 @@ public class LeanActiveActiveIngestionBenchmark {
     writeComputeSerializer = new AvroSerializer<>(writeComputeSchema);
     partitioner = new DefaultVenicePartitioner();
 
+    // Workload-shape derivation. tagsMapSize × per-tag-value-size dominates the record bulk;
+    // padding is precomputed so the per-write hot path only does a single string concat.
+    derivedTagsMapSize = Math.max(1, recordSizeBytes / Math.max(1, fieldUpdateSizeBytes));
+    derivedTagValuePadding = AAIngestionWorkloadHelper.makeTagValuePadding(fieldUpdateSizeBytes);
+
     writerDC0 = harness.getVeniceWriterForRTTopic(0);
     writerDC1 = harness.getVeniceWriterForRTTopic(1);
     engineDC0 = harness.getStorageEngineForRegion(0);
@@ -290,7 +320,7 @@ public class LeanActiveActiveIngestionBenchmark {
     sendPut(writerDC0, canaryKey, canary);
     waitForKeysVisibleOnBothRegions(new String[] { canaryKey }, 60, TimeUnit.SECONDS);
 
-    // For PARTIAL_UPDATE, pre-populate each bounded-pool key with a TAGS_MAP_SIZE-entry tags map.
+    // For PARTIAL_UPDATE, pre-populate each bounded-pool key with a derivedTagsMapSize-entry tags map.
     if (workloadType == WorkloadType.PARTIAL_UPDATE) {
       prePopulatePartialUpdatePool();
     }
@@ -305,16 +335,17 @@ public class LeanActiveActiveIngestionBenchmark {
 
   private void prePopulatePartialUpdatePool() throws Exception {
     System.err.println(
-        "[LeanActiveActiveIngestionBenchmark] Pre-populating " + PARTIAL_UPDATE_KEY_POOL_SIZE + " pool keys with "
-            + TAGS_MAP_SIZE + "-entry tags map...");
-    for (int poolIdx = 0; poolIdx < PARTIAL_UPDATE_KEY_POOL_SIZE; poolIdx++) {
+        "[LeanActiveActiveIngestionBenchmark] Pre-populating " + partialUpdateKeyPoolSize + " pool keys with "
+            + derivedTagsMapSize + "-entry tags map...");
+    for (int poolIdx = 0; poolIdx < partialUpdateKeyPoolSize; poolIdx++) {
       String key = partialUpdatePoolPrePopulateKey(poolIdx);
-      GenericRecord rec = buildPartialUpdatePoolInitRecord(valueSchema, poolIdx);
+      GenericRecord rec = AAIngestionWorkloadHelper
+          .buildPartialUpdatePoolInitRecord(valueSchema, poolIdx, derivedTagsMapSize, derivedTagValuePadding);
       sendPutWithoutFlush(writerDC0, key, rec);
     }
     writerDC0.flush();
 
-    int[] checkIndices = partialUpdatePoolCheckIndices();
+    int[] checkIndices = AAIngestionWorkloadHelper.partialUpdatePoolCheckIndices(partialUpdateKeyPoolSize);
     String[] checkKeys = new String[checkIndices.length];
     for (int i = 0; i < checkIndices.length; i++) {
       checkKeys[i] = partialUpdatePoolPrePopulateKey(checkIndices[i]);
@@ -439,11 +470,11 @@ public class LeanActiveActiveIngestionBenchmark {
       return;
     }
     final int sampleCount = 5_000;
-    final int strideOverPool = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / sampleCount);
+    final int strideOverPool = Math.max(1, partialUpdateKeyPoolSize / sampleCount);
     long[] dc0Nanos = new long[sampleCount];
     long[] dc1Nanos = new long[sampleCount];
     int captured = 0;
-    for (int i = 0; i < sampleCount && i * strideOverPool < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+    for (int i = 0; i < sampleCount && i * strideOverPool < partialUpdateKeyPoolSize; i++) {
       String key = partialUpdatePoolPrePopulateKey(i * strideOverPool);
       byte[] keyBytes = keySerializer.serialize(key);
       int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
@@ -493,8 +524,8 @@ public class LeanActiveActiveIngestionBenchmark {
    *   <li><b>Decode succeeds</b> — bytes are valid Avro per the value schema.</li>
    *   <li><b>{@code score} == 0.0</b> — never modified by the partial-update workload, set to
    *       0.0 by {@code buildPartialUpdatePoolInitRecord} during pre-populate.</li>
-   *   <li><b>{@code tags} is a non-null Map of size {@code TAGS_MAP_SIZE}</b> — workload uses
-   *       bounded map keys 0..TAGS_MAP_SIZE-1, so AddToMap operations overwrite existing
+   *   <li><b>{@code tags} is a non-null Map of size {@code derivedTagsMapSize}</b> — workload uses
+   *       bounded map keys 0..derivedTagsMapSize-1, so AddToMap operations overwrite existing
    *       entries rather than growing the map.</li>
    * </ul>
    *
@@ -509,7 +540,7 @@ public class LeanActiveActiveIngestionBenchmark {
       return;
     }
     final int sampleCount = 1_000;
-    final int strideOverPool = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / sampleCount);
+    final int strideOverPool = Math.max(1, partialUpdateKeyPoolSize / sampleCount);
     org.apache.avro.io.DatumReader<org.apache.avro.generic.GenericRecord> reader =
         new org.apache.avro.generic.GenericDatumReader<>(valueSchema);
 
@@ -517,7 +548,7 @@ public class LeanActiveActiveIngestionBenchmark {
     int dc1Decoded = 0, dc1DecodeFailures = 0, dc1InvariantViolations = 0, dc1Null = 0;
     String firstViolationSample = null;
 
-    for (int i = 0; i < sampleCount && i * strideOverPool < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+    for (int i = 0; i < sampleCount && i * strideOverPool < partialUpdateKeyPoolSize; i++) {
       int poolIdx = i * strideOverPool;
       String key = partialUpdatePoolPrePopulateKey(poolIdx);
       byte[] keyBytes = keySerializer.serialize(key);
@@ -576,7 +607,7 @@ public class LeanActiveActiveIngestionBenchmark {
 
   /**
    * Decode {@code raw} and check workload-independent invariants:
-   * {@code score == 0.0} (never modified) and {@code tags.size() == TAGS_MAP_SIZE} (bounded).
+   * {@code score == 0.0} (never modified) and {@code tags.size() == derivedTagsMapSize} (bounded).
    * Returns "OK" on success, "NULL" if input is null, "DECODE_FAIL: ..." if Avro decode throws,
    * or a specific invariant-violation description.
    */
@@ -610,8 +641,8 @@ public class LeanActiveActiveIngestionBenchmark {
       return "tags wrong type: " + (tags == null ? "null" : tags.getClass().getName());
     }
     int tagsSize = ((java.util.Map<?, ?>) tags).size();
-    if (tagsSize != TAGS_MAP_SIZE) {
-      return "tags size invariant violated: expected=" + TAGS_MAP_SIZE + " got=" + tagsSize;
+    if (tagsSize != derivedTagsMapSize) {
+      return "tags size invariant violated: expected=" + derivedTagsMapSize + " got=" + tagsSize;
     }
     return "OK";
   }
@@ -1029,9 +1060,9 @@ public class LeanActiveActiveIngestionBenchmark {
     int decodeFailures = 0;
     int nullBlobs = 0;
     int notMaterializing = 0;
-    int stride = Math.max(1, PARTIAL_UPDATE_KEY_POOL_SIZE / OPERAND_SAMPLE_SIZE);
+    int stride = Math.max(1, partialUpdateKeyPoolSize / OPERAND_SAMPLE_SIZE);
     String firstError = null;
-    for (int i = 0; i < OPERAND_SAMPLE_SIZE && i * stride < PARTIAL_UPDATE_KEY_POOL_SIZE; i++) {
+    for (int i = 0; i < OPERAND_SAMPLE_SIZE && i * stride < partialUpdateKeyPoolSize; i++) {
       int poolIdx = i * stride;
       String key = partialUpdatePoolPrePopulateKey(poolIdx);
       byte[] keyBytes = keySerializer.serialize(key);
@@ -1169,17 +1200,19 @@ public class LeanActiveActiveIngestionBenchmark {
   private String runPartialUpdateWorkload() {
     for (int i = 0; i < NUM_RECORDS_PER_INVOCATION; i++) {
       long seq = keyCounter.getAndIncrement();
-      String key = partialUpdatePoolKey(seq);
+      String key = AAIngestionWorkloadHelper.partialUpdatePoolKey(seq, partialUpdateKeyPoolSize);
       UpdateBuilder ub = new UpdateBuilderImpl(writeComputeSchema);
       int fieldChoice = (int) (seq % 3);
       if (fieldChoice == 0) {
-        ub.setNewFieldValue("name", "upd-" + seq);
+        // setName payload scales with fieldUpdateSizeBytes via the precomputed padding so per-update
+        // bytes track the @Param across both setName and AddToMap branches (setAge stays small).
+        ub.setNewFieldValue("name", "upd-" + seq + derivedTagValuePadding);
       } else if (fieldChoice == 1) {
         ub.setNewFieldValue("age", (int) (seq % 100_000));
       } else {
         Map<String, String> mapUpdate = new HashMap<>(2);
-        String mapKey = "k-" + (seq % TAGS_MAP_SIZE);
-        mapUpdate.put(mapKey, "v-" + seq);
+        String mapKey = "k-" + (seq % derivedTagsMapSize);
+        mapUpdate.put(mapKey, "v-" + seq + derivedTagValuePadding);
         ub.setEntriesToAddToMapField("tags", mapUpdate);
       }
       VeniceWriter<byte[], byte[], byte[]> writer = (i % 2 == 0) ? writerDC0 : writerDC1;
