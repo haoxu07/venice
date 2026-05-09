@@ -446,6 +446,12 @@ public class LeanActiveActiveIngestionBenchmark {
         t.printStackTrace(System.err);
       }
       try {
+        captureRawReadLatencyMetrics("trial-end");
+      } catch (Throwable t) {
+        System.err.println("[RAW-READ-LAT] Capture failed: " + t);
+        t.printStackTrace(System.err);
+      }
+      try {
         verifyReadCorrectness();
       } catch (Throwable t) {
         System.err.println("[READ-VERIFY] Capture failed: " + t);
@@ -551,6 +557,80 @@ public class LeanActiveActiveIngestionBenchmark {
             dc0p99,
             dc1p50,
             dc1p99));
+  }
+
+  /**
+   * Companion to {@link #captureReadLatencyMetrics(String)} that times {@code partition.getRaw}
+   * instead of {@code engine.get}. Returns the on-disk concat blob without paying the
+   * materializer fold cost (Avro decode + WC apply + encode). Only meaningful in MERGE mode where
+   * the engine.get path runs the fold; in BASELINE mode it is identical to engine.get and the
+   * call is skipped.
+   *
+   * <p>Use case: characterize "what would server-side latency be if we returned raw bytes from
+   * RocksDB and let the client/router fold?" The delta {@code engine.get latency - getRaw latency}
+   * is the engine-side fold cost.
+   */
+  private void captureRawReadLatencyMetrics(String context) {
+    if (workloadType != WorkloadType.PARTIAL_UPDATE) {
+      return;
+    }
+    if (designMode == DesignMode.BASELINE) {
+      // BASELINE has no fold; getRaw is identical to engine.get and the comparison is a no-op.
+      return;
+    }
+    final int sampleCount = 5_000;
+    final int strideOverPool = Math.max(1, partialUpdateKeyPoolSize / sampleCount);
+    long[] dc0Nanos = new long[sampleCount];
+    long[] dc1Nanos = new long[sampleCount];
+    int captured = 0;
+    int reflectionFailures = 0;
+    for (int i = 0; i < sampleCount && i * strideOverPool < partialUpdateKeyPoolSize; i++) {
+      String key = partialUpdatePoolPrePopulateKey(i * strideOverPool);
+      byte[] keyBytes = keySerializer.serialize(key);
+      int partition = partitioner.getPartitionId(keyBytes, PARTITION_COUNT);
+      try {
+        Object dc0Part = engineDC0.getPartitionOrThrow(partition);
+        Object dc1Part = engineDC1.getPartitionOrThrow(partition);
+        java.lang.reflect.Method m0 = dc0Part.getClass().getMethod("getRaw", byte[].class);
+        java.lang.reflect.Method m1 = dc1Part.getClass().getMethod("getRaw", byte[].class);
+        long t0 = System.nanoTime();
+        byte[] dc0 = (byte[]) m0.invoke(dc0Part, (Object) keyBytes);
+        long t1 = System.nanoTime();
+        byte[] dc1 = (byte[]) m1.invoke(dc1Part, (Object) keyBytes);
+        long t2 = System.nanoTime();
+        if (dc0 != null && dc1 != null) {
+          dc0Nanos[captured] = t1 - t0;
+          dc1Nanos[captured] = t2 - t1;
+          captured++;
+        }
+      } catch (Throwable t) {
+        reflectionFailures++;
+      }
+    }
+    if (captured == 0) {
+      System.err.println(
+          "[RAW-READ-LAT] No samples captured (reflectionFailures=" + reflectionFailures + "); skipping context="
+              + context);
+      return;
+    }
+    long[] dc0Trim = java.util.Arrays.copyOf(dc0Nanos, captured);
+    long[] dc1Trim = java.util.Arrays.copyOf(dc1Nanos, captured);
+    java.util.Arrays.sort(dc0Trim);
+    java.util.Arrays.sort(dc1Trim);
+    long dc0p50 = dc0Trim[(int) (captured * 0.50)];
+    long dc0p99 = dc0Trim[(int) (captured * 0.99)];
+    long dc1p50 = dc1Trim[(int) (captured * 0.50)];
+    long dc1p99 = dc1Trim[(int) (captured * 0.99)];
+    System.err.println(
+        String.format(
+            "[RAW-READ-LAT] context=%s samples=%d dc0_p50_ns=%d dc0_p99_ns=%d dc1_p50_ns=%d dc1_p99_ns=%d reflectionFailures=%d",
+            context,
+            captured,
+            dc0p50,
+            dc0p99,
+            dc1p50,
+            dc1p99,
+            reflectionFailures));
   }
 
   /**
@@ -1058,6 +1138,10 @@ public class LeanActiveActiveIngestionBenchmark {
     // Per-iter read-latency probe — captures p50/p99 at end of measurement iter, when chain
     // depth distribution is at its working-state worst (before next iter's setup runs).
     captureReadLatencyMetrics("iter-end-" + ordinal);
+    // Companion probe: same sample, but bypasses the materializer fold via partition.getRaw.
+    // The delta engine.get - getRaw is the engine-side fold cost we'd save if we returned raw
+    // bytes to the client/router. Skipped in BASELINE mode (no fold to bypass).
+    captureRawReadLatencyMetrics("iter-end-" + ordinal);
   }
 
   /**
