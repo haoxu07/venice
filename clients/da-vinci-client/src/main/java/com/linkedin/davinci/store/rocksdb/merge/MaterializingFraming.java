@@ -334,6 +334,91 @@ public final class MaterializingFraming {
   }
 
   /**
+   * Chunked-manifest-aware chain backstop helper. Used at MERGE time to detect when the existing
+   * on-disk value for a key is a {@code [CHUNK_MANIFEST_SCHEMA_ID][manifest][delim][operand]...}
+   * blob and fold the chain into a single inline materialized record — bounding the on-disk
+   * chain depth and keeping subsequent reads fast.
+   *
+   * <p>Without this backstop, reads of a chunked-manifest with N appended operands pay an O(N)
+   * fold cost on EVERY read (because {@link ChainLengthBackstop} can't parse chunked-manifest
+   * blobs — they don't start with the {@code KIND_BASE} prefix it expects). Tests that stress
+   * many operands per key (e.g. {@code testActiveActivePartialUpdateWithCompression}, 40 operands
+   * with 10000-entry map merges) blow past the router's 1-sec client timeout.
+   *
+   * <p>Behavior:
+   * <ul>
+   *   <li>If {@code raw} is a chunked manifest with {@code >= threshold} appended operands,
+   *       reassembles + folds and returns the framed inline-PUT bytes the caller should PUT to
+   *       the top-level key. The old chunk-suffixed keys are NOT deleted (they become orphans);
+   *       this is acceptable because future reads of the top-level key see the inline value with
+   *       a positive schemaId and never read the chunks again.</li>
+   *   <li>Otherwise returns {@code null} (no backstop needed).</li>
+   * </ul>
+   *
+   * <p>The returned bytes are in the shape
+   * {@code [manifest.schemaId][KIND_BASE 0x00][len:varint][materializedAvro]} — i.e. they're
+   * already framed as a regular materialized base via {@link ConcatBlobParser#frameBase}, so the
+   * caller can use them in a {@code super.put} directly without re-framing.
+   */
+  public static byte[] maybeBackstopChunkedManifestChain(
+      byte[] raw,
+      String storeNameAndVersion,
+      Function<byte[], byte[]> chunkFetchFn,
+      int threshold) {
+    if (raw == null || raw.length < ByteUtils.SIZE_OF_INT + 1 || threshold <= 0 || chunkFetchFn == null) {
+      return null;
+    }
+    int schemaId = ByteUtils.readInt(raw, 0);
+    if (schemaId != CHUNK_MANIFEST_SCHEMA_ID) {
+      return null;
+    }
+    // Deserialize manifest (same approach as the read-path fold).
+    ByteArrayInputStream bis = new ByteArrayInputStream(raw, ByteUtils.SIZE_OF_INT, raw.length - ByteUtils.SIZE_OF_INT);
+    BinaryDecoder decoder = DecoderFactory.get().directBinaryDecoder(bis, null);
+    ChunkedValueManifest manifest;
+    try {
+      manifest = MANIFEST_READER.get().read(null, decoder);
+    } catch (IOException e) {
+      LOGGER.debug(
+          "MaterializingFraming.maybeBackstopChunkedManifestChain: failed to decode manifest; "
+              + "skipping backstop for storeVersion={}",
+          storeNameAndVersion,
+          e);
+      return null;
+    }
+    int trailingLen = bis.available();
+    if (trailingLen <= 0) {
+      return null; // no operands appended
+    }
+    int trailingStart = raw.length - trailingLen;
+    List<byte[]> operands = parseTrailingOperandChain(raw, trailingStart);
+    if (operands.size() < threshold) {
+      return null; // chain not yet at threshold
+    }
+    MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
+    if (ctx == null) {
+      return null;
+    }
+    byte[] assembled = reassembleChunks(manifest, chunkFetchFn, storeNameAndVersion);
+    byte[] materializedAvro = ctx.foldOperands(manifest.schemaId, assembled, operands);
+    if (materializedAvro == null) {
+      // WC delete tombstone — let the chain stay; next read returns null via the read-path fold.
+      return null;
+    }
+    LOGGER.debug(
+        "VT-merge chunked-manifest backstop: storeVersion={} rawLen={} manifestSchemaId={} chunks={} opCount={} "
+            + "assembledLen={} materializedLen={}",
+        storeNameAndVersion,
+        raw.length,
+        manifest.schemaId,
+        manifest.keysWithChunkIdSuffix.size(),
+        operands.size(),
+        assembled.length,
+        materializedAvro.length);
+    return ConcatBlobParser.frameBase(manifest.schemaId, materializedAvro);
+  }
+
+  /**
    * Parse the operand chain starting at {@code start} where {@code raw[start]} is the
    * StringAppendOperator structural delimiter (typically {@code 0x01}). The format thereafter
    * matches {@link ConcatBlobParser}'s operand-chain rules.

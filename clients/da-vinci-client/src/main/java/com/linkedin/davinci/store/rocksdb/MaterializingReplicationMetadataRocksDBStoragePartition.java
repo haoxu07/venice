@@ -123,6 +123,25 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
         MaterializingFraming.endFraming();
       }
     });
+    // Chunked-manifest-specific backstop: ChainLengthBackstop above only handles concat blobs that
+    // start with [schemaId][KIND_BASE][len][...] OR [KIND_OPERAND]; it can't parse chunked-manifest
+    // blobs (which have a different prefix shape). For chunked-manifest keys we need our own
+    // backstop to keep per-read fold cost bounded.
+    // Threshold is 1 (collapse on first operand-on-chunked-manifest) — reads of a chunked-manifest
+    // pay O(chunks) extra I/O plus O(operands) fold cost; collapsing to an inline base eliminates
+    // both costs on subsequent reads.
+    if (vtMergeMaxChainLength > 0) {
+      byte[] framedReplacement = MaterializingFraming
+          .maybeBackstopChunkedManifestChain(super.get(key), storeNameAndVersion, this::chunkFetch, 1);
+      if (framedReplacement != null) {
+        MaterializingFraming.beginFraming();
+        try {
+          super.put(key, ByteBuffer.wrap(framedReplacement));
+        } finally {
+          MaterializingFraming.endFraming();
+        }
+      }
+    }
     byte[] framed = MaterializingFraming.frameForMerge(operand);
     MaterializingFraming.beginFraming();
     try {

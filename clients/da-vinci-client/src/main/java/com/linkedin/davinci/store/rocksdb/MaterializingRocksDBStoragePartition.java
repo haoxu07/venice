@@ -77,6 +77,24 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
         MaterializingFraming.endFraming();
       }
     });
+    // Chunked-manifest-specific backstop: see MaterializingReplicationMetadataRocksDBStoragePartition.merge for
+    // rationale.
+    // Threshold is 1 (collapse on first operand-on-chunked-manifest) — reads of a chunked-manifest
+    // pay O(chunks) extra I/O plus O(operands) fold cost, which is much more expensive than the
+    // inline-base read path. After the collapse, subsequent merges produce a normal non-chunked
+    // concat blob which the existing ChainLengthBackstop manages.
+    if (vtMergeMaxChainLength > 0) {
+      byte[] framedReplacement = MaterializingFraming
+          .maybeBackstopChunkedManifestChain(super.get(key), storeNameAndVersion, this::chunkFetch, 1);
+      if (framedReplacement != null) {
+        MaterializingFraming.beginFraming();
+        try {
+          super.put(key, ByteBuffer.wrap(framedReplacement));
+        } finally {
+          MaterializingFraming.endFraming();
+        }
+      }
+    }
     byte[] framed = MaterializingFraming.frameForMerge(operand);
     MaterializingFraming.beginFraming();
     try {
