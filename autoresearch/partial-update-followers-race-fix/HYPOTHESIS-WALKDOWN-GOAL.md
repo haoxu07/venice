@@ -69,12 +69,56 @@ DISPROVEN              → move to next hypothesis
 AMBIGUOUS after budget → move to next hypothesis with note
 ```
 
+### Unit-test-first principle
+
+For each hypothesis where it's practical, write a focused unit test BEFORE the integration test attempt:
+
+- **Why first:** unit tests run in <1 second; integration tests take ~30-40s plus setup overhead (~3-5 min per iter). A
+  unit-level reproducer collapses the fix-design feedback loop from minutes to seconds.
+- **Why not always:** some hypotheses (H1, H2) involve runtime lifecycle behavior that can't be simulated in a unit test
+  without effectively reimplementing the test cluster. For those, integration is the actual verifier.
+- **Outcome interpretation:** if the unit test reproduces the bug, the fix iterates against the unit test until it
+  passes, then validates with integration. If the unit test does NOT reproduce, the hypothesis isn't fully refuted — the
+  bug may live in machinery the unit test doesn't exercise — but the unit test still serves as a regression guard for
+  whatever fix lands.
+
+Unit-test applicability per hypothesis:
+
+| Hypothesis                         | Unit test viable? | Reason                                                                                            |
+| ---------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
+| **H1** (Enable WAL)                | Sanity-only       | Race is integration-level; unit-test only the config wiring                                       |
+| **H2** (iter-11 revert)            | No                | Race depends on lifecycle timing not exercisable in unit context                                  |
+| **H4** (Local vs remote DC)        | Partial           | Can verify framing parity at partition level, but routing splitter is upstream of unit test scope |
+| **H3** (FoldContextRegistry reset) | **Yes**           | Directly reproducible: register ctx → close → merge → readback. The unit test IS the experiment.  |
+
+In each phase below, "Unit-test approach" is the first sub-step (where applicable). "Integration experiment" is the
+primary verifier OR the fallback if the unit-test approach can't reproduce.
+
 ### Phase 1 — H1: Enable WAL on data partitions (iter 1-3)
 
 **Hypothesis:** the race is the close+reopen-without-flush surface; enabling WAL forces durability before close,
 eliminating the loss.
 
-**Experiment:**
+**Unit-test approach (sanity check only — actual race is integration-level):**
+
+A focused unit test can verify the **config wiring is correct** but cannot reproduce the partition-lifecycle race itself
+(the race requires a real ingestion task triggering `adjustStoragePartition` mid-stream). Add a small JUnit/TestNG test
+in `clients/da-vinci-client/src/test/java/.../store/rocksdb/RocksDBStoragePartitionTest.java` that verifies:
+
+```java
+@Test
+public void writeOptionsDisableWALIsFlagAware() {
+  // Construct partition with vt-update-operand flag ON + data partition id → setDisableWAL(false)
+  // Construct partition with flag OFF + data partition id → setDisableWAL(true)
+  // Construct partition with flag ON + METADATA_PARTITION_ID → setDisableWAL(false)
+  // Construct partition with flag OFF + METADATA_PARTITION_ID → setDisableWAL(false)
+}
+```
+
+This catches typo-class bugs in the conditional and runs in <1 second. It does NOT verify the race is fixed — that
+requires the integration test.
+
+**Integration experiment (primary verifier):**
 
 1. Modify `RocksDBStoragePartition.java:194` to:
    ```java
@@ -98,7 +142,17 @@ eliminating the loss.
 **Hypothesis:** the iter-11 skip removed implicit protection (lock, partition stabilization) that flag-OFF still
 benefits from.
 
-**Experiment:**
+**Unit-test approach (not practical — see why):**
+
+H2 is fundamentally about a side-effect of the iter-11 skip on partition-lifecycle timing. The iter-11 early-return is
+trivially unit-testable (does it fire under flag-on + UPDATE? yes), but **what the skipped code was doing that
+incidentally protected against the race** can only be observed when the lifecycle code paths are active — i.e., when the
+test cluster is actually running. A unit test cannot simulate the close+reopen window that the iter-11 skip interacts
+with.
+
+Skip directly to integration experiment.
+
+**Integration experiment:**
 
 1. Temporarily revert the iter-11 early-return for UPDATE messages in
    `ActiveActiveStoreIngestionTask.processActiveActiveMessage` (the
@@ -121,7 +175,42 @@ benefits from.
 **Hypothesis:** the bug is a structural divider — local-DC writes go through one framing path, remote-DC writes go
 through another. Half the keys come from each DC under AA, matching the half-affected pattern.
 
-**Experiment:**
+**Unit-test approach (try first):**
+
+H4 has a unit-testable angle: verify that **both consumer paths invoke the same framing override**. Write a test that
+constructs a `MaterializingReplicationMetadataRocksDBStoragePartition`, simulates UPDATEs arriving from two distinct
+sources (local-DC topic name vs remote-DC topic name) by calling whatever method the consumer threads ultimately call,
+and asserts that both calls produce identically-framed on-disk bytes.
+
+Concrete sketch:
+
+```java
+@Test
+public void mergeFramingIsIdenticalRegardlessOfSourceDc() {
+  MaterializingReplicationMetadataRocksDBStoragePartition partition = ...;
+  // Register fold context (same as production wiring)
+  // Simulate one UPDATE from local-DC topic
+  partition.merge(keyLocal, operandBytes);
+  byte[] localRead = partition.getRaw(keyLocal);
+  // Simulate one UPDATE from remote-DC topic (different topic, same kind of operand)
+  partition.merge(keyRemote, operandBytes);
+  byte[] remoteRead = partition.getRaw(keyRemote);
+  // Both reads should show identical kind-byte framing
+  assertThat(localRead[0]).isEqualTo(KIND_OPERAND);
+  assertThat(remoteRead[0]).isEqualTo(KIND_OPERAND);
+  // Or, if a previous PUT supplied the base, both should resolve to BASE+OPERAND concat shape
+}
+```
+
+If both reads show identical framing, H4's "structural splitter at the framing layer" is refuted at the partition level
+— the divider must be upstream of `partition.merge`. If they differ, hypothesis confirmed AT the partition layer (very
+actionable).
+
+**Caveat:** the unit test exercises only the framing code path, not the consumer-thread routing. H4 could still hold
+even if this unit test passes — the splitter could be upstream (e.g., consumer routing skips the merge override for one
+DC). If unit test passes but integration still fails, fall back to the integration approach below.
+
+**Integration experiment (fallback if unit test passes):**
 
 1. Instrument the follower-side `case UPDATE` handler in `StoreIngestionTask`/`ActiveActiveStoreIngestionTask` to log
    the source topic/DC for each UPDATE. Suggested:
@@ -146,7 +235,47 @@ through another. Half the keys come from each DC under AA, matching the half-aff
 **Hypothesis:** `MaterializingFoldContextRegistry` state is reset/missing at merge time for some calls, causing framing
 to skip.
 
-**Experiment:**
+**Unit-test approach (try first — this is the most unit-testable hypothesis):**
+
+H3 is directly reproducible at the unit level: construct a partition + register a fold context, simulate
+close-and-reopen, then call merge and verify framing behavior.
+
+```java
+@Test
+public void foldContextRegistrySurvivesPartitionCloseAndReopen() {
+  String storeVersion = "test-store_v1";
+  MaterializingFoldContext ctx = mock or build a real one;
+  MaterializingFoldContextRegistry.register(storeVersion, ctx);
+
+  MaterializingReplicationMetadataRocksDBStoragePartition partition = constructWithStoreVersion(storeVersion);
+  // Put a base
+  partition.put(key, baseBytes);
+
+  // Simulate close-and-reopen (the lifecycle event from adjustStoragePartition)
+  partition.close();
+  partition = reopenSameStoreVersion(storeVersion);
+
+  // Merge an operand
+  partition.merge(key, operandBytes);
+
+  // Read back via getRaw to see on-disk shape
+  byte[] readback = partition.getRaw(key);
+
+  // Expectation: the framed-base + framed-operand shape
+  assertThat(readback[0]).isEqualTo(KIND_BASE);
+  // ... assert presence of operand suffix
+}
+```
+
+This test will either:
+
+- **Reproduce the bug** (readback is operand-only, no base) → H3 CONFIRMED at unit level. The fix is then designed
+  against this reproducer (fast feedback loop: edit → test in seconds), then validated at integration.
+- **NOT reproduce the bug** (readback is correctly framed) → H3 DISPROVEN at the partition level. The bug is in whatever
+  the integration test does that the unit test does not (e.g., concurrent threads, partition map manipulation in
+  AbstractStorageEngine, etc.). Advance to integration diagnostic.
+
+**Integration experiment (fallback if unit test does not reproduce):**
 
 1. Add comprehensive logging to:
    - `MaterializingReplicationMetadataRocksDBStoragePartition.put` — log partition.identityHash, FoldContextRegistry.get
