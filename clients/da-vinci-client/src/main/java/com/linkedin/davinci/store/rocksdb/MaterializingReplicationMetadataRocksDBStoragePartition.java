@@ -46,6 +46,14 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
             partitionId);
   }
 
+  /**
+   * Chunk-fetch callback for the materializing read path. See
+   * {@link MaterializingRocksDBStoragePartition#chunkFetch(byte[])} for rationale.
+   */
+  private byte[] chunkFetch(byte[] chunkKey) {
+    return super.get(chunkKey);
+  }
+
   @Override
   public byte[] get(byte[] key) {
     byte[] raw = super.get(key);
@@ -58,7 +66,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
               key.length,
               raw.length);
     }
-    return MaterializingFraming.materialize(raw, storeNameAndVersion);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
   }
 
   // -------- WRITE PATH --------
@@ -133,7 +141,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
     if (raw == null) {
       return null;
     }
-    byte[] materialized = MaterializingFraming.materialize(raw, storeNameAndVersion);
+    byte[] materialized = MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
     if (materialized == null) {
       return null;
     }
@@ -165,7 +173,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
               raw.length,
               hex);
     }
-    return MaterializingFraming.materialize(raw, storeNameAndVersion);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
   }
 
   /** Bypass-the-fold accessor used by the sweeper. */

@@ -88,6 +88,20 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
 
   // -------- READ PATH --------
 
+  /**
+   * Chunk-fetch callback for the materializing read path. Used by
+   * {@link MaterializingFraming#materialize(byte[], String, java.util.function.Function)} when it
+   * encounters a chunked-manifest blob with appended operand bytes — it needs to read the
+   * individual chunk keys to reassemble the base before folding operands onto it.
+   *
+   * <p>We call {@code super.get(key)} (NOT {@code this.get(key)}) so the recursive lookup
+   * bypasses materialize for the chunk values, which are stored as
+   * {@code [chunkSchemaId][rawChunkBytes]} with no framing.
+   */
+  private byte[] chunkFetch(byte[] chunkKey) {
+    return super.get(chunkKey);
+  }
+
   @Override
   public byte[] get(byte[] key) {
     byte[] raw = super.get(key);
@@ -100,7 +114,7 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
             key.length,
             raw == null,
             raw == null ? -1 : raw.length);
-    return MaterializingFraming.materialize(raw, storeNameAndVersion);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
   }
 
   @Override
@@ -116,7 +130,7 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
     if (raw == null) {
       return null;
     }
-    byte[] materialized = MaterializingFraming.materialize(raw, storeNameAndVersion);
+    byte[] materialized = MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
     if (materialized == null) {
       return null;
     }
@@ -141,7 +155,7 @@ public class MaterializingRocksDBStoragePartition extends RocksDBStoragePartitio
             keyBytes.length,
             raw == null,
             raw == null ? -1 : raw.length);
-    return MaterializingFraming.materialize(raw, storeNameAndVersion);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
   }
 
   /**

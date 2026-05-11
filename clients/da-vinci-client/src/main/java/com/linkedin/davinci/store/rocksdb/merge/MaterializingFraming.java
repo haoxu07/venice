@@ -2,9 +2,19 @@ package com.linkedin.davinci.store.rocksdb.merge;
 
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.serialization.avro.AvroProtocolDefinition;
+import com.linkedin.venice.serialization.avro.ChunkedValueManifestSerializer;
+import com.linkedin.venice.storage.protocol.ChunkedValueManifest;
 import com.linkedin.venice.utils.ByteUtils;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.function.Function;
+import org.apache.avro.io.BinaryDecoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.specific.SpecificDatumReader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -24,6 +34,17 @@ public final class MaterializingFraming {
   private static final int CHUNK_SCHEMA_ID = AvroProtocolDefinition.CHUNK.getCurrentProtocolVersion();
   private static final int CHUNK_MANIFEST_SCHEMA_ID =
       AvroProtocolDefinition.CHUNKED_VALUE_MANIFEST.getCurrentProtocolVersion();
+
+  /**
+   * Per-thread reusable Avro reader for {@link ChunkedValueManifest}. We use a SpecificDatumReader
+   * directly (rather than the {@link ChunkedValueManifestSerializer}) so we can read from a
+   * {@link ByteArrayInputStream} and observe {@code .available()} after the read — this is how we
+   * detect operand bytes appended after the manifest by the {@code StringAppendOperator}. The
+   * serializer's {@code byte[]} APIs construct an internal buffering decoder whose consumption
+   * position is not externally observable.
+   */
+  private static final ThreadLocal<SpecificDatumReader<ChunkedValueManifest>> MANIFEST_READER =
+      ThreadLocal.withInitial(() -> new SpecificDatumReader<>(ChunkedValueManifest.SCHEMA$));
 
   private MaterializingFraming() {
     // utility class
@@ -169,6 +190,27 @@ public final class MaterializingFraming {
    * @param storeNameAndVersion the version-topic name used to look up the fold context
    */
   public static byte[] materialize(byte[] raw, String storeNameAndVersion) {
+    return materialize(raw, storeNameAndVersion, null);
+  }
+
+  /**
+   * Variant of {@link #materialize(byte[], String)} that accepts a chunk-fetch callback. When
+   * the on-disk bytes are a chunked-manifest record with appended operand bytes (the post-H5-fix
+   * shape exposed by the {@code testActiveActivePartialUpdate*} integration tests), this method
+   * reassembles the chunked value via the callback, folds the operands onto it, and returns a
+   * non-chunked materialized record (with the manifest's nested user-schemaId in the header).
+   *
+   * <p>If {@code chunkFetchFn} is {@code null}, the chunked-manifest+operands case falls back to
+   * returning the raw bytes (current pre-fix behavior — preserves backward compatibility for
+   * call sites that don't have a chunk-fetch capability).
+   *
+   * @param raw the bytes returned by {@code rocksDB.get(key)} for the top-level key
+   * @param storeNameAndVersion the version-topic name used to look up the fold context
+   * @param chunkFetchFn function fetching the raw bytes for a chunk key (suffixed key bytes →
+   *     chunk value bytes including the 4-byte chunk-schemaId header). Bytes returned MUST be
+   *     the raw on-disk bytes (no further materialization). May be {@code null}.
+   */
+  public static byte[] materialize(byte[] raw, String storeNameAndVersion, Function<byte[], byte[]> chunkFetchFn) {
     if (raw == null) {
       return null;
     }
@@ -184,7 +226,17 @@ public final class MaterializingFraming {
     }
     int schemaId = ByteUtils.readInt(raw, 0);
     if (schemaId < 0) {
-      // Chunk or manifest — never framed.
+      // Chunk or manifest — never framed via [KIND_BASE 0x00][len:varint] (the materializing
+      // partition's shouldBypassFraming short-circuits for negative schemaIds).
+      //
+      // VT-merge experiment Phase C chunked-value fix: a CHUNK_MANIFEST may have operand bytes
+      // appended by RocksDB's StringAppendOperator (when the leader's operand-UPDATE fast path
+      // sends an operand for a chunked key). Detect that case and fold the operands onto the
+      // reassembled chunked value. Individual chunks (CHUNK_SCHEMA_ID) never have operands
+      // appended — operand-UPDATEs target only the top-level manifest key.
+      if (schemaId == CHUNK_MANIFEST_SCHEMA_ID && chunkFetchFn != null) {
+        return maybeFoldChunkedManifestWithOperands(raw, storeNameAndVersion, chunkFetchFn);
+      }
       return raw;
     }
     if (raw[ByteUtils.SIZE_OF_INT] != ConcatBlobParser.KIND_BASE) {
@@ -192,6 +244,181 @@ public final class MaterializingFraming {
       return raw;
     }
     return foldFramedBaseAndOperands(raw, storeNameAndVersion);
+  }
+
+  /**
+   * Fold path for the chunked-manifest-plus-operands case. Reassembles the chunked value via
+   * {@code chunkFetchFn} and applies operands via {@link MaterializingFoldContext#foldOperands}.
+   *
+   * <p>Returns:
+   * <ul>
+   *   <li>{@code raw} unchanged if the manifest has no appended operand bytes (the common case
+   *       before the leader's operand fast-path produces operands onto chunked keys).</li>
+   *   <li>{@code [manifest.schemaId][materializedAvro]} on successful fold — note the schemaId
+   *       in the header is the USER's value schemaId stored INSIDE the manifest, NOT the
+   *       chunked-manifest negative schemaId. This is important: downstream chunking-aware
+   *       readers ({@code ChunkingUtils.getFromStorage}) check the first 4 bytes to decide
+   *       chunked-vs-inline, so they need to see a positive id to treat the result as inline.</li>
+   *   <li>{@code raw} unchanged if the fold context isn't registered yet (e.g. early boot) —
+   *       the caller's read will see the original chunked-manifest shape and the operands will
+   *       remain on disk; the next read after registration will fold correctly.</li>
+   * </ul>
+   */
+  private static byte[] maybeFoldChunkedManifestWithOperands(
+      byte[] raw,
+      String storeNameAndVersion,
+      Function<byte[], byte[]> chunkFetchFn) {
+    // Deserialize the manifest using a stream-backed BinaryDecoder so we can detect trailing
+    // bytes via the stream's remaining-bytes count. The manifest is encoded starting at
+    // offset 4 (after the int32 schemaId header), same convention as ChunkedValueManifestSerializer.
+    ByteArrayInputStream bis = new ByteArrayInputStream(raw, ByteUtils.SIZE_OF_INT, raw.length - ByteUtils.SIZE_OF_INT);
+    // Use directBinaryDecoder to avoid read-ahead buffering — this guarantees bis.available()
+    // accurately reflects unread bytes after manifest decoding.
+    BinaryDecoder decoder = DecoderFactory.get().directBinaryDecoder(bis, null);
+    ChunkedValueManifest manifest;
+    try {
+      manifest = MANIFEST_READER.get().read(null, decoder);
+    } catch (IOException e) {
+      throw new VeniceException(
+          "MaterializingFraming.maybeFoldChunkedManifestWithOperands: failed to decode chunked-value-manifest; "
+              + "storeVersion=" + storeNameAndVersion + " rawLen=" + raw.length,
+          e);
+    }
+    int trailingLen = bis.available();
+    if (trailingLen <= 0) {
+      // Pure manifest, no appended operands. Return raw — the upper-layer ChunkingUtils handles
+      // chunked reassembly normally.
+      return raw;
+    }
+    // Parse the trailing region as an operand chain. The first byte is the structural delimiter
+    // RocksDB's StringAppendOperator inserted between the manifest and the first operand.
+    int trailingStart = raw.length - trailingLen;
+    List<byte[]> operands = parseTrailingOperandChain(raw, trailingStart);
+    if (operands.isEmpty()) {
+      // Trailing bytes exist but didn't parse as operands — be conservative and return raw so the
+      // chunking layer can attempt the standard reassembly (and surface a clear error if the bytes
+      // are corrupt).
+      LOGGER.warn(
+          "MaterializingFraming: chunked manifest has {} trailing bytes that did not parse as operand chain; "
+              + "returning raw bytes for storeVersion={}",
+          trailingLen,
+          storeNameAndVersion);
+      return raw;
+    }
+    MaterializingFoldContext ctx = MaterializingFoldContextRegistry.get(storeNameAndVersion);
+    if (ctx == null) {
+      LOGGER.warn(
+          "MaterializingFraming: no fold context registered for store-version {}; "
+              + "returning raw chunked-manifest bytes (operands ignored on this read)",
+          storeNameAndVersion);
+      return raw;
+    }
+    // Reassemble the chunked value by fetching each chunk and stripping its 4-byte schemaId header.
+    byte[] assembled = reassembleChunks(manifest, chunkFetchFn, storeNameAndVersion);
+    // Apply operands via the fold context (decompresses base, applies WC, recompresses).
+    byte[] materializedAvro = ctx.foldOperands(manifest.schemaId, assembled, operands);
+    if (materializedAvro == null) {
+      return null; // WC delete tombstone
+    }
+    LOGGER.debug(
+        "VT-merge chunked-manifest fold: storeVersion={} rawLen={} manifestSchemaId={} chunks={} opCount={} "
+            + "assembledLen={} materializedLen={}",
+        storeNameAndVersion,
+        raw.length,
+        manifest.schemaId,
+        manifest.keysWithChunkIdSuffix.size(),
+        operands.size(),
+        assembled.length,
+        materializedAvro.length);
+    return prependSchemaId(manifest.schemaId, materializedAvro);
+  }
+
+  /**
+   * Parse the operand chain starting at {@code start} where {@code raw[start]} is the
+   * StringAppendOperator structural delimiter (typically {@code 0x01}). The format thereafter
+   * matches {@link ConcatBlobParser}'s operand-chain rules.
+   *
+   * <p>Returns an empty list if the trailing bytes don't parse as an operand chain (so callers
+   * can fall back to raw-byte return on malformed input).
+   */
+  private static List<byte[]> parseTrailingOperandChain(byte[] raw, int start) {
+    if (start >= raw.length) {
+      return Collections.emptyList();
+    }
+    try {
+      List<byte[]> operands = new ArrayList<>();
+      int cursor = start;
+      while (cursor < raw.length) {
+        // The leading byte is a structural delimiter inserted by StringAppendOperator.
+        cursor++;
+        if (cursor >= raw.length) {
+          return Collections.emptyList();
+        }
+        if (raw[cursor] != ConcatBlobParser.KIND_OPERAND) {
+          return Collections.emptyList();
+        }
+        cursor++;
+        ConcatBlobParser.VarintResult vlen = ConcatBlobParser.readVarint(raw, cursor);
+        cursor = vlen.nextOffset;
+        int opLen = vlen.value;
+        if (opLen < 0 || cursor + opLen > raw.length) {
+          return Collections.emptyList();
+        }
+        byte[] op = new byte[opLen];
+        System.arraycopy(raw, cursor, op, 0, opLen);
+        operands.add(op);
+        cursor += opLen;
+      }
+      return operands;
+    } catch (Exception e) {
+      LOGGER.warn("MaterializingFraming.parseTrailingOperandChain: parse failed at offset {}", start, e);
+      return Collections.emptyList();
+    }
+  }
+
+  /**
+   * Reassemble the full value bytes by fetching each chunk and concatenating the chunk content
+   * (skipping each chunk's 4-byte schemaId header — same convention as
+   * {@code ChunkedValueInputStream}). Validates the assembled size against the manifest's
+   * declared size.
+   */
+  private static byte[] reassembleChunks(
+      ChunkedValueManifest manifest,
+      Function<byte[], byte[]> chunkFetchFn,
+      String storeNameAndVersion) {
+    int numChunks = manifest.keysWithChunkIdSuffix.size();
+    byte[][] chunks = new byte[numChunks][];
+    int totalSize = 0;
+    for (int i = 0; i < numChunks; i++) {
+      ByteBuffer chunkKey = manifest.keysWithChunkIdSuffix.get(i);
+      byte[] chunkKeyBytes = ByteUtils.extractByteArray(chunkKey);
+      byte[] chunkValue = chunkFetchFn.apply(chunkKeyBytes);
+      if (chunkValue == null) {
+        throw new VeniceException(
+            "MaterializingFraming.reassembleChunks: chunk " + i + " of " + numChunks + " not found; storeVersion="
+                + storeNameAndVersion);
+      }
+      if (chunkValue.length <= ByteUtils.SIZE_OF_INT) {
+        throw new VeniceException(
+            "MaterializingFraming.reassembleChunks: chunk " + i + " is too short (len=" + chunkValue.length
+                + "); storeVersion=" + storeNameAndVersion);
+      }
+      chunks[i] = chunkValue;
+      totalSize += chunkValue.length - ByteUtils.SIZE_OF_INT;
+    }
+    if (totalSize != manifest.size) {
+      throw new VeniceException(
+          "MaterializingFraming.reassembleChunks: assembled size " + totalSize + " != manifest.size " + manifest.size
+              + "; storeVersion=" + storeNameAndVersion);
+    }
+    byte[] assembled = new byte[totalSize];
+    int offset = 0;
+    for (byte[] chunk: chunks) {
+      int chunkContentLen = chunk.length - ByteUtils.SIZE_OF_INT;
+      System.arraycopy(chunk, ByteUtils.SIZE_OF_INT, assembled, offset, chunkContentLen);
+      offset += chunkContentLen;
+    }
+    return assembled;
   }
 
   /** Read fold for the materialized-base-plus-zero-or-more-operands case. */
