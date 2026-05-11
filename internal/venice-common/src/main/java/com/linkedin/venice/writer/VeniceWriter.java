@@ -1371,6 +1371,73 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
   }
 
   /**
+   * VT-merge experiment ({@code server.vt.update.operand.enabled}): produce a {@code MessageType.UPDATE}
+   * record to the version topic for the partition that {@link #put} would land the same key on.
+   *
+   * <p>This differs from {@link #update(Object, Object, int, int, PubSubProducerCallback, long)} in two
+   * ways needed for the leader-side VT-merge forward path on chunking-enabled stores:
+   * <ul>
+   *   <li>The partition is computed from the <strong>unwrapped</strong> {@code rawSerializedKey} (same
+   *       as {@link #put}), instead of from whatever key bytes the caller passed (which, after the
+   *       iter-11 chunking-suffix-wrap fix, would be the wrapped form — leading to a different hash
+   *       and a different partition than the corresponding base PUT). This is what fixes the routing
+   *       inconsistency that causes operand-only readbacks on chunking-enabled flag-on stores.
+   *   <li>The KafkaKey payload IS wrapped with the non-chunked chunking suffix when chunking is
+   *       enabled (same as {@link #put}'s line ~1200), so the on-disk key under the merge operator
+   *       matches what the read path looks up.
+   * </ul>
+   *
+   * <p>Caller invariant: {@code rawSerializedKey} must be the UNWRAPPED user-key bytes (NOT
+   * pre-wrapped with a chunking suffix). Caller invariant: {@code serializedUpdate} is the
+   * already-Avro-WC-serialized operand bytes (we do not re-serialize). These match what the
+   * leader's RT-consumption path has on hand.
+   */
+  public CompletableFuture<PubSubProduceResult> updateForVtMergeOperand(
+      byte[] rawSerializedKey,
+      byte[] serializedUpdate,
+      int valueSchemaId,
+      int derivedSchemaId,
+      PubSubProducerCallback callback) {
+    isChunkingFlagInvoked = true;
+
+    // Route by the UNWRAPPED key (matches what put() does at line ~1003).
+    int partition = getPartition(rawSerializedKey);
+
+    if (rawSerializedKey.length + serializedUpdate.length > DEFAULT_MAX_SIZE_FOR_USER_PAYLOAD_PER_MESSAGE_IN_BYTES) {
+      throw new RecordTooLargeException(
+          "This partial update exceeds the maximum size. "
+              + getSizeReport(rawSerializedKey.length, serializedUpdate.length, 0));
+    }
+
+    if (writerHook != null) {
+      writerHook
+          .onBeforeProduce(VeniceWriterHook.OperationType.UPDATE, rawSerializedKey.length, serializedUpdate.length);
+    }
+
+    // Wrap the key with the non-chunked chunking suffix when chunking is enabled (matches what
+    // put() does at line ~1200). The on-disk key under the merge operator therefore matches the
+    // wrapped key the read path looks up via SingleGetChunkingAdapter.
+    final byte[] keyToProduce =
+        isChunkingEnabled ? keyWithChunkingSuffixSerializer.serializeNonChunkedKey(rawSerializedKey) : rawSerializedKey;
+
+    KafkaKey kafkaKey = new KafkaKey((MessageType.UPDATE), keyToProduce);
+
+    Update updatePayLoad = new Update();
+    updatePayLoad.updateValue = ByteBuffer.wrap(serializedUpdate);
+    updatePayLoad.schemaId = valueSchemaId;
+    updatePayLoad.updateSchemaId = derivedSchemaId;
+
+    return sendMessage(
+        producerMetadata -> kafkaKey,
+        MessageType.UPDATE,
+        updatePayLoad,
+        partition,
+        callback,
+        DEFAULT_LEADER_METADATA_WRAPPER,
+        APP_DEFAULT_LOGICAL_TS);
+  }
+
+  /**
    * @param debugInfo arbitrary key/value pairs of information that will be propagated alongside the control message.
    */
   public void broadcastStartOfPush(Map<String, String> debugInfo) {

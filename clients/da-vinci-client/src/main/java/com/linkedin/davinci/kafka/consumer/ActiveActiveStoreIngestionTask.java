@@ -1036,16 +1036,28 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
 
     BiConsumer<ChunkAwareCallback, LeaderMetadataWrapper> produceToTopicFunction =
         (callback, leaderMetadataWrapper) -> {
-          // VeniceWriter.update produces MessageType.UPDATE to the topic. The writeComputeSerializer
-          // for the leader writer is DefaultSerializer (byte[]→byte[] passthrough — see
-          // VeniceWriterOptions defaults), so the bytes on VT are exactly the operand bytes from RT.
-          // N.B. we do not have a writer.update() overload that takes the same LeaderMetadataWrapper;
-          // for Phase 1 the leaderMetadataWrapper's RT position bookkeeping is best-effort. The DIV
-          // path is unchanged because produced messages still go through the same VeniceWriter.
+          // VT-merge experiment H5 fix: use the dedicated VeniceWriter.updateForVtMergeOperand
+          // overload, which routes the operand to the SAME VT partition that VeniceWriter.put
+          // would land the corresponding base PUT on — i.e., partition = hash(UNWRAPPED key) % N.
+          //
+          // The previous code path called VeniceWriter.update(keyBytes, ...) where keyBytes had
+          // already been wrapped with the chunking suffix (by the iter-11 fix above). The result:
+          // partition = hash(WRAPPED key) % N, which on chunking-enabled stores diverges from
+          // put's hash(UNWRAPPED key) % N for ~half the keys. The operand landed on a DIFFERENT
+          // VT partition than the corresponding base PUT, so the follower's RocksDB store for that
+          // operand partition saw the operand merge but had no base on disk → operand-only
+          // readback (rawLen=24, the framed-operand-only shape) → read returned null → the
+          // test's wait loop eventually timed out with "expected new_name_X but found
+          // first_name_X". See autoresearch/late-replica-bootstrap-bypass/h5-iter-2-NOTES.md.
+          //
+          // updateForVtMergeOperand also handles the chunking-suffix wrap internally (matching
+          // put's wrap at VeniceWriter.put line ~1200), so we pass the UNWRAPPED rawKeyBytes.
+          // The on-disk key on VT (and therefore in RocksDB after the follower's merge) is the
+          // wrapped key — same as what SingleGetChunkingAdapter looks up on read.
           partitionConsumptionState.getVeniceWriterLazyRef()
               .get()
-              .update(
-                  keyBytes,
+              .updateForVtMergeOperand(
+                  rawKeyBytes,
                   ByteUtils.extractByteArray(operandForProduce),
                   valueSchemaId,
                   derivedSchemaId,
