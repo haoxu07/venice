@@ -3043,7 +3043,7 @@ public class ConfigKeys {
   /**
    * Maximum operand-chain length per key before the materializing partition's merge path
    * synchronously folds the chain and writes a base PUT (chain-length backstop). Has effect only
-   * when {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is on. Default: 64. A value of {@code 0} or
+   * when {@link #SERVER_VT_UPDATE_OPERAND_ENABLED} is on. Default: 8. A value of {@code 0} or
    * negative disables the backstop (chain length is unbounded — the original behavior).
    *
    * <p>Per the VT-merge experiment {@code GOAL.md} §3 Phase B. The backstop reads the current

@@ -1205,7 +1205,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     // VT-merge Phase B chain-length backstop. JVM-property override matches the pattern used for
     // the other VT-merge flags so the JMH harness can flip it via -jvmArgs.
     int defaultVtMergeMaxChainLength =
-        Integer.parseInt(System.getProperty("venice.server.vt.merge.max.chain.length", "64"));
+        Integer.parseInt(System.getProperty("venice.server.vt.merge.max.chain.length", "8"));
     vtMergeMaxChainLength = serverProperties.getInt(SERVER_VT_MERGE_MAX_CHAIN_LENGTH, defaultVtMergeMaxChainLength);
     crossTpParallelProcessingEnabled = serverProperties.getBoolean(SERVER_CROSS_TP_PARALLEL_PROCESSING_ENABLED, false);
     crossTpParallelProcessingThreadPoolSize =
