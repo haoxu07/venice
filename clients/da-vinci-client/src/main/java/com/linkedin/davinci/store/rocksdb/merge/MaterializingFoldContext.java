@@ -110,27 +110,56 @@ public final class MaterializingFoldContext {
    *
    * <p>When {@code baseRmdBytes} is null, falls back to seeding from the base value record (which
    * cannot honor a non-zero DCR floor since the PUT ts is unknown without RMD).
+   *
+   * <p>Returns bytes encoded with the BASE schema id, not the latest schema id in the chain. Use
+   * {@link #foldOperandsAndReturnSchemaId} if the caller needs the schemaId the result is encoded
+   * under (relevant for schema-evolution cases where the chain contains operands with newer value
+   * schemas than the base).
    */
   public byte[] foldOperands(
       int baseSchemaId,
       byte[] baseValueBytes,
       List<byte[]> framedOperands,
       byte[] baseRmdBytes) {
+    FoldResult r = foldOperandsAndReturnSchemaId(baseSchemaId, baseValueBytes, framedOperands, baseRmdBytes);
+    if (r == null) {
+      return null;
+    }
+    return r.bytes;
+  }
+
+  /** As {@link #foldOperands(int, byte[], List, byte[])} but returns both bytes + schemaId. */
+  public FoldResult foldOperandsAndReturnSchemaId(
+      int baseSchemaId,
+      byte[] baseValueBytes,
+      List<byte[]> framedOperands,
+      byte[] baseRmdBytes) {
     if (framedOperands == null || framedOperands.isEmpty()) {
-      return baseValueBytes;
+      return new FoldResult(baseSchemaId, baseValueBytes);
     }
     long foldStartNs = System.nanoTime();
+    // Schema evolution: the chain may contain operands with newer value schemas than the base.
+    // Use the latest schema id (across base + all operands) as the READER so the result record
+    // includes any newly-added fields. The base value is deserialized with the reader schema so
+    // Avro automatically backfills new fields with their schema defaults.
+    int readerSchemaId = baseSchemaId;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      if (c.valueSchemaId > readerSchemaId) {
+        readerSchemaId = c.valueSchemaId;
+      }
+    }
     // Decompress the base bytes if a compressor is configured (the base was written through the
     // store's compression strategy at batch-push or merge-conflict-fold time).
     byte[] decompressedBase = decompressBase(baseValueBytes);
-    GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, decompressedBase);
+    GenericRecord curr = deserializeValue(baseSchemaId, readerSchemaId, decompressedBase);
     byte[] lastUncompressed = decompressedBase;
     // Phase 3 (cross-DC fix): build the seed RMD ONCE from the base value record + on-disk RMD,
     // honoring Gotchas #1 and #2. Then persist the RMD across operands so each operand's RMD
     // mutation (e.g. list element ts updates) is visible to the next operand. Use
     // applyWriteComputeV2WithExternalRmd to plumb the same ValueAndRmd container through the loop.
-    Schema valueSchema = wcProcessor.getReaderValueSchema(baseSchemaId);
-    Schema rmdSchema = wcProcessor.getReaderRmdSchema(baseSchemaId);
+    Schema valueSchema = wcProcessor.getReaderValueSchema(readerSchemaId);
+    Schema rmdSchema = wcProcessor.getReaderRmdSchema(readerSchemaId);
     GenericRecord seedRmd = buildSeedRmdFromBaseAndOnDiskRmd(curr, valueSchema, rmdSchema, baseRmdBytes);
     final GenericRecord initialCurr = curr;
     ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> initialCurr), seedRmd);
@@ -144,7 +173,7 @@ public final class MaterializingFoldContext {
       WriteComputeResult result = wcProcessor.applyWriteComputeV2WithExternalRmd(
           valueAndRmd,
           c.valueSchemaId,
-          baseSchemaId,
+          readerSchemaId,
           ByteBuffer.wrap(c.payload),
           c.updateSchemaId,
           c.updateSchemaId,
@@ -152,13 +181,15 @@ public final class MaterializingFoldContext {
       curr = result.getUpdatedValue();
       if (curr == null) {
         // WC delete: return null tombstone bytes
-        return null;
+        return new FoldResult(readerSchemaId, null);
       }
       lastUncompressed = result.getUpdatedValueBytes();
       // The V2 algorithm mutates valueAndRmd in place; ensure the value tracked in the
       // container is the updated value so the next operand sees it.
       valueAndRmd.setValue(curr);
     }
+    // result.getUpdatedValueBytes() is already serialized under readerSchemaId by V2 (which uses
+    // the readerValueSchemaId for the result serializer), so no extra re-serialization needed.
     byte[] compressed = compressFolded(lastUncompressed);
     LOGGER.debug(
         "[TIMING-FOLD] foldOperands wallMs={} chainDepth={} baseBytesIn={} baseBytesDecompressed={} finalBytesUncompressed={} finalBytesCompressed={}",
@@ -168,7 +199,18 @@ public final class MaterializingFoldContext {
         decompressedBase == null ? -1 : decompressedBase.length,
         lastUncompressed == null ? -1 : lastUncompressed.length,
         compressed == null ? -1 : compressed.length);
-    return compressed;
+    return new FoldResult(readerSchemaId, compressed);
+  }
+
+  /** Result of a fold: the schemaId the bytes are encoded under + the bytes themselves. */
+  public static final class FoldResult {
+    public final int schemaId;
+    public final byte[] bytes;
+
+    public FoldResult(int schemaId, byte[] bytes) {
+      this.schemaId = schemaId;
+      this.bytes = bytes;
+    }
   }
 
   /**
@@ -328,11 +370,19 @@ public final class MaterializingFoldContext {
       throw new VeniceException("foldOperandOnly called with empty operand list");
     }
     long foldStartNs = System.nanoTime();
-    // Use the first operand's value-schema-id as the resolution rule (per GOAL.md §6 "use the
-    // latest WC schema id from the schema repo" — but the operand carries its own schema id, so
-    // we use that).
-    OperandContent firstOp = OperandContent.parse(framedOperands.get(0));
-    int valueSchemaId = firstOp.valueSchemaId;
+    // Schema evolution: use the LATEST schema id across all operands as the reader, so the
+    // result record has any newly-added fields.
+    int valueSchemaId = -1;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      if (c.valueSchemaId > valueSchemaId) {
+        valueSchemaId = c.valueSchemaId;
+      }
+    }
+    if (valueSchemaId == -1) {
+      OperandContent firstOp = OperandContent.parse(framedOperands.get(0));
+      valueSchemaId = firstOp.valueSchemaId;
+    }
 
     // Build seed RMD against the value schema. No base record (operand-only), so all per-field
     // entries are "not populated by PUT" — operands win freely (Gotchas #1/#2 both apply). If an

@@ -581,11 +581,11 @@ public final class MaterializingFraming {
       return prependSchemaId(schemaId, avroBase);
     }
     byte[] baseRmd = (baseKey != null && rmdFetchFn != null) ? rmdFetchFn.apply(baseKey) : null;
-    byte[] materializedAvro = ctx.foldOperands(schemaId, avroBase, operands, baseRmd);
-    if (materializedAvro == null) {
+    MaterializingFoldContext.FoldResult fr = ctx.foldOperandsAndReturnSchemaId(schemaId, avroBase, operands, baseRmd);
+    if (fr == null || fr.bytes == null) {
       return null; // tombstone via WC delete
     }
-    return prependSchemaId(schemaId, materializedAvro);
+    return prependSchemaId(fr.schemaId, fr.bytes);
   }
 
   /** Read fold for the operand-only edge case (first write was a merge, no base on disk). */

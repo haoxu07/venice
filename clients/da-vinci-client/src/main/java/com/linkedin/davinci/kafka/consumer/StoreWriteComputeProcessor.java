@@ -247,6 +247,11 @@ public class StoreWriteComputeProcessor {
     return helper.getRmdSchema(storeName, readerValueSchemaId, valueSchema);
   }
 
+  /** Serialize a value record under the given schemaId. Used by the fold path. */
+  public byte[] serializeValueRecord(int valueSchemaId, GenericRecord record) {
+    return getValueSerializer(valueSchemaId).serialize(record);
+  }
+
   /**
    * Build a seed RMD record for the fold path. Convenience for callers that don't want to manage
    * the {@link WriteComputeSeedRmd} helper directly. Caller may post-process the returned record
