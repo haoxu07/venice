@@ -4872,8 +4872,17 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           // recover the schema ids to deserialize the WC operand against the correct schema.
           // See com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent.
           byte[] payload = com.linkedin.venice.utils.ByteUtils.extractByteArray(operandBuffer);
+          // VT-merge Phase A (rmd2): extract the operand's logical timestamp from the VT
+          // KafkaMessageEnvelope so the read-fold path can do per-field DCR with the operand's
+          // real ts (instead of a chain-position counter). The leader side
+          // (ActiveActiveStoreIngestionTask.produceUpdateOperandToVT) plumbs the original RT
+          // KME's writeTimestamp into the produced VT message's logicalTimestamp; we read it
+          // back here. Falls back to messageTimestamp if no explicit logicalTimestamp is set.
+          long opTs = (kafkaValue.producerMetadata.logicalTimestamp >= 0)
+              ? kafkaValue.producerMetadata.logicalTimestamp
+              : kafkaValue.producerMetadata.messageTimestamp;
           byte[] operandContent = com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext.OperandContent
-              .frame(updateMsg.schemaId, updateMsg.updateSchemaId, payload);
+              .frame(updateMsg.schemaId, updateMsg.updateSchemaId, opTs, payload);
           LOGGER.debug(
               "VT-merge follower case UPDATE: storeVersion={} partition={} keyLen={} "
                   + "valueSchemaId={} updateSchemaId={} operandLen={}",

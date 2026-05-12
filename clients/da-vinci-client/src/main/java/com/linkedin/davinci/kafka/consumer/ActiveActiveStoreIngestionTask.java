@@ -1054,6 +1054,13 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
           // put's wrap at VeniceWriter.put line ~1200), so we pass the UNWRAPPED rawKeyBytes.
           // The on-disk key on VT (and therefore in RocksDB after the follower's merge) is the
           // wrapped key — same as what SingleGetChunkingAdapter looks up on read.
+          // VT-merge Phase A (rmd2): plumb the original RT KME's logical timestamp through
+          // the produced VT message's logicalTimestamp so the follower's read-fold path can
+          // do per-field DCR with the operand's REAL ts. Without this plumbing, the operand
+          // arrives at the follower with logicalTimestamp=APP_DEFAULT_LOGICAL_TS=-2 and the
+          // operand's real ts is lost — the fold would have to fall back to a chain-position
+          // counter, which discards cross-DC ts ordering.
+          final long opLogicalTs = getWriteTimestampFromKME(rtRecord.getValue());
           partitionConsumptionState.getVeniceWriterLazyRef()
               .get()
               .updateForVtMergeOperand(
@@ -1061,7 +1068,8 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
                   ByteUtils.extractByteArray(operandForProduce),
                   valueSchemaId,
                   derivedSchemaId,
-                  callback);
+                  callback,
+                  opLogicalTs);
         };
 
     produceToLocalKafka(

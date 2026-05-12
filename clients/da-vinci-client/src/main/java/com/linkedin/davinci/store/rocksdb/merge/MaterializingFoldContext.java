@@ -110,10 +110,17 @@ public final class MaterializingFoldContext {
     // topLevelTs=0; we feed monotonically increasing modify-ts (operandIndex+1) so the V2
     // algorithm's ignoreIncomingRequest check always returns false and every operand wins.
     // Per-chain operand-order semantics are preserved.
-    long modifyTs = 0L;
+    // Use the operand's real updateOperationTimestamp when available (Phase A wire-format
+    // extension); fall back to chain-position counter for legacy operands that don't carry
+    // a timestamp. This is the foundation for cross-DC per-field DCR — Phase B will pair this
+    // with base-RMD reads to do proper element-level DCR via the V2 algorithm.
+    long fallbackCounter = 0L;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
-      modifyTs++;
+      fallbackCounter++;
+      long modifyTs = (c.updateOperationTimestamp != OperandContent.NO_TIMESTAMP_AVAILABLE)
+          ? c.updateOperationTimestamp
+          : fallbackCounter;
       WriteComputeResult result = wcProcessor.applyWriteComputeV2(
           curr,
           c.valueSchemaId,
@@ -163,10 +170,13 @@ public final class MaterializingFoldContext {
     GenericRecord curr = null; // empty base; WriteComputeProcessor handles null currValue.
     int lastSchemaId = valueSchemaId;
     byte[] lastBytes = null;
-    long modifyTs = 0L;
+    long fallbackCounter = 0L;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
-      modifyTs++;
+      fallbackCounter++;
+      long modifyTs = (c.updateOperationTimestamp != OperandContent.NO_TIMESTAMP_AVAILABLE)
+          ? c.updateOperationTimestamp
+          : fallbackCounter;
       WriteComputeResult result = wcProcessor.applyWriteComputeV2(
           curr,
           c.valueSchemaId,
@@ -270,42 +280,71 @@ public final class MaterializingFoldContext {
   /**
    * Wire format inside an operand "content" blob (the bytes wrapped by
    * {@link ConcatBlobParser}'s {@code [0x01][len:varint]} framing):
-   * {@code [valueSchemaId : 4B BE][updateSchemaId : 4B BE][avro-WC-payload]}.
+   * {@code [valueSchemaId : 4B BE][updateSchemaId : 4B BE][updateOperationTimestamp : 8B BE][avro-WC-payload]}.
    *
    * <p>The follower's UPDATE-consume path (in {@code StoreIngestionTask}) prepends the two
-   * schema-id ints before calling {@code storageEngine.merge(...)}. This carries the schema
-   * identity through the on-disk representation so the read-fold path can deserialize the
-   * operand against the correct WC schema.
+   * schema-id ints and the operand's real {@code updateOperationTimestamp} before calling
+   * {@code storageEngine.merge(...)}. This carries the schema identity AND the operand's
+   * logical timestamp through the on-disk representation so the read-fold path can:
+   * <ol>
+   *   <li>deserialize the operand against the correct WC schema, and</li>
+   *   <li>pass the real operand timestamp to the V2 algorithm for cross-DC per-field DCR.</li>
+   * </ol>
+   *
+   * <p>{@code updateOperationTimestamp} is the operand's logical timestamp — either the user-
+   * specified value (when the producer used {@code VeniceObjectWithTimestamp}) or the wall-
+   * clock {@code producerMetadata.messageTimestamp} otherwise. {@link #NO_TIMESTAMP_AVAILABLE}
+   * is reserved as a "use chain-position fallback" sentinel for callers that don't have a
+   * timestamp (e.g. unit-test scaffolding, legacy operands).
    */
   public static final class OperandContent {
+    /**
+     * Sentinel for callers that have no operand timestamp available (e.g. unit-test fixtures
+     * that don't go through a real producer path). When this sentinel is present, the fold
+     * path should fall back to the chain-position counter to preserve pre-Phase-A semantics.
+     */
+    public static final long NO_TIMESTAMP_AVAILABLE = Long.MIN_VALUE;
+
+    /** Header size in bytes: 4 (valueSchemaId) + 4 (updateSchemaId) + 8 (updateOperationTimestamp) = 16. */
+    public static final int HEADER_LENGTH = 16;
+
     public final int valueSchemaId;
     public final int updateSchemaId;
+    public final long updateOperationTimestamp;
     public final byte[] payload;
 
-    public OperandContent(int valueSchemaId, int updateSchemaId, byte[] payload) {
+    public OperandContent(int valueSchemaId, int updateSchemaId, long updateOperationTimestamp, byte[] payload) {
       this.valueSchemaId = valueSchemaId;
       this.updateSchemaId = updateSchemaId;
+      this.updateOperationTimestamp = updateOperationTimestamp;
       this.payload = payload;
     }
 
     public static OperandContent parse(byte[] content) {
-      if (content == null || content.length < 8) {
+      if (content == null || content.length < HEADER_LENGTH) {
         throw new VeniceException("OperandContent: too short (" + (content == null ? 0 : content.length) + " bytes)");
       }
       int valueSchemaId =
           ((content[0] & 0xff) << 24) | ((content[1] & 0xff) << 16) | ((content[2] & 0xff) << 8) | (content[3] & 0xff);
       int updateSchemaId =
           ((content[4] & 0xff) << 24) | ((content[5] & 0xff) << 16) | ((content[6] & 0xff) << 8) | (content[7] & 0xff);
-      byte[] payload = new byte[content.length - 8];
-      System.arraycopy(content, 8, payload, 0, payload.length);
-      return new OperandContent(valueSchemaId, updateSchemaId, payload);
+      long updateOpTs = ((long) (content[8] & 0xff) << 56) | ((long) (content[9] & 0xff) << 48)
+          | ((long) (content[10] & 0xff) << 40) | ((long) (content[11] & 0xff) << 32)
+          | ((long) (content[12] & 0xff) << 24) | ((long) (content[13] & 0xff) << 16)
+          | ((long) (content[14] & 0xff) << 8) | ((long) (content[15] & 0xff));
+      byte[] payload = new byte[content.length - HEADER_LENGTH];
+      System.arraycopy(content, HEADER_LENGTH, payload, 0, payload.length);
+      return new OperandContent(valueSchemaId, updateSchemaId, updateOpTs, payload);
     }
 
     /**
-     * Build operand content bytes by prepending the two schema-id ints to {@code payload}.
+     * Build operand content bytes with explicit timestamp. Production callers should use this
+     * overload and pass the operand's real logical timestamp (from
+     * {@code KafkaMessageEnvelope.producerMetadata.logicalTimestamp} with a fallback to
+     * {@code messageTimestamp}).
      */
-    public static byte[] frame(int valueSchemaId, int updateSchemaId, byte[] payload) {
-      byte[] out = new byte[8 + payload.length];
+    public static byte[] frame(int valueSchemaId, int updateSchemaId, long updateOperationTimestamp, byte[] payload) {
+      byte[] out = new byte[HEADER_LENGTH + payload.length];
       out[0] = (byte) (valueSchemaId >>> 24);
       out[1] = (byte) (valueSchemaId >>> 16);
       out[2] = (byte) (valueSchemaId >>> 8);
@@ -314,8 +353,25 @@ public final class MaterializingFoldContext {
       out[5] = (byte) (updateSchemaId >>> 16);
       out[6] = (byte) (updateSchemaId >>> 8);
       out[7] = (byte) updateSchemaId;
-      System.arraycopy(payload, 0, out, 8, payload.length);
+      out[8] = (byte) (updateOperationTimestamp >>> 56);
+      out[9] = (byte) (updateOperationTimestamp >>> 48);
+      out[10] = (byte) (updateOperationTimestamp >>> 40);
+      out[11] = (byte) (updateOperationTimestamp >>> 32);
+      out[12] = (byte) (updateOperationTimestamp >>> 24);
+      out[13] = (byte) (updateOperationTimestamp >>> 16);
+      out[14] = (byte) (updateOperationTimestamp >>> 8);
+      out[15] = (byte) updateOperationTimestamp;
+      System.arraycopy(payload, 0, out, HEADER_LENGTH, payload.length);
       return out;
+    }
+
+    /**
+     * Backward-compatible overload for callers (mostly unit tests) that have no timestamp
+     * available. Frames with {@link #NO_TIMESTAMP_AVAILABLE} so the fold path falls back to
+     * the chain-position counter.
+     */
+    public static byte[] frame(int valueSchemaId, int updateSchemaId, byte[] payload) {
+      return frame(valueSchemaId, updateSchemaId, NO_TIMESTAMP_AVAILABLE, payload);
     }
   }
 }

@@ -1398,6 +1398,30 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
       int valueSchemaId,
       int derivedSchemaId,
       PubSubProducerCallback callback) {
+    return updateForVtMergeOperand(
+        rawSerializedKey,
+        serializedUpdate,
+        valueSchemaId,
+        derivedSchemaId,
+        callback,
+        APP_DEFAULT_LOGICAL_TS);
+  }
+
+  /**
+   * VT-merge experiment Phase A (rmd2) overload: preserves the original RT operand's logical
+   * timestamp through the produced VT message's {@code producerMetadata.logicalTimestamp}, so
+   * the follower's read-fold path can do cross-DC per-field DCR with the operand's REAL ts
+   * (rather than a chain-position counter). Callers in
+   * {@code ActiveActiveStoreIngestionTask.produceUpdateOperandToVT} extract the writeTimestamp
+   * via {@code getWriteTimestampFromKME} and pass it here.
+   */
+  public CompletableFuture<PubSubProduceResult> updateForVtMergeOperand(
+      byte[] rawSerializedKey,
+      byte[] serializedUpdate,
+      int valueSchemaId,
+      int derivedSchemaId,
+      PubSubProducerCallback callback,
+      long logicalTimestamp) {
     isChunkingFlagInvoked = true;
 
     // Route by the UNWRAPPED key (matches what put() does at line ~1003).
@@ -1434,7 +1458,7 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
         partition,
         callback,
         DEFAULT_LEADER_METADATA_WRAPPER,
-        APP_DEFAULT_LOGICAL_TS);
+        logicalTimestamp);
   }
 
   /**
