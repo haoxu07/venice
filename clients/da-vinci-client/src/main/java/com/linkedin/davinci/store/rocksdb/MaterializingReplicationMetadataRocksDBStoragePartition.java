@@ -79,24 +79,41 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
   @Override
   public byte[] getReplicationMetadata(ByteBuffer key) {
     byte[] rmdBytes = super.getReplicationMetadata(key);
+    System.err.println(
+        "[VT-MERGE-RMD-GET] storeVersion=" + storeNameAndVersion + " partition=" + partitionId + " rmdLen="
+            + (rmdBytes == null ? -1 : rmdBytes.length));
     if (rmdBytes != null && rmdBytes.length > 4) {
       return rmdBytes;
     }
     // RMD is null. Check if value has an operand chain; if so, synthesize RMD via fold.
     byte[] keyBytes = com.linkedin.venice.utils.ByteUtils.extractByteArray(key);
     byte[] rawValue = super.get(keyBytes);
+    System.err.println(
+        "[VT-MERGE-RMD-GET] storeVersion=" + storeNameAndVersion + " partition=" + partitionId + " rawValueLen="
+            + (rawValue == null ? -1 : rawValue.length) + " firstByte="
+            + (rawValue == null || rawValue.length == 0 ? "none" : String.format("0x%02x", rawValue[0] & 0xff)));
     if (rawValue == null || rawValue.length < 1) {
       return rmdBytes;
     }
     // Only synthesize when we have a real fold context registered.
     com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext ctx =
         com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.get(storeNameAndVersion);
+    System.err.println(
+        "[VT-MERGE-RMD-GET] storeVersion=" + storeNameAndVersion + " partition=" + partitionId + " ctxNull="
+            + (ctx == null));
     if (ctx == null) {
       return rmdBytes;
     }
     try {
-      return MaterializingFraming.maybeSynthesizeRmdFromChain(rawValue, storeNameAndVersion, ctx);
+      byte[] synthesized = MaterializingFraming.maybeSynthesizeRmdFromChain(rawValue, storeNameAndVersion, ctx);
+      System.err.println(
+          "[VT-MERGE-RMD-SYNTH-OK] storeVersion=" + storeNameAndVersion + " partition=" + partitionId + " rawValueLen="
+              + rawValue.length + " synthesizedRmdLen=" + (synthesized == null ? -1 : synthesized.length));
+      return synthesized;
     } catch (Exception e) {
+      System.err.println(
+          "[VT-MERGE-RMD-SYNTH-ERR] storeVersion=" + storeNameAndVersion + " partition=" + partitionId + " err=" + e);
+      e.printStackTrace(System.err);
       org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
           .warn(
               "VT-merge: failed to synthesize RMD from chain for storeVersion={} partition={}; returning null",

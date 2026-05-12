@@ -507,6 +507,9 @@ public final class MaterializingFoldContext {
 
   /** Decompress the base bytes if a compressor is configured. */
   private byte[] decompressBase(byte[] baseValueBytes) {
+    if (baseValueBytes == null) {
+      return null;
+    }
     if (compressor == null) {
       return baseValueBytes;
     }
