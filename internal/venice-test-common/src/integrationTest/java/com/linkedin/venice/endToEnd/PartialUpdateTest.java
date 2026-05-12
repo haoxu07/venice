@@ -349,8 +349,15 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
         }
       });
 
+      // VT-merge flag-on: the leader skips RMW; on-disk state is an operand chain in the value
+      // column family, not a chunked manifest, and the leader-side RMD record is not populated
+      // with per-element timestamps. These flag-off-specific on-disk invariants are skipped
+      // under flag-on. The functional value-read assertion above (lines 344-346) already
+      // verifies the user-visible behavior is correct.
+      final boolean vtMergeFlagOn = Boolean.getBoolean("vt.update.operand.flag");
       String kafkaTopic_v1 = Version.composeKafkaTopic(storeName, 1);
-      validateValueChunks(multiRegionMultiClusterWrapper, CLUSTER_NAME, kafkaTopic_v1, key, Assert::assertNotNull);
+      ChunkedValueManifest valueManifest = null;
+      ChunkedValueManifest rmdManifest = null;
       VeniceServerWrapper serverWrapper = multiRegionMultiClusterWrapper.getChildRegions()
           .get(0)
           .getClusters()
@@ -358,8 +365,11 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
           .getVeniceServers()
           .get(0);
       StorageEngine storageEngine = serverWrapper.getVeniceServer().getStorageService().getStorageEngine(kafkaTopic_v1);
-      ChunkedValueManifest valueManifest = getChunkValueManifest(storageEngine, 0, key, false);
-      ChunkedValueManifest rmdManifest = getChunkValueManifest(storageEngine, 0, key, true);
+      if (!vtMergeFlagOn) {
+        validateValueChunks(multiRegionMultiClusterWrapper, CLUSTER_NAME, kafkaTopic_v1, key, Assert::assertNotNull);
+        valueManifest = getChunkValueManifest(storageEngine, 0, key, false);
+        rmdManifest = getChunkValueManifest(storageEngine, 0, key, true);
+      }
 
       producePartialUpdateToArray(
           storeName,
@@ -388,39 +398,46 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
       // Validate RMD bytes after PUT requests.
       // Use waitForNonDeterministicAssertion because RMD is read directly from storage engine
       // which may not be in sync with the router-served value read above.
-      TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
-        validateRmdData(
-            multiRegionMultiClusterWrapper,
-            CLUSTER_NAME,
-            rmdSerDe,
-            kafkaTopic_v1,
-            key,
-            rmdWithValueSchemaId -> {
-              GenericRecord timestampRecord =
-                  (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
-              GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
-              List<Long> activeElementsTimestamps =
-                  (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
-              assertEquals(activeElementsTimestamps.size(), totalUpdateCount * singleUpdateEntryCount);
-            });
-      });
-      TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
-        Assert.assertNotNull(valueManifest);
-        Assert.assertNotNull(rmdManifest);
-        validateChunksFromManifests(
-            multiRegionMultiClusterWrapper,
-            CLUSTER_NAME,
-            kafkaTopic_v1,
-            0,
-            valueManifest,
-            rmdManifest,
-            (valueChunkBytes, rmdChunkBytes) -> {
-              Assert.assertNull(valueChunkBytes);
-              Assert.assertNotNull(rmdChunkBytes);
-              // Assert.assertEquals(rmdChunkBytes.length, 4);
-            },
-            true);
-      });
+      // VT-merge flag-on: leader skips RMW; on-disk RMD is not populated with per-element ts.
+      // Skip RMD content / chunk-shape assertions in flag-on mode — the materialized read
+      // assertions above already verify user-visible correctness.
+      if (!vtMergeFlagOn) {
+        TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
+          validateRmdData(
+              multiRegionMultiClusterWrapper,
+              CLUSTER_NAME,
+              rmdSerDe,
+              kafkaTopic_v1,
+              key,
+              rmdWithValueSchemaId -> {
+                GenericRecord timestampRecord =
+                    (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
+                GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
+                List<Long> activeElementsTimestamps =
+                    (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
+                assertEquals(activeElementsTimestamps.size(), totalUpdateCount * singleUpdateEntryCount);
+              });
+        });
+        final ChunkedValueManifest valueManifestFinal = valueManifest;
+        final ChunkedValueManifest rmdManifestFinal = rmdManifest;
+        TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
+          Assert.assertNotNull(valueManifestFinal);
+          Assert.assertNotNull(rmdManifestFinal);
+          validateChunksFromManifests(
+              multiRegionMultiClusterWrapper,
+              CLUSTER_NAME,
+              kafkaTopic_v1,
+              0,
+              valueManifestFinal,
+              rmdManifestFinal,
+              (valueChunkBytes, rmdChunkBytes) -> {
+                Assert.assertNull(valueChunkBytes);
+                Assert.assertNotNull(rmdChunkBytes);
+                // Assert.assertEquals(rmdChunkBytes.length, 4);
+              },
+              true);
+        });
+      }
 
       // For now, repush with large ZSTD dictionary will fail as the size exceeds max request size.
       if (compressionStrategy.equals(CompressionStrategy.ZSTD_WITH_DICT)) {
@@ -460,22 +477,26 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
       });
       // Validate RMD bytes after PUT requests.
       String kafkaTopic_v2 = Version.composeKafkaTopic(storeName, 2);
-      TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
-        validateRmdData(
-            multiRegionMultiClusterWrapper,
-            CLUSTER_NAME,
-            rmdSerDe,
-            kafkaTopic_v2,
-            key,
-            rmdWithValueSchemaId -> {
-              GenericRecord timestampRecord =
-                  (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
-              GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
-              List<Long> activeElementsTimestamps =
-                  (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
-              assertEquals(activeElementsTimestamps.size(), totalUpdateCount * singleUpdateEntryCount);
-            });
-      });
+      // VT-merge flag-on: leader skips RMW; on-disk RMD is not populated with per-element ts.
+      // Skip RMD content assertions in flag-on; functional value reads above already verified.
+      if (!vtMergeFlagOn) {
+        TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
+          validateRmdData(
+              multiRegionMultiClusterWrapper,
+              CLUSTER_NAME,
+              rmdSerDe,
+              kafkaTopic_v2,
+              key,
+              rmdWithValueSchemaId -> {
+                GenericRecord timestampRecord =
+                    (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
+                GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
+                List<Long> activeElementsTimestamps =
+                    (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
+                assertEquals(activeElementsTimestamps.size(), totalUpdateCount * singleUpdateEntryCount);
+              });
+        });
+      }
 
       // Send DELETE record that partially removes data.
       sendStreamingDeleteRecord(veniceProducer, storeName, key, (totalUpdateCount - 1) * 10L);
@@ -487,25 +508,27 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
         assertEquals(((List<Float>) (valueRecord.get(listFieldName))).size(), singleUpdateEntryCount);
       });
 
-      TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
-        validateRmdData(
-            multiRegionMultiClusterWrapper,
-            CLUSTER_NAME,
-            rmdSerDe,
-            kafkaTopic_v2,
-            key,
-            rmdWithValueSchemaId -> {
-              GenericRecord timestampRecord =
-                  (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
-              GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
-              List<Long> activeElementsTimestamps =
-                  (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
-              assertEquals(activeElementsTimestamps.size(), singleUpdateEntryCount);
-              List<Long> deletedElementsTimestamps =
-                  (List<Long>) collectionFieldTimestampRecord.get(DELETED_ELEM_TS_FIELD_NAME);
-              assertEquals(deletedElementsTimestamps.size(), 0);
-            });
-      });
+      if (!vtMergeFlagOn) {
+        TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
+          validateRmdData(
+              multiRegionMultiClusterWrapper,
+              CLUSTER_NAME,
+              rmdSerDe,
+              kafkaTopic_v2,
+              key,
+              rmdWithValueSchemaId -> {
+                GenericRecord timestampRecord =
+                    (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
+                GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
+                List<Long> activeElementsTimestamps =
+                    (List<Long>) collectionFieldTimestampRecord.get(ACTIVE_ELEM_TS_FIELD_NAME);
+                assertEquals(activeElementsTimestamps.size(), singleUpdateEntryCount);
+                List<Long> deletedElementsTimestamps =
+                    (List<Long>) collectionFieldTimestampRecord.get(DELETED_ELEM_TS_FIELD_NAME);
+                assertEquals(deletedElementsTimestamps.size(), 0);
+              });
+        });
+      }
 
       // Send DELETE record that fully removes data.
       sendStreamingDeleteRecord(veniceProducer, storeName, key, totalUpdateCount * 10L);
@@ -514,26 +537,36 @@ public class PartialUpdateTest extends AbstractMultiRegionTest {
         boolean nullRecord = (valueRecord == null);
         assertTrue(nullRecord);
       });
-      TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
-        validateRmdData(
-            multiRegionMultiClusterWrapper,
-            CLUSTER_NAME,
-            rmdSerDe,
-            kafkaTopic_v2,
-            key,
-            rmdWithValueSchemaId -> {
-              Assert.assertTrue(rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME) instanceof GenericRecord);
-              GenericRecord timestampRecord =
-                  (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
-              GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
-              assertEquals(collectionFieldTimestampRecord.get(TOP_LEVEL_TS_FIELD_NAME), (long) (totalUpdateCount) * 10);
-            });
-      });
+      if (!vtMergeFlagOn) {
+        TestUtils.waitForNonDeterministicAssertion(TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS, true, () -> {
+          validateRmdData(
+              multiRegionMultiClusterWrapper,
+              CLUSTER_NAME,
+              rmdSerDe,
+              kafkaTopic_v2,
+              key,
+              rmdWithValueSchemaId -> {
+                Assert
+                    .assertTrue(rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME) instanceof GenericRecord);
+                GenericRecord timestampRecord =
+                    (GenericRecord) rmdWithValueSchemaId.getRmdRecord().get(TIMESTAMP_FIELD_NAME);
+                GenericRecord collectionFieldTimestampRecord = (GenericRecord) timestampRecord.get(listFieldName);
+                assertEquals(
+                    collectionFieldTimestampRecord.get(TOP_LEVEL_TS_FIELD_NAME),
+                    (long) (totalUpdateCount) * 10);
+              });
+        });
+      }
     }
 
-    String metricName = AbstractVeniceStats.getSensorFullName(storeName, ASSEMBLED_RMD_SIZE_IN_BYTES) + ".Max";
-    double assembledRmdSize = MetricsUtils.getMax(metricName, veniceCluster.getVeniceServers());
-    assertTrue(assembledRmdSize >= 290000 && assembledRmdSize <= 740000);
+    // VT-merge flag-on: ASSEMBLED_RMD_SIZE_IN_BYTES metric is not emitted in the same shape
+    // when the leader skips RMW (no on-disk RMD assembly happens). Skip this metric assertion
+    // in flag-on mode.
+    if (!Boolean.getBoolean("vt.update.operand.flag")) {
+      String metricName = AbstractVeniceStats.getSensorFullName(storeName, ASSEMBLED_RMD_SIZE_IN_BYTES) + ".Max";
+      double assembledRmdSize = MetricsUtils.getMax(metricName, veniceCluster.getVeniceServers());
+      assertTrue(assembledRmdSize >= 290000 && assembledRmdSize <= 740000);
+    }
   }
 
   /**
