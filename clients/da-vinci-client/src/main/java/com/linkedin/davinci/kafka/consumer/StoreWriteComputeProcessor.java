@@ -1,8 +1,10 @@
 package com.linkedin.davinci.kafka.consumer;
 
 import com.linkedin.davinci.schema.merge.MergeRecordHelper;
+import com.linkedin.davinci.schema.merge.ValueAndRmd;
 import com.linkedin.davinci.schema.writecompute.WriteComputeProcessor;
 import com.linkedin.davinci.schema.writecompute.WriteComputeSchemaValidator;
+import com.linkedin.davinci.schema.writecompute.WriteComputeSeedRmd;
 import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.meta.ReadOnlySchemaRepository;
@@ -12,6 +14,7 @@ import com.linkedin.venice.serializer.RecordDeserializer;
 import com.linkedin.venice.serializer.RecordSerializer;
 import com.linkedin.venice.utils.SparseConcurrentList;
 import com.linkedin.venice.utils.collections.BiIntKeyCache;
+import com.linkedin.venice.utils.lazy.Lazy;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nonnull;
@@ -50,6 +53,13 @@ public class StoreWriteComputeProcessor {
   private final BiIntKeyCache<RecordDeserializer<GenericRecord>> writeComputeDeserializerCache;
 
   private final boolean fastAvroEnabled;
+
+  /**
+   * Helper that synthesizes per-field-ts RMD records for the flag-on VT-merge fold path. Used
+   * only by {@link #applyWriteComputeV2(GenericRecord, int, int, ByteBuffer, int, int, long)}.
+   * Created lazily on first V2 call so non-flag-on paths pay no allocation cost.
+   */
+  private volatile WriteComputeSeedRmd seedRmdHelper;
 
   public StoreWriteComputeProcessor(
       @Nonnull String storeName,
@@ -114,6 +124,81 @@ public class StoreWriteComputeProcessor {
       return new WriteComputeResult(null, null);
     }
     return new WriteComputeResult(getValueSerializer(readerValueSchemaId).serialize(updatedValue), updatedValue);
+  }
+
+  /**
+   * Apply a single Update operation via the V2 algorithm (with synthesized seed RMD), used by
+   * the flag-on VT-merge fold path. Behaviorally equivalent to {@link #applyWriteCompute} on
+   * SET_UNION/SET_DIFF workloads, but uses the V2 algorithm's IndexedHashMap-based
+   * active-element index rather than V1's O(N×M) {@code .contains()} loop. Empirically 10-58×
+   * faster on append-N-floats workloads — see
+   * {@code WriteComputeArrayApplyMicrobenchmark}.
+   *
+   * <p>The seed RMD is synthesized per call in put-only state with {@code topLevelTs=0}; the
+   * caller passes a {@code modifyTimestamp >= 1} so the V2 algorithm's
+   * {@code ignoreIncomingRequest} check always returns false and the operand wins. After the
+   * fold, the RMD is discarded — only the materialized value bytes are returned.
+   *
+   * <p>This method preserves per-chain operand-order semantics (later operands win within one
+   * chain when the modifyTs sequence is monotonic) but does NOT preserve cross-DC element-level
+   * DCR — that would require a persistent per-(key, field) RMD cache (see GOAL.md Phase 1+2).
+   *
+   * @param currValue value record currently in memory (or null for empty base)
+   * @param writerValueSchemaId schema id under which {@code writeComputeBytes} was serialized
+   * @param readerValueSchemaId schema id under which the result must be serialized
+   * @param writeComputeBytes serialized WC operand payload
+   * @param writerUpdateProtocolVersion WC protocol version used by the writer
+   * @param readerUpdateProtocolVersion WC protocol version to use as reader
+   * @param modifyTimestamp synthetic per-operand timestamp; callers in a fold loop must pass a
+   *        strictly monotonically increasing value (e.g. {@code operandIndex + 1L}).
+   */
+  public WriteComputeResult applyWriteComputeV2(
+      GenericRecord currValue,
+      int writerValueSchemaId,
+      int readerValueSchemaId,
+      ByteBuffer writeComputeBytes,
+      int writerUpdateProtocolVersion,
+      int readerUpdateProtocolVersion,
+      long modifyTimestamp) {
+    int writerSchemaUniqueId = getSchemaAndUniqueId(writerValueSchemaId, writerUpdateProtocolVersion).getUniqueId();
+    SchemaAndUniqueId readerSchemaContainer = getSchemaAndUniqueId(readerValueSchemaId, readerUpdateProtocolVersion);
+    RecordDeserializer<GenericRecord> deserializer =
+        this.writeComputeDeserializerCache.get(writerSchemaUniqueId, readerSchemaContainer.getUniqueId());
+    GenericRecord writeComputeRecord = deserializer.deserialize(writeComputeBytes);
+
+    final Schema readerValueSchema = readerSchemaContainer.getValueSchema();
+    WriteComputeSeedRmd helper = getOrInitSeedRmdHelper();
+    Schema rmdSchema = helper.getRmdSchema(storeName, readerValueSchemaId, readerValueSchema);
+    GenericRecord seedRmd = helper.buildSeedRmd(rmdSchema, readerValueSchema);
+
+    final GenericRecord effectiveCurrValue = currValue;
+    ValueAndRmd<GenericRecord> input = new ValueAndRmd<>(Lazy.of(() -> effectiveCurrValue), seedRmd);
+    ValueAndRmd<GenericRecord> output =
+        writeComputeProcessor.updateRecordWithRmd(readerValueSchema, input, writeComputeRecord, modifyTimestamp, -1);
+
+    GenericRecord updatedValue = output.getValue();
+    // V2 returns the synthetic seedRmd record (now mutated). When the original currValue was
+    // null and no field was updated, output.isUpdateIgnored() returns true and updatedValue is
+    // a default-filled record. Mirror applyWriteCompute's contract: null updatedValue means
+    // "WC delete tombstone" — but V2 path never produces a true delete, so we always serialize.
+    if (updatedValue == null) {
+      return new WriteComputeResult(null, null);
+    }
+    return new WriteComputeResult(getValueSerializer(readerValueSchemaId).serialize(updatedValue), updatedValue);
+  }
+
+  private WriteComputeSeedRmd getOrInitSeedRmdHelper() {
+    WriteComputeSeedRmd local = seedRmdHelper;
+    if (local == null) {
+      synchronized (this) {
+        local = seedRmdHelper;
+        if (local == null) {
+          local = new WriteComputeSeedRmd();
+          seedRmdHelper = local;
+        }
+      }
+    }
+    return local;
   }
 
   private SchemaAndUniqueId getSchemaAndUniqueId(int valueSchemaId, int writeComputeSchemaId) {

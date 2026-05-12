@@ -15,6 +15,8 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 
 /**
@@ -37,6 +39,7 @@ import org.apache.avro.generic.GenericRecord;
  * <p>Per the VT-merge experiment {@code GOAL.md} §4 Phase B + §6.
  */
 public final class MaterializingFoldContext {
+  private static final Logger LOGGER = LogManager.getLogger(MaterializingFoldContext.class);
   private final String storeName;
   private final ReadOnlySchemaRepository schemaRepository;
   private final StoreWriteComputeProcessor wcProcessor;
@@ -94,20 +97,31 @@ public final class MaterializingFoldContext {
     if (framedOperands == null || framedOperands.isEmpty()) {
       return baseValueBytes;
     }
+    long foldStartNs = System.nanoTime();
     // Decompress the base bytes if a compressor is configured (the base was written through the
     // store's compression strategy at batch-push or merge-conflict-fold time).
     byte[] decompressedBase = decompressBase(baseValueBytes);
     GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, decompressedBase);
     byte[] lastUncompressed = decompressedBase;
+    // Route through the V2 algorithm with a synthesized per-operand seed RMD. V2 uses an
+    // IndexedHashMap-based active-element index that is 10-58× faster than V1's O(N×M)
+    // .contains() loop on append-N-elements workloads (empirically validated by
+    // WriteComputeArrayApplyMicrobenchmark). The seed RMD is in put-only state with
+    // topLevelTs=0; we feed monotonically increasing modify-ts (operandIndex+1) so the V2
+    // algorithm's ignoreIncomingRequest check always returns false and every operand wins.
+    // Per-chain operand-order semantics are preserved.
+    long modifyTs = 0L;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
-      WriteComputeResult result = wcProcessor.applyWriteCompute(
+      modifyTs++;
+      WriteComputeResult result = wcProcessor.applyWriteComputeV2(
           curr,
           c.valueSchemaId,
           baseSchemaId,
           ByteBuffer.wrap(c.payload),
           c.updateSchemaId,
-          c.updateSchemaId);
+          c.updateSchemaId,
+          modifyTs);
       curr = result.getUpdatedValue();
       if (curr == null) {
         // WC delete: return null tombstone bytes
@@ -115,7 +129,16 @@ public final class MaterializingFoldContext {
       }
       lastUncompressed = result.getUpdatedValueBytes();
     }
-    return compressFolded(lastUncompressed);
+    byte[] compressed = compressFolded(lastUncompressed);
+    LOGGER.info(
+        "[TIMING-FOLD] foldOperands wallMs={} chainDepth={} baseBytesIn={} baseBytesDecompressed={} finalBytesUncompressed={} finalBytesCompressed={}",
+        (System.nanoTime() - foldStartNs) / 1_000_000.0,
+        framedOperands.size(),
+        baseValueBytes == null ? -1 : baseValueBytes.length,
+        decompressedBase == null ? -1 : decompressedBase.length,
+        lastUncompressed == null ? -1 : lastUncompressed.length,
+        compressed == null ? -1 : compressed.length);
+    return compressed;
   }
 
   /**
@@ -130,6 +153,7 @@ public final class MaterializingFoldContext {
     if (framedOperands == null || framedOperands.isEmpty()) {
       throw new VeniceException("foldOperandOnly called with empty operand list");
     }
+    long foldStartNs = System.nanoTime();
     // Use the first operand's value-schema-id as the resolution rule (per GOAL.md §6 "use the
     // latest WC schema id from the schema repo" — but the operand carries its own schema id, so
     // we use that).
@@ -139,22 +163,32 @@ public final class MaterializingFoldContext {
     GenericRecord curr = null; // empty base; WriteComputeProcessor handles null currValue.
     int lastSchemaId = valueSchemaId;
     byte[] lastBytes = null;
+    long modifyTs = 0L;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
-      WriteComputeResult result = wcProcessor.applyWriteCompute(
+      modifyTs++;
+      WriteComputeResult result = wcProcessor.applyWriteComputeV2(
           curr,
           c.valueSchemaId,
           valueSchemaId,
           ByteBuffer.wrap(c.payload),
           c.updateSchemaId,
-          c.updateSchemaId);
+          c.updateSchemaId,
+          modifyTs);
       curr = result.getUpdatedValue();
       if (curr == null) {
         return new FoldOnlyResult(valueSchemaId, null);
       }
       lastBytes = result.getUpdatedValueBytes();
     }
-    return new FoldOnlyResult(lastSchemaId, compressFolded(lastBytes));
+    byte[] compressed = compressFolded(lastBytes);
+    LOGGER.info(
+        "[TIMING-FOLD-ONLY] foldOperandOnly wallMs={} chainDepth={} finalBytesUncompressed={} finalBytesCompressed={}",
+        (System.nanoTime() - foldStartNs) / 1_000_000.0,
+        framedOperands.size(),
+        lastBytes == null ? -1 : lastBytes.length,
+        compressed == null ? -1 : compressed.length);
+    return new FoldOnlyResult(lastSchemaId, compressed);
   }
 
   /** Decompress the base bytes if a compressor is configured. */
