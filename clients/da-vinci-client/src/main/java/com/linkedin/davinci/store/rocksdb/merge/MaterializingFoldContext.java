@@ -138,17 +138,9 @@ public final class MaterializingFoldContext {
       return new FoldResult(baseSchemaId, baseValueBytes);
     }
     long foldStartNs = System.nanoTime();
-    // Schema evolution: the chain may contain operands with newer value schemas than the base.
-    // Use the latest schema id (across base + all operands) as the READER so the result record
-    // includes any newly-added fields. The base value is deserialized with the reader schema so
-    // Avro automatically backfills new fields with their schema defaults.
-    int readerSchemaId = baseSchemaId;
-    for (byte[] op: framedOperands) {
-      OperandContent c = OperandContent.parse(op);
-      if (c.valueSchemaId > readerSchemaId) {
-        readerSchemaId = c.valueSchemaId;
-      }
-    }
+    // Schema evolution: prefer the store's SUPERSET schema as the reader (encompasses all
+    // historical fields). Falls back to max(base, operand schemaIds) if no superset configured.
+    int readerSchemaId = resolveReaderSchemaIdForFold(baseSchemaId, framedOperands);
     // Decompress the base bytes if a compressor is configured (the base was written through the
     // store's compression strategy at batch-push or merge-conflict-fold time).
     byte[] decompressedBase = decompressBase(baseValueBytes);
@@ -200,6 +192,41 @@ public final class MaterializingFoldContext {
         lastUncompressed == null ? -1 : lastUncompressed.length,
         compressed == null ? -1 : compressed.length);
     return new FoldResult(readerSchemaId, compressed);
+  }
+
+  /**
+   * Resolve the reader schemaId for the fold path. Strategy:
+   * <ol>
+   *   <li>If the schema repository has a superset schema configured for this store, use its id —
+   *       the superset is by definition the union of all historical fields, so it can represent
+   *       any record encoded under any historical writer schema and lets V2 apply WC operands
+   *       from any version's WC schema without losing fields.</li>
+   *   <li>Otherwise, use {@code max(baseSchemaId, max(operand.valueSchemaId))}.</li>
+   * </ol>
+   *
+   * @param baseSchemaId the base record's schemaId, or -1 if no base (operand-only)
+   */
+  private int resolveReaderSchemaIdForFold(int baseSchemaId, List<byte[]> framedOperands) {
+    int max = baseSchemaId;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      if (c.valueSchemaId > max) {
+        max = c.valueSchemaId;
+      }
+    }
+    // Try superset schema.
+    try {
+      com.linkedin.venice.schema.SchemaEntry superset = schemaRepository.getSupersetOrLatestValueSchema(storeName);
+      if (superset != null && superset.getId() > max) {
+        return superset.getId();
+      }
+    } catch (Exception e) {
+      // Fall through to max.
+    }
+    if (max == -1) {
+      throw new VeniceException("Fold path could not resolve a reader schema id: no base + no operands");
+    }
+    return max;
   }
 
   /** Result of a fold: the schemaId the bytes are encoded under + the bytes themselves. */
@@ -370,19 +397,8 @@ public final class MaterializingFoldContext {
       throw new VeniceException("foldOperandOnly called with empty operand list");
     }
     long foldStartNs = System.nanoTime();
-    // Schema evolution: use the LATEST schema id across all operands as the reader, so the
-    // result record has any newly-added fields.
-    int valueSchemaId = -1;
-    for (byte[] op: framedOperands) {
-      OperandContent c = OperandContent.parse(op);
-      if (c.valueSchemaId > valueSchemaId) {
-        valueSchemaId = c.valueSchemaId;
-      }
-    }
-    if (valueSchemaId == -1) {
-      OperandContent firstOp = OperandContent.parse(framedOperands.get(0));
-      valueSchemaId = firstOp.valueSchemaId;
-    }
+    // Schema evolution: use the SUPERSET schema (or max operand schemaId fallback) as the reader.
+    int valueSchemaId = resolveReaderSchemaIdForFold(-1, framedOperands);
 
     // Build seed RMD against the value schema. No base record (operand-only), so all per-field
     // entries are "not populated by PUT" — operands win freely (Gotchas #1/#2 both apply). If an
