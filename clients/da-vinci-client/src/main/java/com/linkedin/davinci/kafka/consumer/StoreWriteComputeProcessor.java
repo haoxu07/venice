@@ -252,6 +252,24 @@ public class StoreWriteComputeProcessor {
     return getValueSerializer(valueSchemaId).serialize(record);
   }
 
+  /** Serialize an RMD record under the given valueSchemaId. Used by the fold path to produce a
+   *  synthesized RMD when on-disk RMD is missing (e.g., a chain-bearing key has no leader-side
+   *  RMW history). */
+  public byte[] serializeRmdRecord(int valueSchemaId, GenericRecord rmdRecord) {
+    WriteComputeSeedRmd helper = getOrInitSeedRmdHelper();
+    Schema rmdSchema = helper.getRmdSchema(storeName, valueSchemaId, getValueSchema(valueSchemaId));
+    org.apache.avro.io.DatumWriter<GenericRecord> writer = new org.apache.avro.generic.GenericDatumWriter<>(rmdSchema);
+    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+    org.apache.avro.io.BinaryEncoder encoder = org.apache.avro.io.EncoderFactory.get().binaryEncoder(bos, null);
+    try {
+      writer.write(rmdRecord, encoder);
+      encoder.flush();
+    } catch (java.io.IOException e) {
+      throw new com.linkedin.venice.exceptions.VeniceException("Failed to serialize RMD record", e);
+    }
+    return bos.toByteArray();
+  }
+
   /**
    * Build a seed RMD record for the fold path. Convenience for callers that don't want to manage
    * the {@link WriteComputeSeedRmd} helper directly. Caller may post-process the returned record

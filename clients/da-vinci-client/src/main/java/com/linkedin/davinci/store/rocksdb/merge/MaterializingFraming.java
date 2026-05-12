@@ -209,6 +209,55 @@ public final class MaterializingFraming {
   }
 
   /**
+   * Synthesize an RMD record from the operand chain in {@code rawValue}, returning bytes in the
+   * format {@code [valueSchemaId : 4B BE][rmd avro bytes]} — matching the on-disk RMD format so
+   * callers can use it interchangeably.
+   *
+   * <p>Used by {@code MaterializingReplicationMetadataRocksDBStoragePartition.getReplicationMetadata}
+   * when the on-disk RMD is null but the value bytes have an operand chain — typically when the
+   * key has only received UPDATE operands under flag-on (which don't write RMD).
+   *
+   * <p>Returns null if {@code rawValue} doesn't contain an operand chain (e.g. pure PUT bytes
+   * with no operands, or a chunked manifest without trailing operands), or if synthesis fails.
+   */
+  public static byte[] maybeSynthesizeRmdFromChain(
+      byte[] rawValue,
+      String storeNameAndVersion,
+      MaterializingFoldContext ctx) {
+    if (rawValue == null || rawValue.length < 1) {
+      return null;
+    }
+    // Operand-only chain: no base.
+    if (rawValue[0] == ConcatBlobParser.KIND_OPERAND) {
+      ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(rawValue);
+      if (parsed.getOperands().isEmpty()) {
+        return null;
+      }
+      // Determine the operand's value schema id for serialization.
+      // Use the fold context's per-operand processing to compute the RMD.
+      return ctx.computeSynthesizedRmd(-1, null, parsed.getOperands());
+    }
+    if (rawValue.length < ByteUtils.SIZE_OF_INT + 1) {
+      return null;
+    }
+    int schemaId = ByteUtils.readInt(rawValue, 0);
+    if (schemaId < 0) {
+      // Chunked manifest case: skipping for now (less common in this code path).
+      return null;
+    }
+    if (rawValue[ByteUtils.SIZE_OF_INT] != ConcatBlobParser.KIND_BASE) {
+      // Not a framed materialized blob.
+      return null;
+    }
+    ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(rawValue);
+    if (parsed.getOperands().isEmpty()) {
+      // Just a base, no operands → no chain to synthesize from.
+      return null;
+    }
+    return ctx.computeSynthesizedRmd(parsed.getSchemaId(), parsed.getBase(), parsed.getOperands());
+  }
+
+  /**
    * Variant of {@link #materialize(byte[], String)} that accepts a chunk-fetch callback. When
    * the on-disk bytes are a chunked-manifest record with appended operand bytes (the post-H5-fix
    * shape exposed by the {@code testActiveActivePartialUpdate*} integration tests), this method

@@ -229,6 +229,68 @@ public final class MaterializingFoldContext {
     return max;
   }
 
+  /**
+   * Compute the synthesized RMD bytes after applying the operand chain to a base value record.
+   * Returns null if the chain is empty. The output is a [valueSchemaId : 4B BE][rmd avro bytes]
+   * tuple — the same format as on-disk RMD column-family entries — so the caller can use it
+   * interchangeably with on-disk RMD.
+   *
+   * <p>Used by {@code MaterializingReplicationMetadataRocksDBStoragePartition.getReplicationMetadata}
+   * to synthesize RMD when the chain-bearing key has no on-disk RMD (because flag-on UPDATEs
+   * don't write RMD). Lets the AA leader's RMW do proper per-field DCR on PUT-after-chain.
+   */
+  public byte[] computeSynthesizedRmd(int baseSchemaId, byte[] baseValueBytes, List<byte[]> framedOperands) {
+    if (framedOperands == null || framedOperands.isEmpty()) {
+      return null;
+    }
+    int readerSchemaId = resolveReaderSchemaIdForFold(baseSchemaId, framedOperands);
+    byte[] decompressedBase = decompressBase(baseValueBytes);
+    GenericRecord curr =
+        baseValueBytes == null ? null : deserializeValue(baseSchemaId, readerSchemaId, decompressedBase);
+    Schema valueSchema = wcProcessor.getReaderValueSchema(readerSchemaId);
+    Schema rmdSchema = wcProcessor.getReaderRmdSchema(readerSchemaId);
+    GenericRecord seedRmd = buildSeedRmdFromBaseAndOnDiskRmd(curr, valueSchema, rmdSchema, null);
+    final GenericRecord initialCurr = curr;
+    ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> initialCurr), seedRmd);
+    long fallbackCounter = 0L;
+    for (byte[] op: framedOperands) {
+      OperandContent c = OperandContent.parse(op);
+      fallbackCounter++;
+      long modifyTs = (c.updateOperationTimestamp != OperandContent.NO_TIMESTAMP_AVAILABLE)
+          ? c.updateOperationTimestamp
+          : fallbackCounter;
+      try {
+        WriteComputeResult result = wcProcessor.applyWriteComputeV2WithExternalRmd(
+            valueAndRmd,
+            c.valueSchemaId,
+            readerSchemaId,
+            ByteBuffer.wrap(c.payload),
+            c.updateSchemaId,
+            c.updateSchemaId,
+            modifyTs);
+        GenericRecord updatedValue = result.getUpdatedValue();
+        if (updatedValue == null) {
+          return null;
+        }
+        valueAndRmd.setValue(updatedValue);
+      } catch (Exception e) {
+        LOGGER.warn("VT-merge: computeSynthesizedRmd: V2 failed on operand, returning null", e);
+        return null;
+      }
+    }
+    // Serialize the synthesized RMD with the resolved valueSchemaId.
+    GenericRecord finalRmd = valueAndRmd.getRmd();
+    byte[] rmdBytes = wcProcessor.serializeRmdRecord(readerSchemaId, finalRmd);
+    // Prepend the 4-byte valueSchemaId in BE order (matching on-disk RMD format).
+    byte[] out = new byte[4 + rmdBytes.length];
+    out[0] = (byte) (readerSchemaId >>> 24);
+    out[1] = (byte) (readerSchemaId >>> 16);
+    out[2] = (byte) (readerSchemaId >>> 8);
+    out[3] = (byte) readerSchemaId;
+    System.arraycopy(rmdBytes, 0, out, 4, rmdBytes.length);
+    return out;
+  }
+
   /** Result of a fold: the schemaId the bytes are encoded under + the bytes themselves. */
   public static final class FoldResult {
     public final int schemaId;

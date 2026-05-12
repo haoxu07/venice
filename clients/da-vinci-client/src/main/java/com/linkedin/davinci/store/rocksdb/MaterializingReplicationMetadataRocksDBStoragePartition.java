@@ -67,6 +67,46 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
     return super.getReplicationMetadata(ByteBuffer.wrap(key));
   }
 
+  /**
+   * Override that synthesizes RMD from the operand chain when:
+   * <ol>
+   *   <li>on-disk RMD is null (e.g. key has only received UPDATE operands under flag-on), AND</li>
+   *   <li>on-disk value bytes have an operand chain.</li>
+   * </ol>
+   * Lets the AA leader's RMW see the correct per-field-ts RMD on PUT-after-chain, preserving
+   * element-level DCR across the leader's PUT-time merge with the existing chain state.
+   */
+  @Override
+  public byte[] getReplicationMetadata(ByteBuffer key) {
+    byte[] rmdBytes = super.getReplicationMetadata(key);
+    if (rmdBytes != null && rmdBytes.length > 4) {
+      return rmdBytes;
+    }
+    // RMD is null. Check if value has an operand chain; if so, synthesize RMD via fold.
+    byte[] keyBytes = com.linkedin.venice.utils.ByteUtils.extractByteArray(key);
+    byte[] rawValue = super.get(keyBytes);
+    if (rawValue == null || rawValue.length < 1) {
+      return rmdBytes;
+    }
+    // Only synthesize when we have a real fold context registered.
+    com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContext ctx =
+        com.linkedin.davinci.store.rocksdb.merge.MaterializingFoldContextRegistry.get(storeNameAndVersion);
+    if (ctx == null) {
+      return rmdBytes;
+    }
+    try {
+      return MaterializingFraming.maybeSynthesizeRmdFromChain(rawValue, storeNameAndVersion, ctx);
+    } catch (Exception e) {
+      org.apache.logging.log4j.LogManager.getLogger(MaterializingReplicationMetadataRocksDBStoragePartition.class)
+          .warn(
+              "VT-merge: failed to synthesize RMD from chain for storeVersion={} partition={}; returning null",
+              storeNameAndVersion,
+              partitionId,
+              e);
+      return rmdBytes;
+    }
+  }
+
   @Override
   public byte[] get(byte[] key) {
     byte[] raw = super.get(key);
