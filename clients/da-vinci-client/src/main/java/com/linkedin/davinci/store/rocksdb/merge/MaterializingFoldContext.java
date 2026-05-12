@@ -2,6 +2,9 @@ package com.linkedin.davinci.store.rocksdb.merge;
 
 import com.linkedin.davinci.kafka.consumer.StoreWriteComputeProcessor;
 import com.linkedin.davinci.kafka.consumer.WriteComputeResult;
+import com.linkedin.davinci.replication.rmdcache.field.FieldLevelRmdCache;
+import com.linkedin.davinci.replication.rmdcache.field.FieldRmdEntry;
+import com.linkedin.davinci.schema.merge.ValueAndRmd;
 import com.linkedin.davinci.serializer.avro.MapOrderPreservingSerDeFactory;
 import com.linkedin.davinci.serializer.avro.fast.MapOrderPreservingFastSerDeFactory;
 import com.linkedin.venice.compression.VeniceCompressor;
@@ -13,6 +16,7 @@ import com.linkedin.venice.utils.lazy.Lazy;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.logging.log4j.LogManager;
@@ -103,17 +107,18 @@ public final class MaterializingFoldContext {
     byte[] decompressedBase = decompressBase(baseValueBytes);
     GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, decompressedBase);
     byte[] lastUncompressed = decompressedBase;
-    // Route through the V2 algorithm with a synthesized per-operand seed RMD. V2 uses an
-    // IndexedHashMap-based active-element index that is 10-58× faster than V1's O(N×M)
-    // .contains() loop on append-N-elements workloads (empirically validated by
-    // WriteComputeArrayApplyMicrobenchmark). The seed RMD is in put-only state with
-    // topLevelTs=0; we feed monotonically increasing modify-ts (operandIndex+1) so the V2
-    // algorithm's ignoreIncomingRequest check always returns false and every operand wins.
-    // Per-chain operand-order semantics are preserved.
-    // Use the operand's real updateOperationTimestamp when available (Phase A wire-format
-    // extension); fall back to chain-position counter for legacy operands that don't carry
-    // a timestamp. This is the foundation for cross-DC per-field DCR — Phase B will pair this
-    // with base-RMD reads to do proper element-level DCR via the V2 algorithm.
+    // Phase 3 (cross-DC fix): build the seed RMD ONCE from the base value record, honoring
+    // Gotchas #1 and #2 (empty collections / scalar-at-schema-default → no DCR floor). Then
+    // persist the RMD across operands so each operand's RMD mutation (e.g. list element ts
+    // updates) is visible to the next operand. Use applyWriteComputeV2WithExternalRmd to plumb
+    // the same ValueAndRmd container through the loop.
+    Schema valueSchema = wcProcessor.getReaderValueSchema(baseSchemaId);
+    Schema rmdSchema = wcProcessor.getReaderRmdSchema(baseSchemaId);
+    Map<Integer, FieldRmdEntry> seedEntries =
+        FieldLevelRmdCache.synthesizeFromPut(curr, valueSchema, 0L /* unknown PUT ts */);
+    GenericRecord seedRmd = buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+    final GenericRecord initialCurr = curr;
+    ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> initialCurr), seedRmd);
     long fallbackCounter = 0L;
     for (byte[] op: framedOperands) {
       OperandContent c = OperandContent.parse(op);
@@ -121,8 +126,8 @@ public final class MaterializingFoldContext {
       long modifyTs = (c.updateOperationTimestamp != OperandContent.NO_TIMESTAMP_AVAILABLE)
           ? c.updateOperationTimestamp
           : fallbackCounter;
-      WriteComputeResult result = wcProcessor.applyWriteComputeV2(
-          curr,
+      WriteComputeResult result = wcProcessor.applyWriteComputeV2WithExternalRmd(
+          valueAndRmd,
           c.valueSchemaId,
           baseSchemaId,
           ByteBuffer.wrap(c.payload),
@@ -135,9 +140,12 @@ public final class MaterializingFoldContext {
         return null;
       }
       lastUncompressed = result.getUpdatedValueBytes();
+      // The V2 algorithm mutates valueAndRmd in place; ensure the value tracked in the
+      // container is the updated value so the next operand sees it.
+      valueAndRmd.setValue(curr);
     }
     byte[] compressed = compressFolded(lastUncompressed);
-    LOGGER.info(
+    LOGGER.debug(
         "[TIMING-FOLD] foldOperands wallMs={} chainDepth={} baseBytesIn={} baseBytesDecompressed={} finalBytesUncompressed={} finalBytesCompressed={}",
         (System.nanoTime() - foldStartNs) / 1_000_000.0,
         framedOperands.size(),
@@ -146,6 +154,24 @@ public final class MaterializingFoldContext {
         lastUncompressed == null ? -1 : lastUncompressed.length,
         compressed == null ? -1 : compressed.length);
     return compressed;
+  }
+
+  /**
+   * Build the seed RMD record for the fold path. Returns an RMD record with the per-field-ts
+   * branch selected, where each field's per-field-ts entry is derived from the base record
+   * (Gotchas #1/#2 from GOAL.md §4.2/§4.3 applied via {@link FieldLevelRmdCache#synthesizeFromPut}).
+   */
+  private GenericRecord buildSeedRmdRecord(
+      Schema rmdSchema,
+      Schema valueSchema,
+      Map<Integer, FieldRmdEntry> entriesByOrdinal) {
+    GenericRecord perFieldTs = FieldLevelRmdCache.buildPerFieldTsRecord(rmdSchema, valueSchema, entriesByOrdinal);
+    GenericRecord rmd = new org.apache.avro.generic.GenericData.Record(rmdSchema);
+    rmd.put(com.linkedin.venice.schema.rmd.RmdConstants.TIMESTAMP_FIELD_NAME, perFieldTs);
+    rmd.put(
+        com.linkedin.venice.schema.rmd.RmdConstants.REPLICATION_CHECKPOINT_VECTOR_FIELD_NAME,
+        java.util.Collections.emptyList());
+    return rmd;
   }
 
   /**
@@ -167,7 +193,15 @@ public final class MaterializingFoldContext {
     OperandContent firstOp = OperandContent.parse(framedOperands.get(0));
     int valueSchemaId = firstOp.valueSchemaId;
 
-    GenericRecord curr = null; // empty base; WriteComputeProcessor handles null currValue.
+    // Build seed RMD against the value schema. No base record (operand-only), so all per-field
+    // entries are "not populated by PUT" — operands win freely (Gotchas #1/#2 both apply).
+    Schema valueSchema = wcProcessor.getReaderValueSchema(valueSchemaId);
+    Schema rmdSchema = wcProcessor.getReaderRmdSchema(valueSchemaId);
+    Map<Integer, FieldRmdEntry> seedEntries = FieldLevelRmdCache.synthesizeFromPut(null, valueSchema, 0L);
+    GenericRecord seedRmd = buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+    ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> null), seedRmd);
+
+    GenericRecord curr = null;
     int lastSchemaId = valueSchemaId;
     byte[] lastBytes = null;
     long fallbackCounter = 0L;
@@ -177,8 +211,8 @@ public final class MaterializingFoldContext {
       long modifyTs = (c.updateOperationTimestamp != OperandContent.NO_TIMESTAMP_AVAILABLE)
           ? c.updateOperationTimestamp
           : fallbackCounter;
-      WriteComputeResult result = wcProcessor.applyWriteComputeV2(
-          curr,
+      WriteComputeResult result = wcProcessor.applyWriteComputeV2WithExternalRmd(
+          valueAndRmd,
           c.valueSchemaId,
           valueSchemaId,
           ByteBuffer.wrap(c.payload),
@@ -190,9 +224,10 @@ public final class MaterializingFoldContext {
         return new FoldOnlyResult(valueSchemaId, null);
       }
       lastBytes = result.getUpdatedValueBytes();
+      valueAndRmd.setValue(curr);
     }
     byte[] compressed = compressFolded(lastBytes);
-    LOGGER.info(
+    LOGGER.debug(
         "[TIMING-FOLD-ONLY] foldOperandOnly wallMs={} chainDepth={} finalBytesUncompressed={} finalBytesCompressed={}",
         (System.nanoTime() - foldStartNs) / 1_000_000.0,
         framedOperands.size(),

@@ -187,6 +187,78 @@ public class StoreWriteComputeProcessor {
     return new WriteComputeResult(getValueSerializer(readerValueSchemaId).serialize(updatedValue), updatedValue);
   }
 
+  /**
+   * Variant of {@link #applyWriteComputeV2} that accepts an existing {@link ValueAndRmd} container
+   * so the caller can persist RMD state across multiple operand applications within one fold call.
+   *
+   * <p>Used by the VT-merge fold path: the chain may contain multiple operands targeting the same
+   * collection field. The V2 algorithm uses {@code CollectionRmdTimestamp.isInPutOnlyState()} (and
+   * the per-element-ts arrays) to decide element-level DCR for each operand. If the RMD is rebuilt
+   * fresh for each operand (the simple {@link #applyWriteComputeV2} overload), operand N+1 doesn't
+   * see operand N's RMD mutations — so element-level DCR fails across the chain.
+   *
+   * <p>This overload mutates the supplied {@code valueAndRmd} in place: after the call,
+   * {@code valueAndRmd.getValue()} is the updated value record and {@code valueAndRmd.getRmd()}
+   * reflects the cumulative RMD state from all applied operands.
+   *
+   * @param valueAndRmd  pre-built input; caller owns construction (typically seeded from the base
+   *                     record at fold start)
+   * @param writerValueSchemaId schema id under which {@code writeComputeBytes} was serialized
+   * @param readerValueSchemaId schema id under which the result must be deserialized
+   * @param writeComputeBytes the WC operand payload
+   * @param writerUpdateProtocolVersion WC protocol version used by the writer
+   * @param readerUpdateProtocolVersion WC protocol version to use as reader
+   * @param modifyTimestamp the operand's logical timestamp (for DCR)
+   */
+  public WriteComputeResult applyWriteComputeV2WithExternalRmd(
+      ValueAndRmd<GenericRecord> valueAndRmd,
+      int writerValueSchemaId,
+      int readerValueSchemaId,
+      ByteBuffer writeComputeBytes,
+      int writerUpdateProtocolVersion,
+      int readerUpdateProtocolVersion,
+      long modifyTimestamp) {
+    int writerSchemaUniqueId = getSchemaAndUniqueId(writerValueSchemaId, writerUpdateProtocolVersion).getUniqueId();
+    SchemaAndUniqueId readerSchemaContainer = getSchemaAndUniqueId(readerValueSchemaId, readerUpdateProtocolVersion);
+    RecordDeserializer<GenericRecord> deserializer =
+        this.writeComputeDeserializerCache.get(writerSchemaUniqueId, readerSchemaContainer.getUniqueId());
+    GenericRecord writeComputeRecord = deserializer.deserialize(writeComputeBytes);
+
+    final Schema readerValueSchema = readerSchemaContainer.getValueSchema();
+    ValueAndRmd<GenericRecord> output = writeComputeProcessor
+        .updateRecordWithRmd(readerValueSchema, valueAndRmd, writeComputeRecord, modifyTimestamp, -1);
+
+    GenericRecord updatedValue = output.getValue();
+    if (updatedValue == null) {
+      return new WriteComputeResult(null, null);
+    }
+    return new WriteComputeResult(getValueSerializer(readerValueSchemaId).serialize(updatedValue), updatedValue);
+  }
+
+  /** Returns the value schema for {@code readerValueSchemaId}, used by fold-path seed builders. */
+  public Schema getReaderValueSchema(int readerValueSchemaId) {
+    return getValueSchema(readerValueSchemaId);
+  }
+
+  /** Returns the RMD schema for {@code readerValueSchemaId}, used by fold-path seed builders. */
+  public Schema getReaderRmdSchema(int readerValueSchemaId) {
+    Schema valueSchema = getValueSchema(readerValueSchemaId);
+    WriteComputeSeedRmd helper = getOrInitSeedRmdHelper();
+    return helper.getRmdSchema(storeName, readerValueSchemaId, valueSchema);
+  }
+
+  /**
+   * Build a seed RMD record for the fold path. Convenience for callers that don't want to manage
+   * the {@link WriteComputeSeedRmd} helper directly. Caller may post-process the returned record
+   * (e.g. to honor §4.2/§4.3 gotchas based on the base value record).
+   */
+  public GenericRecord buildSeedRmd(int readerValueSchemaId) {
+    Schema valueSchema = getValueSchema(readerValueSchemaId);
+    WriteComputeSeedRmd helper = getOrInitSeedRmdHelper();
+    Schema rmdSchema = helper.getRmdSchema(storeName, readerValueSchemaId, valueSchema);
+    return helper.buildSeedRmd(rmdSchema, valueSchema);
+  }
+
   private WriteComputeSeedRmd getOrInitSeedRmdHelper() {
     WriteComputeSeedRmd local = seedRmdHelper;
     if (local == null) {
