@@ -16,6 +16,7 @@ import com.linkedin.venice.schema.writecompute.WriteComputeConstants;
 import com.linkedin.venice.schema.writecompute.WriteComputeHandlerV1;
 import com.linkedin.venice.schema.writecompute.WriteComputeOperation;
 import com.linkedin.venice.utils.AvroSchemaUtils;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nonnull;
@@ -155,8 +156,14 @@ public class WriteComputeHandlerV2 extends WriteComputeHandlerV1 {
             new CollectionRmdTimestamp(fieldTimestampRecord),
             currValueRecord,
             currentValueField,
-            (Map<String, Object>) fieldWriteComputeRecord.get(WriteComputeConstants.MAP_UNION),
-            (List<String>) fieldWriteComputeRecord.get(WriteComputeConstants.MAP_DIFF));
+            // Coerce any Utf8 keys to String before passing to V2. Standard Avro
+            // GenericDatumReader produces Utf8 for map keys unless the schema carries
+            // "avro.java.string": "String"; V2's handleModifyMap iterates with String
+            // typed variables and would otherwise throw ClassCastException. V1 tolerated
+            // Utf8 via raw-typed Map/List iteration. String.toString() is identity, so
+            // already-String keys are no-ops.
+            coerceMapKeysToString((Map<?, Object>) fieldWriteComputeRecord.get(WriteComputeConstants.MAP_UNION)),
+            coerceListToStringList((List<?>) fieldWriteComputeRecord.get(WriteComputeConstants.MAP_DIFF)));
       default:
         throw new IllegalArgumentException(
             String.format(
@@ -164,6 +171,42 @@ public class WriteComputeHandlerV2 extends WriteComputeHandlerV1 {
                 currentValueField.name(),
                 currValueRecord));
     }
+  }
+
+  /**
+   * Build a fresh {@code Map<String, Object>} from a map whose keys may be {@code Utf8}. The
+   * V2 collection handler iterates its keys with {@code String} typed variables, so any non-String
+   * key would raise {@code ClassCastException} at iteration time. {@code String.toString()} is
+   * identity, so already-String keys are no-ops and the work is a single linear scan.
+   *
+   * <p>An {@code IndexedHashMap} is used to preserve iteration order so downstream behavior
+   * (e.g. sorted insertion of new keys) is deterministic.
+   */
+  private static Map<String, Object> coerceMapKeysToString(Map<?, Object> src) {
+    if (src == null || src.isEmpty()) {
+      return new IndexedHashMap<>();
+    }
+    IndexedHashMap<String, Object> out = new IndexedHashMap<>(src.size());
+    for (Map.Entry<?, Object> e: src.entrySet()) {
+      Object k = e.getKey();
+      out.put(k == null ? null : k.toString(), e.getValue());
+    }
+    return out;
+  }
+
+  /**
+   * Build a fresh {@code List<String>} from a list whose entries may be {@code Utf8}. Mirrors
+   * {@link #coerceMapKeysToString} for MAP_DIFF payloads.
+   */
+  private static List<String> coerceListToStringList(List<?> src) {
+    if (src == null || src.isEmpty()) {
+      return new ArrayList<>(0);
+    }
+    List<String> out = new ArrayList<>(src.size());
+    for (Object k: src) {
+      out.add(k == null ? null : k.toString());
+    }
+    return out;
   }
 
   private GenericRecord assertAndGetTsRecordFieldIsRecord(GenericRecord timestampRecord, String fieldName) {
