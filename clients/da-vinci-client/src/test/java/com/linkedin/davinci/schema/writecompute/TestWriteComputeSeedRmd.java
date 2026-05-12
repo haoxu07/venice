@@ -422,6 +422,117 @@ public class TestWriteComputeSeedRmd {
     Assert.assertFalse(keyStrs.contains("one"), "Result must NOT contain key one (MAP_DIFF removed it)");
   }
 
+  /**
+   * Regression-guard for the second wave of Utf8 issues — when the CURRENT VALUE RECORD's map
+   * field has Utf8 keys (because the base bytes were deserialized via slow-avro), V2's
+   * {@code handleModifyPutOnlyMap} does {@code putOnlyPartMap = new IndexedHashMap<>(currMap)}
+   * which preserves Utf8 keys; subsequent {@code .remove(stringKey)} silently fails because
+   * {@code Utf8.equals(String)} is false. The fix coerces the value record's map field keys
+   * in-place at the V2 entry point so both put-only and collection-merge paths see uniformly
+   * String-keyed maps.
+   *
+   * <p>Reproducer scenario mirrors the integration test sequence:
+   * <ol>
+   *   <li>Base value record has {@code {"one": 1, "two": 2, "three": 3}} with Utf8 keys</li>
+   *   <li>Operand: MAP_DIFF on {@code ["one", "two"]} (String keys after Track-1 coercion)</li>
+   *   <li>Expected: result map has only {@code {"three": 3}} — without the value-record-side
+   *       coercion, the {@code remove} silently does nothing and the result still has all three
+   *       entries.</li>
+   * </ol>
+   */
+  @Test
+  public void testV2WithSeedRmdHandlesValueRecordWithUtf8KeyedMap() {
+    final String mapFieldName = "mapField";
+    final String mapFieldSchemaStr = "{\n" + "  \"type\": \"record\",\n" + "  \"name\": \"MapRecord3\",\n"
+        + "  \"fields\": [\n" + "    {\"name\": \"" + mapFieldName
+        + "\", \"type\": {\"type\": \"map\", \"values\": \"int\"}, \"default\": {}}\n" + "  ]\n" + "}";
+    Schema valueSchema = AvroCompatibilityHelper.parse(mapFieldSchemaStr);
+    Schema wcSchema = WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(valueSchema);
+    WriteComputeProcessor processor = new WriteComputeProcessor(new CollectionTimestampMergeRecordHelper());
+    WriteComputeSeedRmd helper = new WriteComputeSeedRmd();
+    Schema rmdSchema = helper.getRmdSchema(STORE_NAME, VALUE_SCHEMA_ID, valueSchema);
+
+    // Build a base value record whose map field has Utf8 keys (simulating slow-avro
+    // deserialization of base bytes).
+    GenericRecord base = new GenericData.Record(valueSchema);
+    IndexedHashMap<Utf8, Integer> utf8KeyedMap = new IndexedHashMap<>();
+    utf8KeyedMap.put(new Utf8("one"), 1);
+    utf8KeyedMap.put(new Utf8("two"), 2);
+    utf8KeyedMap.put(new Utf8("three"), 3);
+    base.put(mapFieldName, utf8KeyedMap);
+
+    // Operand: MAP_DIFF removes "one" and "two".
+    Schema mapOpsSchema = mapOpsSchemaOf(wcSchema, mapFieldName);
+    GenericRecord mapOps = new GenericData.Record(mapOpsSchema);
+    mapOps.put(MAP_UNION, new IndexedHashMap<String, Integer>());
+    mapOps.put(MAP_DIFF, java.util.Arrays.asList("one", "two"));
+    GenericRecord wc = new GenericData.Record(wcSchema);
+    wc.put(mapFieldName, mapOps);
+
+    GenericRecord seedRmd = helper.buildSeedRmd(rmdSchema, valueSchema);
+    GenericRecord result =
+        processor.updateRecordWithRmd(valueSchema, new ValueAndRmd<>(Lazy.of(() -> base), seedRmd), wc, /*ts*/ 100L, -1)
+            .getValue();
+
+    @SuppressWarnings("unchecked")
+    Map<Object, Object> resultMap = (Map<Object, Object>) result.get(mapFieldName);
+    java.util.Set<String> keyStrs = new java.util.HashSet<>();
+    for (Object k: resultMap.keySet()) {
+      keyStrs.add(k.toString());
+    }
+    Assert.assertFalse(keyStrs.contains("one"), "MAP_DIFF should remove key 'one' from Utf8-keyed base");
+    Assert.assertFalse(keyStrs.contains("two"), "MAP_DIFF should remove key 'two' from Utf8-keyed base");
+    Assert.assertTrue(keyStrs.contains("three"), "MAP_DIFF should preserve key 'three' from Utf8-keyed base");
+    Assert.assertEquals(resultMap.size(), 1, "Result must have exactly one entry after MAP_DIFF removes 2 of 3");
+  }
+
+  /**
+   * Regression-guard for the third Utf8/type-coercion wave — when the WC payload contains a
+   * PUT_NEW_FIELD operation on a map field and the payload was deserialized via fast-avro, the
+   * resulting Map is a {@code java.util.HashMap} (not {@code IndexedHashMap}). The V2 dispatch's
+   * {@code mergeRecordHelper.putOnField} asserts the new value is an {@code IndexedHashMap} for
+   * MAP fields and throws otherwise. Fix coerces non-IndexedHashMap Maps to IndexedHashMap at
+   * the V2 entry point.
+   */
+  @Test
+  public void testV2WithSeedRmdHandlesPutNewFieldWithHashMap() {
+    final String mapFieldName = "mapField";
+    final String mapFieldSchemaStr = "{\n" + "  \"type\": \"record\",\n" + "  \"name\": \"MapRecord4\",\n"
+        + "  \"fields\": [\n" + "    {\"name\": \"" + mapFieldName
+        + "\", \"type\": {\"type\": \"map\", \"values\": \"int\"}, \"default\": {}}\n" + "  ]\n" + "}";
+    Schema valueSchema = AvroCompatibilityHelper.parse(mapFieldSchemaStr);
+    Schema wcSchema = WriteComputeSchemaConverter.getInstance().convertFromValueRecordSchema(valueSchema);
+    WriteComputeProcessor processor = new WriteComputeProcessor(new CollectionTimestampMergeRecordHelper());
+    WriteComputeSeedRmd helper = new WriteComputeSeedRmd();
+    Schema rmdSchema = helper.getRmdSchema(STORE_NAME, VALUE_SCHEMA_ID, valueSchema);
+
+    GenericRecord base = new GenericData.Record(valueSchema);
+    base.put(mapFieldName, new IndexedHashMap<>());
+
+    // PUT_NEW_FIELD: the WC payload has the map directly as a java.util.HashMap (simulating
+    // fast-avro deserialization output for a map field).
+    GenericRecord wc = new GenericData.Record(wcSchema);
+    java.util.HashMap<String, Integer> newMap = new java.util.HashMap<>();
+    newMap.put("seven", 7);
+    newMap.put("eight", 8);
+    wc.put(mapFieldName, newMap);
+
+    GenericRecord seedRmd = helper.buildSeedRmd(rmdSchema, valueSchema);
+    GenericRecord result =
+        processor.updateRecordWithRmd(valueSchema, new ValueAndRmd<>(Lazy.of(() -> base), seedRmd), wc, /*ts*/ 100L, -1)
+            .getValue();
+
+    @SuppressWarnings("unchecked")
+    Map<Object, Object> resultMap = (Map<Object, Object>) result.get(mapFieldName);
+    Assert.assertEquals(resultMap.size(), 2, "PUT_NEW_FIELD result must have 2 entries");
+    java.util.Set<String> keyStrs = new java.util.HashSet<>();
+    for (Object k: resultMap.keySet()) {
+      keyStrs.add(k.toString());
+    }
+    Assert.assertTrue(keyStrs.contains("seven"));
+    Assert.assertTrue(keyStrs.contains("eight"));
+  }
+
   // ----- helpers -----
 
   private static Map<String, Integer> mapOf(String k1, int v1, String k2, int v2) {

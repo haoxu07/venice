@@ -93,6 +93,15 @@ public class WriteComputeHandlerV2 extends WriteComputeHandlerV1 {
           continue; // Do nothing
 
         case PUT_NEW_FIELD:
+          // Fast-avro deserialization produces java.util.HashMap for map-typed fields rather than
+          // IndexedHashMap. CollectionTimestampMergeRecordHelper.putOnField asserts the new value
+          // is an IndexedHashMap for MAP fields; coerce here so the assertion holds and order
+          // semantics are preserved. Also coerce any Utf8 keys to String for the same reason as
+          // in modifyCollectionField below.
+          if (writeComputeFieldValue instanceof Map && !(writeComputeFieldValue instanceof IndexedHashMap)
+              && SchemaUtils.unwrapOptionalUnion(currentValueField.schema()) == Schema.Type.MAP) {
+            writeComputeFieldValue = coerceMapKeysToString((Map<?, Object>) writeComputeFieldValue);
+          }
           UpdateResultStatus putResult = mergeRecordHelper.putOnField(
               currRecordAndRmd.getValue(),
               timestampRecord,
@@ -150,6 +159,13 @@ public class WriteComputeHandlerV2 extends WriteComputeHandlerV1 {
                 "Expect value of field " + currentValueField.name() + " to be an IndexedHashMap. Got: "
                     + fieldValue.getClass());
           }
+        } else if (fieldValue instanceof IndexedHashMap && hasNonStringKeys((IndexedHashMap<?, ?>) fieldValue)) {
+          // Coerce keys to String in the value record's map field as well. The V2 handler builds
+          // putOnlyPartMap = new IndexedHashMap<>(currMap) which preserves Utf8 keys; subsequent
+          // .remove(stringKey) calls on that copy then silently fail because Utf8.equals(String)
+          // is false. Mutating the value record in place ensures both V2's put-only path and the
+          // collection-merge path see uniformly String-keyed maps.
+          currValueRecord.put(currentValueField.pos(), coerceMapKeysToString((Map<?, Object>) fieldValue));
         }
         return collectionFieldOperationHandler.handleModifyMap(
             modifyTimestamp,
@@ -171,6 +187,22 @@ public class WriteComputeHandlerV2 extends WriteComputeHandlerV1 {
                 currentValueField.name(),
                 currValueRecord));
     }
+  }
+
+  /**
+   * Cheap check: any non-String key in the map?
+   * (Map equality with String key fails for Utf8-keyed maps; see comment at use site.)
+   */
+  private static boolean hasNonStringKeys(IndexedHashMap<?, ?> map) {
+    if (map.isEmpty()) {
+      return false;
+    }
+    for (Object k: map.keySet()) {
+      if (k != null && !(k instanceof String)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
