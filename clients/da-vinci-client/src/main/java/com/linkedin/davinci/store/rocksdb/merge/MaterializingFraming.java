@@ -194,6 +194,21 @@ public final class MaterializingFraming {
   }
 
   /**
+   * Variant of {@link #materialize(byte[], String)} that accepts both chunk-fetch and RMD-fetch
+   * callbacks. RMD bytes (with 4-byte valueSchemaId prefix) are used by the fold path's V2
+   * algorithm to seed cross-DC per-field-ts DCR. May be null for callers that don't have a
+   * RMD partition (e.g. non-replication-metadata storage partitions).
+   */
+  public static byte[] materialize(
+      byte[] raw,
+      String storeNameAndVersion,
+      Function<byte[], byte[]> chunkFetchFn,
+      byte[] baseKey,
+      Function<byte[], byte[]> rmdFetchFn) {
+    return materializeInternal(raw, storeNameAndVersion, chunkFetchFn, baseKey, rmdFetchFn);
+  }
+
+  /**
    * Variant of {@link #materialize(byte[], String)} that accepts a chunk-fetch callback. When
    * the on-disk bytes are a chunked-manifest record with appended operand bytes (the post-H5-fix
    * shape exposed by the {@code testActiveActivePartialUpdate*} integration tests), this method
@@ -211,6 +226,15 @@ public final class MaterializingFraming {
    *     the raw on-disk bytes (no further materialization). May be {@code null}.
    */
   public static byte[] materialize(byte[] raw, String storeNameAndVersion, Function<byte[], byte[]> chunkFetchFn) {
+    return materializeInternal(raw, storeNameAndVersion, chunkFetchFn, null, null);
+  }
+
+  private static byte[] materializeInternal(
+      byte[] raw,
+      String storeNameAndVersion,
+      Function<byte[], byte[]> chunkFetchFn,
+      byte[] baseKey,
+      Function<byte[], byte[]> rmdFetchFn) {
     if (raw == null) {
       return null;
     }
@@ -235,7 +259,7 @@ public final class MaterializingFraming {
       // reassembled chunked value. Individual chunks (CHUNK_SCHEMA_ID) never have operands
       // appended — operand-UPDATEs target only the top-level manifest key.
       if (schemaId == CHUNK_MANIFEST_SCHEMA_ID && chunkFetchFn != null) {
-        return maybeFoldChunkedManifestWithOperands(raw, storeNameAndVersion, chunkFetchFn);
+        return maybeFoldChunkedManifestWithOperands(raw, storeNameAndVersion, chunkFetchFn, baseKey, rmdFetchFn);
       }
       return raw;
     }
@@ -243,7 +267,7 @@ public final class MaterializingFraming {
       // Not a framed materialized blob (legacy data, or a corrupted state). Return raw.
       return raw;
     }
-    return foldFramedBaseAndOperands(raw, storeNameAndVersion);
+    return foldFramedBaseAndOperands(raw, storeNameAndVersion, baseKey, rmdFetchFn);
   }
 
   /**
@@ -268,6 +292,15 @@ public final class MaterializingFraming {
       byte[] raw,
       String storeNameAndVersion,
       Function<byte[], byte[]> chunkFetchFn) {
+    return maybeFoldChunkedManifestWithOperands(raw, storeNameAndVersion, chunkFetchFn, null, null);
+  }
+
+  private static byte[] maybeFoldChunkedManifestWithOperands(
+      byte[] raw,
+      String storeNameAndVersion,
+      Function<byte[], byte[]> chunkFetchFn,
+      byte[] baseKey,
+      Function<byte[], byte[]> rmdFetchFn) {
     // Deserialize the manifest using a stream-backed BinaryDecoder so we can detect trailing
     // bytes via the stream's remaining-bytes count. The manifest is encoded starting at
     // offset 4 (after the int32 schemaId header), same convention as ChunkedValueManifestSerializer.
@@ -316,7 +349,8 @@ public final class MaterializingFraming {
     // Reassemble the chunked value by fetching each chunk and stripping its 4-byte schemaId header.
     byte[] assembled = reassembleChunks(manifest, chunkFetchFn, storeNameAndVersion);
     // Apply operands via the fold context (decompresses base, applies WC, recompresses).
-    byte[] materializedAvro = ctx.foldOperands(manifest.schemaId, assembled, operands);
+    byte[] baseRmd = (baseKey != null && rmdFetchFn != null) ? rmdFetchFn.apply(baseKey) : null;
+    byte[] materializedAvro = ctx.foldOperands(manifest.schemaId, assembled, operands, baseRmd);
     if (materializedAvro == null) {
       return null; // WC delete tombstone
     }
@@ -508,6 +542,15 @@ public final class MaterializingFraming {
 
   /** Read fold for the materialized-base-plus-zero-or-more-operands case. */
   private static byte[] foldFramedBaseAndOperands(byte[] raw, String storeNameAndVersion) {
+    return foldFramedBaseAndOperands(raw, storeNameAndVersion, null, null);
+  }
+
+  /** Read fold for the materialized-base-plus-zero-or-more-operands case, with RMD plumbing. */
+  private static byte[] foldFramedBaseAndOperands(
+      byte[] raw,
+      String storeNameAndVersion,
+      byte[] baseKey,
+      Function<byte[], byte[]> rmdFetchFn) {
     ConcatBlobParser.Parsed parsed = ConcatBlobParser.parse(raw);
     byte[] avroBase = parsed.getBase();
     List<byte[]> operands = parsed.getOperands();
@@ -537,7 +580,8 @@ public final class MaterializingFraming {
           storeNameAndVersion);
       return prependSchemaId(schemaId, avroBase);
     }
-    byte[] materializedAvro = ctx.foldOperands(schemaId, avroBase, operands);
+    byte[] baseRmd = (baseKey != null && rmdFetchFn != null) ? rmdFetchFn.apply(baseKey) : null;
+    byte[] materializedAvro = ctx.foldOperands(schemaId, avroBase, operands, baseRmd);
     if (materializedAvro == null) {
       return null; // tombstone via WC delete
     }

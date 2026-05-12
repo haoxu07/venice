@@ -54,6 +54,19 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
     return super.get(chunkKey);
   }
 
+  /**
+   * RMD-fetch callback for the materializing read path. Reads the on-disk replication metadata
+   * bytes (with 4-byte valueSchemaId prefix) for the given key. Used by the fold path's V2
+   * algorithm to seed cross-DC per-field-ts DCR (cross-DC fix per
+   * {@code autoresearch/vt-merge-cross-dc-fix/GOAL.md}).
+   *
+   * <p>Returns null if no RMD is stored for the key (e.g. key has only received UPDATE
+   * operands under flag-on, never a PUT/DELETE that would write RMD).
+   */
+  private byte[] rmdFetch(byte[] key) {
+    return super.getReplicationMetadata(ByteBuffer.wrap(key));
+  }
+
   @Override
   public byte[] get(byte[] key) {
     byte[] raw = super.get(key);
@@ -66,7 +79,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
               key.length,
               raw.length);
     }
-    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch, key, this::rmdFetch);
   }
 
   // -------- WRITE PATH --------
@@ -160,7 +173,8 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
     if (raw == null) {
       return null;
     }
-    byte[] materialized = MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
+    byte[] materialized =
+        MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch, key, this::rmdFetch);
     if (materialized == null) {
       return null;
     }
@@ -192,7 +206,7 @@ public class MaterializingReplicationMetadataRocksDBStoragePartition
               raw.length,
               hex);
     }
-    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch);
+    return MaterializingFraming.materialize(raw, storeNameAndVersion, this::chunkFetch, keyBytes, this::rmdFetch);
   }
 
   /** Bypass-the-fold accessor used by the sweeper. */

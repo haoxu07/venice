@@ -98,6 +98,24 @@ public final class MaterializingFoldContext {
    * @return Avro-encoded materialized value (no schema-id prefix)
    */
   public byte[] foldOperands(int baseSchemaId, byte[] baseValueBytes, List<byte[]> framedOperands) {
+    return foldOperands(baseSchemaId, baseValueBytes, framedOperands, null);
+  }
+
+  /**
+   * Variant of {@link #foldOperands(int, byte[], List)} that accepts the base record's on-disk
+   * RMD bytes (with the 4-byte valueSchemaId prefix, as returned by
+   * {@code ReplicationMetadataRocksDBStoragePartition.getReplicationMetadata}). When non-null,
+   * the fold path uses this RMD as the seed for the V2 algorithm — preserving cross-DC
+   * per-field-ts DCR semantics from prior PUT/DELETE operations.
+   *
+   * <p>When {@code baseRmdBytes} is null, falls back to seeding from the base value record (which
+   * cannot honor a non-zero DCR floor since the PUT ts is unknown without RMD).
+   */
+  public byte[] foldOperands(
+      int baseSchemaId,
+      byte[] baseValueBytes,
+      List<byte[]> framedOperands,
+      byte[] baseRmdBytes) {
     if (framedOperands == null || framedOperands.isEmpty()) {
       return baseValueBytes;
     }
@@ -107,16 +125,13 @@ public final class MaterializingFoldContext {
     byte[] decompressedBase = decompressBase(baseValueBytes);
     GenericRecord curr = deserializeValue(baseSchemaId, baseSchemaId, decompressedBase);
     byte[] lastUncompressed = decompressedBase;
-    // Phase 3 (cross-DC fix): build the seed RMD ONCE from the base value record, honoring
-    // Gotchas #1 and #2 (empty collections / scalar-at-schema-default → no DCR floor). Then
-    // persist the RMD across operands so each operand's RMD mutation (e.g. list element ts
-    // updates) is visible to the next operand. Use applyWriteComputeV2WithExternalRmd to plumb
-    // the same ValueAndRmd container through the loop.
+    // Phase 3 (cross-DC fix): build the seed RMD ONCE from the base value record + on-disk RMD,
+    // honoring Gotchas #1 and #2. Then persist the RMD across operands so each operand's RMD
+    // mutation (e.g. list element ts updates) is visible to the next operand. Use
+    // applyWriteComputeV2WithExternalRmd to plumb the same ValueAndRmd container through the loop.
     Schema valueSchema = wcProcessor.getReaderValueSchema(baseSchemaId);
     Schema rmdSchema = wcProcessor.getReaderRmdSchema(baseSchemaId);
-    Map<Integer, FieldRmdEntry> seedEntries =
-        FieldLevelRmdCache.synthesizeFromPut(curr, valueSchema, 0L /* unknown PUT ts */);
-    GenericRecord seedRmd = buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+    GenericRecord seedRmd = buildSeedRmdFromBaseAndOnDiskRmd(curr, valueSchema, rmdSchema, baseRmdBytes);
     final GenericRecord initialCurr = curr;
     ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> initialCurr), seedRmd);
     long fallbackCounter = 0L;
@@ -175,6 +190,123 @@ public final class MaterializingFoldContext {
   }
 
   /**
+   * Build a seed RMD for V2 fold. Strategy:
+   *
+   * <ol>
+   *   <li>If {@code baseRmdBytes} is non-null and parseable, decode it. If it has a per-field-ts
+   *       RMD (mode 1), use it directly.</li>
+   *   <li>If {@code baseRmdBytes} has whole-record-ts (mode 0), convert to mode 1 with each
+   *       field's topLevelFieldTs set to the whole-record-ts, but applying Gotcha #1 (empty
+   *       collection → MIN_VALUE) and Gotcha #2 (scalar at default → MIN_VALUE).</li>
+   *   <li>If {@code baseRmdBytes} is null, fall back to synthesis from base value with PUT ts=0
+   *       (no DCR floor on non-default fields; conservative).</li>
+   * </ol>
+   */
+  private GenericRecord buildSeedRmdFromBaseAndOnDiskRmd(
+      GenericRecord baseValueRecord,
+      Schema valueSchema,
+      Schema rmdSchema,
+      byte[] baseRmdBytes) {
+    if (baseRmdBytes != null && baseRmdBytes.length > 4) {
+      try {
+        GenericRecord onDiskRmd = deserializeOnDiskRmd(baseRmdBytes, rmdSchema);
+        if (onDiskRmd != null) {
+          Object tsObj = onDiskRmd.get(com.linkedin.venice.schema.rmd.RmdConstants.TIMESTAMP_FIELD_POS);
+          if (tsObj instanceof GenericRecord) {
+            // Already in per-field-ts mode 1. Apply Gotcha #1 to empty collection fields whose
+            // topLevelFieldTs is non-zero: lower it to Long.MIN_VALUE so subsequent UPDATEs win.
+            applyGotchaOneToCollectionFields((GenericRecord) tsObj, valueSchema, baseValueRecord);
+            return onDiskRmd;
+          } else if (tsObj instanceof Long) {
+            // Mode 0: whole-record-ts. Convert to per-field with Gotcha #1/#2.
+            long wholeRecordTs = (Long) tsObj;
+            return convertWholeRecordTsToPerField(baseValueRecord, valueSchema, rmdSchema, wholeRecordTs);
+          }
+        }
+      } catch (Exception e) {
+        LOGGER.warn("VT-merge: failed to deserialize on-disk RMD, falling back to synthesis", e);
+      }
+    }
+    // Fallback: synthesize from base value with PUT ts=0.
+    Map<Integer, FieldRmdEntry> seedEntries = FieldLevelRmdCache.synthesizeFromPut(baseValueRecord, valueSchema, 0L);
+    return buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+  }
+
+  /**
+   * Convert a mode-0 (whole-record-ts) RMD into a mode-1 (per-field-ts) RMD where each field's
+   * per-field-ts is the whole-record-ts, except: empty collection fields (Gotcha #1) and scalar
+   * fields at schema default (Gotcha #2) get topLevelFieldTs=Long.MIN_VALUE.
+   */
+  private GenericRecord convertWholeRecordTsToPerField(
+      GenericRecord baseValueRecord,
+      Schema valueSchema,
+      Schema rmdSchema,
+      long wholeRecordTs) {
+    Map<Integer, FieldRmdEntry> seedEntries =
+        FieldLevelRmdCache.synthesizeFromPut(baseValueRecord, valueSchema, wholeRecordTs);
+    return buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+  }
+
+  /**
+   * Apply Gotcha #1 to a per-field-ts RMD that arrived from disk: if a collection field's value
+   * is empty in the base record but its RMD has a non-MIN_VALUE topLevelFieldTs, lower the
+   * topLevelFieldTs to {@link Long#MIN_VALUE}. This handles the case where a prior PUT set an
+   * empty collection (e.g. via WC PUT_NEW_FIELD with []) and the RMD reflects that PUT's ts —
+   * leaving it in place would block subsequent UPDATEs from adding elements.
+   */
+  private void applyGotchaOneToCollectionFields(
+      GenericRecord perFieldTsRecord,
+      Schema valueSchema,
+      GenericRecord baseValueRecord) {
+    if (baseValueRecord == null) {
+      return;
+    }
+    for (Schema.Field valueField: valueSchema.getFields()) {
+      Object value = baseValueRecord.get(valueField.name());
+      if (value == null) {
+        continue;
+      }
+      Object fieldRmd = perFieldTsRecord.get(valueField.name());
+      if (!(fieldRmd instanceof GenericRecord)) {
+        continue;
+      }
+      Schema fieldSchema = FieldLevelRmdCache.unwrapNullable(valueField.schema());
+      Schema.Type type = fieldSchema.getType();
+      if (type == Schema.Type.ARRAY) {
+        if (((java.util.Collection<?>) value).isEmpty()) {
+          ((GenericRecord) fieldRmd)
+              .put(com.linkedin.venice.schema.rmd.v1.CollectionRmdTimestamp.TOP_LEVEL_TS_FIELD_NAME, Long.MIN_VALUE);
+        }
+      } else if (type == Schema.Type.MAP) {
+        if (((java.util.Map<?, ?>) value).isEmpty()) {
+          ((GenericRecord) fieldRmd)
+              .put(com.linkedin.venice.schema.rmd.v1.CollectionRmdTimestamp.TOP_LEVEL_TS_FIELD_NAME, Long.MIN_VALUE);
+        }
+      }
+    }
+  }
+
+  /**
+   * Deserialize on-disk RMD bytes (with 4-byte valueSchemaId prefix) into a GenericRecord using
+   * the supplied RMD schema. Returns null on parse failure (shape mismatch, etc.).
+   */
+  private GenericRecord deserializeOnDiskRmd(byte[] rmdBytesWithSchemaIdPrefix, Schema rmdSchema) {
+    try {
+      // Skip the 4-byte schemaId prefix; deserialize the rest as the RMD record.
+      java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(rmdBytesWithSchemaIdPrefix);
+      buf.position(4);
+      org.apache.avro.io.BinaryDecoder decoder =
+          org.apache.avro.io.DecoderFactory.get().binaryDecoder(buf.array(), buf.position(), buf.remaining(), null);
+      org.apache.avro.generic.GenericDatumReader<GenericRecord> reader =
+          new org.apache.avro.generic.GenericDatumReader<>(rmdSchema, rmdSchema);
+      return reader.read(null, decoder);
+    } catch (IOException e) {
+      LOGGER.warn("VT-merge: deserializeOnDiskRmd failed", e);
+      return null;
+    }
+  }
+
+  /**
    * Apply operands against an empty/default base when no base record is yet on disk. Used for
    * the operand-only edge case (key was first written via Merge before any Put).
    *
@@ -183,6 +315,15 @@ public final class MaterializingFoldContext {
    *     schemaId. Returns null bytes for a WC-delete tombstone.
    */
   public FoldOnlyResult foldOperandOnly(List<byte[]> framedOperands) {
+    return foldOperandOnly(framedOperands, null);
+  }
+
+  /**
+   * Variant of {@link #foldOperandOnly(List)} that accepts on-disk RMD bytes for the
+   * operand-only case (no base record yet). Typically baseRmdBytes will be null in this case
+   * but for completeness we accept it.
+   */
+  public FoldOnlyResult foldOperandOnly(List<byte[]> framedOperands, byte[] baseRmdBytes) {
     if (framedOperands == null || framedOperands.isEmpty()) {
       throw new VeniceException("foldOperandOnly called with empty operand list");
     }
@@ -194,11 +335,11 @@ public final class MaterializingFoldContext {
     int valueSchemaId = firstOp.valueSchemaId;
 
     // Build seed RMD against the value schema. No base record (operand-only), so all per-field
-    // entries are "not populated by PUT" — operands win freely (Gotchas #1/#2 both apply).
+    // entries are "not populated by PUT" — operands win freely (Gotchas #1/#2 both apply). If an
+    // on-disk RMD is provided (rare for operand-only), use it.
     Schema valueSchema = wcProcessor.getReaderValueSchema(valueSchemaId);
     Schema rmdSchema = wcProcessor.getReaderRmdSchema(valueSchemaId);
-    Map<Integer, FieldRmdEntry> seedEntries = FieldLevelRmdCache.synthesizeFromPut(null, valueSchema, 0L);
-    GenericRecord seedRmd = buildSeedRmdRecord(rmdSchema, valueSchema, seedEntries);
+    GenericRecord seedRmd = buildSeedRmdFromBaseAndOnDiskRmd(null, valueSchema, rmdSchema, baseRmdBytes);
     ValueAndRmd<GenericRecord> valueAndRmd = new ValueAndRmd<>(Lazy.of(() -> null), seedRmd);
 
     GenericRecord curr = null;

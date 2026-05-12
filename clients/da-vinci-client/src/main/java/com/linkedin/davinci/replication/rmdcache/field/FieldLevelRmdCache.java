@@ -351,7 +351,7 @@ public class FieldLevelRmdCache {
   }
 
   /** Unwrap a Schema if it's a nullable union [null, T]; otherwise return the schema unchanged. */
-  static Schema unwrapNullable(Schema schema) {
+  public static Schema unwrapNullable(Schema schema) {
     if (schema.getType() != Schema.Type.UNION) {
       return schema;
     }
